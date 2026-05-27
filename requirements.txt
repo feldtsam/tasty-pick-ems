@@ -1,0 +1,7 @@
+# Tasty Pick Ems — Python dependencies
+# Install with: pip3 install -r requirements.txt
+
+flask==3.0.3          # Web server framework
+flask-cors==4.0.1     # Allows the frontend to call the backend
+requests==2.31.0      # Makes HTTP calls to the APIs
+python-dotenv==1.0.1  # Reads your .env file

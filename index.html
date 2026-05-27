@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tasty Pick Ems · MLB HR Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- ── NAV ─────────────────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-brand">TASTY <span>PICK EMS</span></div>
+    <div class="nav-links">
+      <button class="nav-btn active" data-page="dashboard">⚾ Dashboard</button>
+      <button class="nav-btn" data-page="live-data">📡 Live</button>
+      <button class="nav-btn" data-page="prompt-library">🖼 Prompts</button>
+    </div>
+  </nav>
+
+  <div class="page-wrapper">
+
+    <!-- ══════════════════════════════════════════════════ -->
+    <!-- DASHBOARD                                          -->
+    <!-- ══════════════════════════════════════════════════ -->
+    <div id="dashboard" class="page active">
+
+      <!-- Sticky section nav -->
+      <nav class="section-nav">
+        <a class="section-nav-btn" href="#hero-section">⚡ Featured</a>
+        <a class="section-nav-btn" href="#hr-section">💰 HR Picks</a>
+        <a class="section-nav-btn" href="#pitchers-section">🎯 Pitchers</a>
+        <a class="section-nav-btn" href="#parks-section">🏟️ Parks</a>
+        <a class="section-nav-btn" href="#angles-section">👀 Angles</a>
+        <a class="section-nav-btn" href="#social-section">📲 Social</a>
+      </nav>
+
+      <div class="container">
+
+        <!-- Page title -->
+        <div class="page-header">
+          <div class="date-badge" id="dashboard-date">Loading...</div>
+          <h1>MLB <span class="highlight">HR Props</span> Dashboard</h1>
+          <p class="subtitle">Command center for home run props and TikTok content</p>
+        </div>
+
+        <!-- ── HERO PICK ──────────────────────────────── -->
+        <div id="hero-section">
+          <!-- rendered by dashboard.js -->
+        </div>
+
+        <!-- ── QUICK BAR ──────────────────────────────── -->
+        <div id="quick-bar" class="quick-bar">
+          <!-- rendered by dashboard.js -->
+        </div>
+
+        <!-- ── HR CANDIDATES ──────────────────────────── -->
+        <div class="section" id="hr-section">
+          <div class="section-header">
+            <div class="section-title">💰 Top HR Candidates</div>
+            <div class="section-meta">+300 or longer</div>
+          </div>
+          <div class="section-angle"><strong>Content angle:</strong> Player breakdown cards — one per post, swipe through today's slate.</div>
+          <div class="section-divider"></div>
+          <div id="hr-candidates-grid">
+            <!-- carousel rendered by dashboard.js -->
+          </div>
+        </div>
+
+        <!-- ── TARGETABLE PITCHERS ────────────────────── -->
+        <div class="section" id="pitchers-section">
+          <div class="section-header">
+            <div class="section-title">🎯 Targetable Pitchers</div>
+            <div class="section-meta">Attack today</div>
+          </div>
+          <div class="section-angle"><strong>Content angle:</strong> "Why I'm targeting [pitcher] today" — ERA + HR/9 is all you need.</div>
+          <div class="section-divider"></div>
+          <div id="pitchers-grid">
+            <!-- rendered by dashboard.js -->
+          </div>
+        </div>
+
+        <!-- ── BEST HR ENVIRONMENTS ───────────────────── -->
+        <div class="section" id="parks-section">
+          <div class="section-header">
+            <div class="section-title">🏟️ Best HR Environments</div>
+            <div class="section-meta">Today's parks</div>
+          </div>
+          <div class="section-angle"><strong>Content angle:</strong> "The math on today's environment" — rank the parks, explain the factor.</div>
+          <div class="section-divider"></div>
+          <div id="ballparks-grid">
+            <!-- ranked list rendered by dashboard.js -->
+          </div>
+        </div>
+
+        <!-- ── SNEAKY VALUE ANGLES ────────────────────── -->
+        <div class="section" id="angles-section">
+          <div class="section-header">
+            <div class="section-title">👀 Sneaky Value Angles</div>
+            <div class="section-meta">Under the radar</div>
+          </div>
+          <div class="section-angle"><strong>Content angle:</strong> "The angle nobody is talking about today" — one post per angle, hook first.</div>
+          <div class="section-divider"></div>
+          <div id="angles-grid">
+            <!-- rendered by dashboard.js -->
+          </div>
+        </div>
+
+        <!-- ── SOCIAL / CONTENT ANGLES ───────────────── -->
+        <div class="section" id="social-section">
+          <div class="section-header">
+            <div class="section-title">📲 Social Captions</div>
+            <div class="section-meta">Ready to post</div>
+          </div>
+          <div class="section-angle"><strong>Content angle:</strong> Copy → paste → post. Each caption is platform-ready.</div>
+          <div class="section-divider"></div>
+          <div id="social-grid">
+            <!-- rendered by dashboard.js -->
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /dashboard -->
+
+
+    <!-- ══════════════════════════════════════════════════ -->
+    <!-- PROMPT LIBRARY                                     -->
+    <!-- ══════════════════════════════════════════════════ -->
+    <div id="prompt-library" class="page">
+      <div class="container">
+
+        <div class="page-header">
+          <div class="date-badge">Image &amp; Caption Generator</div>
+          <h1>Prompt <span class="highlight">Library</span></h1>
+          <p class="subtitle">Copy-ready AI image prompts and social captions for every player card</p>
+        </div>
+
+        <div class="info-banner">
+          <div class="info-banner-icon">💡</div>
+          <div>
+            <div class="info-banner-title">How to use this page</div>
+            <div class="info-banner-body">
+              1. Copy the <strong>Image Generation Prompt</strong> → paste into Midjourney, DALL·E, or Stable Diffusion.<br/>
+              2. Copy the <strong>Caption Template</strong> → fill in brackets → post to Instagram, TikTok, or X.<br/>
+              3. Use the <strong>Style Note</strong> to fine-tune the visual.
+            </div>
+          </div>
+        </div>
+
+        <div class="prompt-grid" id="prompt-library-grid">
+          <!-- rendered by prompts.js -->
+        </div>
+
+      </div>
+    </div><!-- /prompt-library -->
+
+
+    <!-- ══════════════════════════════════════════════════ -->
+    <!-- LIVE DATA                                          -->
+    <!-- ══════════════════════════════════════════════════ -->
+    <div id="live-data" class="page">
+      <div class="container">
+
+        <div class="page-header">
+          <div class="date-badge">Real-Time API Data</div>
+          <h1>📡 <span class="highlight">Live</span> Data</h1>
+          <p class="subtitle">Today's games · Probable pitchers · Weather · HR props · Environment score</p>
+        </div>
+
+        <div class="info-banner">
+          <div class="info-banner-icon">⚡</div>
+          <div>
+            <div class="info-banner-title">Backend required for live data</div>
+            <div class="info-banner-body">
+              Open a Terminal window and run:
+              <strong style="display:block; font-family:monospace; color:var(--green); margin-top:4px;">
+                cd /Users/samfeldt/tasty-pick-ems &amp;&amp; ./start.sh
+              </strong>
+              Then come back here — data loads automatically. API keys are optional; mock data is used if missing.
+            </div>
+          </div>
+        </div>
+
+        <!-- All live content rendered here by liveData.js -->
+        <div id="live-data-content">
+          <!-- Shows loading state on first render -->
+        </div>
+
+      </div>
+    </div><!-- /live-data -->
+
+  </div><!-- /page-wrapper -->
+
+  <script src="js/data.js"></script>
+  <script src="js/cards.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/prompts.js"></script>
+  <script src="js/liveData.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>
