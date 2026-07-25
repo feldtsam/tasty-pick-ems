@@ -49,4 +49,8 @@ def flatten_endpoint():
 @app.route("/api/flatten", methods=["GET"])
 @app.route("/api", methods=["GET"])
 def health_check():
-    return jsonify({"status": "ok", "usage": "POST an Odds API event (or list of events) to this URL"})
+    return jsonify({
+        "status": "ok",
+        "usage": "POST an Odds API event (or list of events) to this URL",
+        "deployed_via": "github-auto-deploy",
+    })
