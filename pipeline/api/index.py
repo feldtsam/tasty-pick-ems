@@ -28,7 +28,11 @@ from lovable_forward import forward_to_lovable
 
 app = Flask(__name__)
 
-DEFAULT_LOVABLE_URL = "https://project--d20928a7-86ec-44bf-bb99-cb5c7e320bd0.lovable.app/api/public/pipeline-write"
+# Fallback only — the real value should come from the LOVABLE_WEBHOOK_URL
+# Vercel env var (see README) so a future URL change is a config update,
+# not a code change + redeploy. Kept in sync as a defense-in-depth default
+# in case that env var is ever accidentally unset.
+DEFAULT_LOVABLE_URL = "https://tastypickems.lovable.app/api/public/pipeline-write"
 
 
 def _parse_events(data, diagnostics=None):

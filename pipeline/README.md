@@ -36,9 +36,17 @@ list Make.com can consume directly, filtered to the "at least 1 HR" line
   access into that backend, by design) — confirm on the Lovable side if
   full assurance is needed.
 - Requires `LOVABLE_WEBHOOK_SECRET` to be set (Vercel env var, Production +
-  Preview, stored as Sensitive — write-only, not readable back). Optional
-  `LOVABLE_WEBHOOK_URL` env var overrides the default target URL if the
-  Lovable project's URL ever changes (e.g. on publish).
+  Preview, stored as Sensitive — write-only, not readable back).
+- Target URL comes from `LOVABLE_WEBHOOK_URL` (same env var setup as the
+  secret), currently `https://tastypickems.lovable.app/api/public/pipeline-write`.
+  This is env-var-driven specifically so a future Lovable URL change (it's
+  already changed once, when the project was published/renamed) is a
+  config update, not a code change — update the env var, push a trivial
+  commit to trigger a redeploy (env var changes need a fresh deployment to
+  reach already-running functions), done. `DEFAULT_LOVABLE_URL` in
+  `index.py` is a hardcoded fallback for defense-in-depth only — keep it in
+  sync when the env var changes, but the env var is the one that actually
+  matters.
 
 ## Diagnostics — "zero rows" isn't always "zero props today"
 
