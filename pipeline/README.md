@@ -23,12 +23,16 @@ list Make.com can consume directly, filtered to the "at least 1 HR" line
 
 - Same accepted input as `/api/flatten`.
 - Internally: flattens/filters, then HMAC-SHA256 signs the exact JSON
-  string being sent (see `lovable_forward.py` for the signing details and
-  the assumptions about Lovable's expected header format — those are
-  genuinely unverified until a real round-trip test confirms them) and
+  string being sent (see `lovable_forward.py` for the signing details) and
   POSTs it to the Lovable backend webhook.
 - Returns `{"success": bool, "rows_sent": int, "lovable_status_code":
   int|None, "error": str|None}` — Make.com only needs to check `success`.
+- **Confirmed working at the HTTP layer** against the live Lovable
+  endpoint (`sha256=<hex>` header format, signed over the sorted-keys JSON
+  string — both accepted as implemented, both 200 responses). Actual row
+  presence in `hr_props_raw` isn't observable from this codebase (no DB
+  access into that backend, by design) — confirm on the Lovable side if
+  full assurance is needed.
 - Requires `LOVABLE_WEBHOOK_SECRET` to be set (Vercel env var, Production +
   Preview, stored as Sensitive — write-only, not readable back). Optional
   `LOVABLE_WEBHOOK_URL` env var overrides the default target URL if the
