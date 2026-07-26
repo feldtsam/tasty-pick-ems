@@ -10,6 +10,7 @@ Accepts a POST with a JSON body that's either:
 
 Returns the flattened, filtered list of HR prop rows as JSON.
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -30,15 +31,30 @@ app = Flask(__name__)
 DEFAULT_LOVABLE_URL = "https://project--d20928a7-86ec-44bf-bb99-cb5c7e320bd0.lovable.app/api/public/pipeline-write"
 
 
-def _parse_events(data):
-    """Shared input handling for both endpoints — same three accepted
-    shapes as the original /api/flatten."""
+def _parse_events(data, diagnostics=None):
+    """
+    Shared input handling for both endpoints — same three accepted shapes
+    as the original /api/flatten. If the top-level body itself arrived as
+    a JSON-encoded string (some callers do this when a request body is
+    built from a text template rather than a structured mapper), recover
+    the real value before checking its shape, instead of rejecting it.
+    """
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+            if diagnostics is not None:
+                diagnostics["top_level_recovered_from_string"] = True
+        except (json.JSONDecodeError, TypeError):
+            if diagnostics is not None:
+                diagnostics["top_level_unparseable_string"] = True
+            return None
+
     if isinstance(data, dict) and "events" in data:
-        return flatten_hr_props_batch(data["events"])
+        return flatten_hr_props_batch(data["events"], diagnostics=diagnostics)
     if isinstance(data, list):
-        return flatten_hr_props_batch(data)
+        return flatten_hr_props_batch(data, diagnostics=diagnostics)
     if isinstance(data, dict) and "bookmakers" in data:
-        return flatten_hr_props(data)
+        return flatten_hr_props(data, diagnostics=diagnostics)
     return None
 
 
@@ -48,11 +64,30 @@ EXPECTED_INPUT_ERROR = (
 )
 
 
+def _log_request(label: str, raw_body: bytes, data, diagnostics: dict, rows) -> None:
+    """Printed output is captured in Vercel's function logs (`vercel logs`).
+    Exists specifically so a real caller's actual request shape can be
+    inspected after the fact, not guessed at from the outside."""
+    print(
+        f"[{label}] content_type={request.content_type!r} "
+        f"raw_body_len={len(raw_body)} "
+        f"raw_body_preview={raw_body[:300]!r} "
+        f"parsed_type={type(data).__name__} "
+        f"diagnostics={diagnostics} "
+        f"rows_found={'N/A (unrecognized input shape)' if rows is None else len(rows)}",
+        flush=True,  # unbuffered — a short-lived serverless invocation can exit
+                     # before a buffered print() ever reaches the log stream
+    )
+
+
 @app.route("/api/flatten", methods=["POST"])
 @app.route("/api", methods=["POST"])
 def flatten_endpoint():
+    raw_body = request.get_data()
     data = request.get_json(force=True, silent=True)
-    result = _parse_events(data)
+    diagnostics = {}
+    result = _parse_events(data, diagnostics=diagnostics)
+    _log_request("flatten", raw_body, data, diagnostics, result)
 
     if result is None:
         return jsonify({"error": EXPECTED_INPUT_ERROR}), 400
@@ -62,11 +97,14 @@ def flatten_endpoint():
 
 @app.route("/api/flatten-and-forward", methods=["POST"])
 def flatten_and_forward_endpoint():
+    raw_body = request.get_data()
     data = request.get_json(force=True, silent=True)
-    rows = _parse_events(data)
+    diagnostics = {}
+    rows = _parse_events(data, diagnostics=diagnostics)
+    _log_request("flatten-and-forward", raw_body, data, diagnostics, rows)
 
     if rows is None:
-        return jsonify({"error": EXPECTED_INPUT_ERROR}), 400
+        return jsonify({"error": EXPECTED_INPUT_ERROR, "diagnostics": diagnostics}), 400
 
     secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
     if not secret:
@@ -82,6 +120,7 @@ def flatten_and_forward_endpoint():
         "rows_sent": len(rows),
         "lovable_status_code": result["status_code"],
         "error": result["error"],
+        "diagnostics": diagnostics,
     }), (200 if result["success"] else 502)
 
 
