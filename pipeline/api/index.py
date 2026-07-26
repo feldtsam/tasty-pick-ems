@@ -115,6 +115,20 @@ def flatten_and_forward_endpoint():
     url = os.environ.get("LOVABLE_WEBHOOK_URL", DEFAULT_LOVABLE_URL)
     result = forward_to_lovable(rows, secret, url)
 
+    # The gap that made the last real incident harder to diagnose than it
+    # needed to be: _log_request above only ever logged the incoming
+    # request, never the outcome of forwarding it. A failed forward used to
+    # be invisible in `vercel logs` — had to be reproduced manually via curl
+    # to see Lovable's actual error text. Logged here now, flushed for the
+    # same reason as _log_request (a short-lived invocation can exit before
+    # buffered output reaches the log stream).
+    print(
+        f"[flatten-and-forward:result] success={result['success']} "
+        f"lovable_status_code={result['status_code']} "
+        f"lovable_error={result['error']!r}",
+        flush=True,
+    )
+
     return jsonify({
         "success": result["success"],
         "rows_sent": len(rows),
