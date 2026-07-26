@@ -127,7 +127,8 @@ def flatten_and_forward_endpoint():
     # same reason as _log_request (a short-lived invocation can exit before
     # buffered output reaches the log stream).
     print(
-        f"[flatten-and-forward:result] success={result['success']} "
+        f"[flatten-and-forward:result] target_url={url!r} "
+        f"success={result['success']} "
         f"lovable_status_code={result['status_code']} "
         f"lovable_error={result['error']!r}",
         flush=True,
