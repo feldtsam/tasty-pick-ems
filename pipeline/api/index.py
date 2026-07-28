@@ -20,11 +20,14 @@ from pathlib import Path
 # runtime with ModuleNotFoundError even though it works locally. Fix: add
 # this file's directory explicitly before importing.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "live_data"))
 
 from flask import Flask, jsonify, request
+import requests
 
 from flatten_hr_props import flatten_hr_props, flatten_hr_props_batch
 from lovable_forward import forward_to_lovable
+from build_game_candidates import build_candidates_for_game
 
 app = Flask(__name__)
 
@@ -149,5 +152,50 @@ def health_check():
     return jsonify({
         "status": "ok",
         "usage": "POST an Odds API event (or list of events) to this URL",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/live-data/game/<int:game_pk>", methods=["GET"])
+def live_data_game_endpoint(game_pk):
+    """
+    One game's lineup/weather/stats context, score_candidate()-ready —
+    see api/live_data/build_game_candidates.py for the full pipeline.
+    Deliberately per-game, not per-day: mirrors /api/flatten-and-forward's
+    one-call-per-event shape so Make.com's existing Iterator-over-games
+    pattern (already built for the odds pipeline) can call this the same
+    way — GET /api/live-data/game/<game_pk>, no request body needed.
+
+    NOT wired into any Make.com scenario yet — deployed and independently
+    callable, but that connection is still a separate step.
+    """
+    try:
+        result = build_candidates_for_game(game_pk)
+    except ValueError as e:
+        # Confirmed real behavior: feed/live returns HTTP 200 with a
+        # near-empty placeholder body for an unknown game_pk rather than a
+        # 404 — game_data.py turns that into a ValueError instead of
+        # letting it surface as a confusing downstream KeyError.
+        print(f"[live-data:game] game_pk={game_pk} not_found={e}", flush=True)
+        return jsonify({"error": str(e)}), 404
+    except requests.exceptions.RequestException as e:
+        print(f"[live-data:game] game_pk={game_pk} network_error={e}", flush=True)
+        return jsonify({"error": "Network error reaching the MLB Stats API.", "detail": str(e)}), 502
+
+    print(
+        f"[live-data:game] game_pk={game_pk} "
+        f"matchup={result['game']['away_team']}@{result['game']['home_team']} "
+        f"lineup_status={result['game']['lineup_status']} "
+        f"candidates={len(result['game']['candidates'])}",
+        flush=True,
+    )
+    return jsonify(result)
+
+
+@app.route("/api/live-data", methods=["GET"])
+def live_data_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "GET /api/live-data/game/<game_pk> for that game's lineup/weather/stats, score_candidate()-ready.",
         "deployed_via": "github-auto-deploy",
     })

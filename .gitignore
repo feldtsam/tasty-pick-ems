@@ -27,3 +27,4 @@ venv/
 .idea/
 *.swp
 *.swo
+.vercel

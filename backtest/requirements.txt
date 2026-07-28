@@ -1,0 +1,9 @@
+# Tasty Pick Ems — HR scoring backtest dependencies
+# Install with: pip install -r requirements.txt
+
+pybaseball==2.2.7   # Statcast / Baseball Reference / FanGraphs data
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==17.0.0     # fast parquet caching for pulled data
+tqdm==4.66.5        # progress bars for multi-day pulls
+statsmodels==0.14.4 # logistic regression with coefficient p-values, for the data-fit weight comparison
