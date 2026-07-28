@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_scoring"))
 
-from build_game_candidates import build_candidates_for_game  # noqa: E402
+from build_game_candidates import build_candidates_for_game, clean_for_score_candidate  # noqa: E402
 from mlb_schedule import fetch_schedule  # noqa: E402
 from score_candidate import score_candidate  # noqa: E402
 
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         crashed = []
         scored = []
         for c in all_candidates:
-            clean = {k: v for k, v in c.items() if not k.startswith("_") and k not in ("mlbam_id", "opp_pitcher_mlbam_id")}
+            clean = clean_for_score_candidate(c)
             try:
                 scored.append((c, score_candidate(clean)))
             except Exception as e:  # noqa: BLE001 — deliberately broad, this IS the crash check

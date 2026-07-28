@@ -53,8 +53,16 @@ def compute_signature(secret: str, payload_str: str) -> str:
 def forward_to_lovable(rows: list, secret: str, url: str) -> dict:
     """
     Signs and POSTs the flattened rows to the Lovable webhook.
-    Returns {"success": bool, "status_code": int|None, "error": str|None}
-    — never includes the secret or the signature in the return value.
+    Returns {"success": bool, "status_code": int|None, "error": str|None,
+    "response_body": str|None} — never includes the secret or the
+    signature in the return value.
+
+    `response_body` is captured on EVERY response, not just failures —
+    added specifically so a caller can surface Lovable's own real
+    received/upserted/deduped counts (or whatever it reports) on success,
+    not just an opaque "success: true". Truncated the same as the error
+    text, for the same reason: never let one webhook response balloon the
+    caller's own response body.
     """
     payload_str = serialize_payload(rows)
     signature = compute_signature(secret, payload_str)
@@ -70,13 +78,14 @@ def forward_to_lovable(rows: list, secret: str, url: str) -> dict:
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except requests.RequestException as e:
-        return {"success": False, "status_code": None, "error": f"{type(e).__name__}: {e}"}
+        return {"success": False, "status_code": None, "error": f"{type(e).__name__}: {e}", "response_body": None}
 
     if 200 <= response.status_code < 300:
-        return {"success": True, "status_code": response.status_code, "error": None}
+        return {"success": True, "status_code": response.status_code, "error": None, "response_body": response.text[:2000]}
 
     return {
         "success": False,
         "status_code": response.status_code,
         "error": response.text[:500],  # truncated, for debugging — never contains our secret
+        "response_body": response.text[:2000],
     }

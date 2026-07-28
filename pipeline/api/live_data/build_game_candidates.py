@@ -199,6 +199,23 @@ def build_candidates_for_game(game_pk: int) -> dict:
     return {"reference_season_for_fallback": snapshot["season"], "current_season": season, "game": entry}
 
 
+# Internal-only bookkeeping fields on a candidate dict — never part of
+# score_candidate()'s input schema. Shared here so every caller that needs
+# to strip them (test_live_data.py, scored_picks.py) uses the exact same
+# list instead of maintaining its own copy that could drift.
+_INTERNAL_CANDIDATE_FIELDS = {"mlbam_id", "opp_pitcher_mlbam_id", "_stat_source", "_stat_source_note"}
+
+
+def clean_for_score_candidate(candidate: dict) -> dict:
+    """Strips the internal-only bookkeeping fields a live_data candidate
+    carries (mlbam_id, opp_pitcher_mlbam_id, _stat_source, _stat_source_note)
+    so the result is exactly score_candidate()'s documented input schema —
+    passing the uncleaned dict through works today (score_candidate ignores
+    unknown keys) but would silently break if it ever validated its input
+    strictly, so every caller cleans explicitly rather than relying on that."""
+    return {k: v for k, v in candidate.items() if k not in _INTERNAL_CANDIDATE_FIELDS and not k.startswith("_")}
+
+
 def build_candidates_for_date(date: str) -> dict:
     """
     DEV/TEST CONVENIENCE ONLY — not the production path. Discovers the

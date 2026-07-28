@@ -25,9 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "live_data"))
 from flask import Flask, jsonify, request
 import requests
 
-from flatten_hr_props import flatten_hr_props, flatten_hr_props_batch
+from flatten_hr_props import flatten_any, flatten_hr_props, flatten_hr_props_batch
 from lovable_forward import forward_to_lovable
 from build_game_candidates import build_candidates_for_game
+from scored_picks import build_scored_picks_for_game
 
 app = Flask(__name__)
 
@@ -37,32 +38,21 @@ app = Flask(__name__)
 # in case that env var is ever accidentally unset.
 DEFAULT_LOVABLE_URL = "https://tastypickems.lovable.app/api/public/pipeline-write"
 
+# NOT a real endpoint yet — the scored_picks table/route doesn't exist on
+# the Lovable side at the time this was written (see README for the
+# handoff schema). LOVABLE_SCORED_PICKS_WEBHOOK_URL is the real source of
+# truth once that route exists; this placeholder just documents the
+# expected naming convention and will 502 harmlessly (not silently
+# succeed) until it's set.
+DEFAULT_SCORED_PICKS_URL = "https://tastypickems.lovable.app/api/public/scored-picks-write"
+
 
 def _parse_events(data, diagnostics=None):
-    """
-    Shared input handling for both endpoints — same three accepted shapes
-    as the original /api/flatten. If the top-level body itself arrived as
-    a JSON-encoded string (some callers do this when a request body is
-    built from a text template rather than a structured mapper), recover
-    the real value before checking its shape, instead of rejecting it.
-    """
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-            if diagnostics is not None:
-                diagnostics["top_level_recovered_from_string"] = True
-        except (json.JSONDecodeError, TypeError):
-            if diagnostics is not None:
-                diagnostics["top_level_unparseable_string"] = True
-            return None
-
-    if isinstance(data, dict) and "events" in data:
-        return flatten_hr_props_batch(data["events"], diagnostics=diagnostics)
-    if isinstance(data, list):
-        return flatten_hr_props_batch(data, diagnostics=diagnostics)
-    if isinstance(data, dict) and "bookmakers" in data:
-        return flatten_hr_props(data, diagnostics=diagnostics)
-    return None
+    """Thin wrapper — the actual shape-detection logic now lives in
+    flatten_hr_props.flatten_any() so scored_picks.py's orchestrator can
+    share it instead of duplicating it. Kept as a named wrapper here only
+    to avoid touching the two call sites below."""
+    return flatten_any(data, diagnostics=diagnostics)
 
 
 EXPECTED_INPUT_ERROR = (
@@ -197,5 +187,86 @@ def live_data_health_check():
     return jsonify({
         "status": "ok",
         "usage": "GET /api/live-data/game/<game_pk> for that game's lineup/weather/stats, score_candidate()-ready.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/score-game-props/game/<int:game_pk>", methods=["POST"])
+def score_game_props_endpoint(game_pk):
+    """
+    The full orchestration: raw odds event data (POST body — the EXACT
+    same shape /api/flatten-and-forward already accepts: a single event
+    object, a list of events, or {"events": [...]}) + a game_pk (URL path,
+    same as /api/live-data/game/<game_pk>) in, real scored picks out,
+    forwarded to Lovable's scored_picks webhook. See scored_picks.py for
+    the full pipeline (flatten -> live-data fetch -> name-match -> score).
+
+    NOT wired into any Make.com scenario yet, and LOVABLE_SCORED_PICKS_WEBHOOK_URL
+    isn't a real endpoint yet either (see README for the scored_picks
+    table schema handed off for the Lovable side to build) — this is
+    deployed and independently callable/testable, but forwarding will
+    502 with a clear error until that URL exists and the env var is set.
+    """
+    raw_body = request.get_data()
+    data = request.get_json(force=True, silent=True)
+
+    try:
+        result = build_scored_picks_for_game(game_pk, data)
+    except ValueError as e:
+        print(f"[score-game-props] game_pk={game_pk} not_found={e}", flush=True)
+        return jsonify({"error": str(e)}), 404
+    except requests.exceptions.RequestException as e:
+        print(f"[score-game-props] game_pk={game_pk} network_error={e}", flush=True)
+        return jsonify({"error": "Network error reaching an upstream API.", "detail": str(e)}), 502
+
+    if result["matchup"] is None:
+        # build_scored_picks_for_game sets matchup=None only when the odds
+        # payload itself wasn't a recognized shape — matches
+        # /api/flatten-and-forward's 400 for the same class of bad input,
+        # rather than a misleading 200.
+        print(f"[score-game-props] game_pk={game_pk} bad_odds_shape={result['errors']}", flush=True)
+        return jsonify({"error": result["errors"][0]["error"]}), 400
+
+    scored_picks = result["scored_picks"]
+    forward_result = {"success": None, "status_code": None, "error": None}
+    if scored_picks:
+        secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+        if not secret:
+            forward_result = {"success": False, "status_code": None, "error": "LOVABLE_WEBHOOK_SECRET is not configured"}
+        else:
+            url = os.environ.get("LOVABLE_SCORED_PICKS_WEBHOOK_URL", DEFAULT_SCORED_PICKS_URL)
+            forward_result = forward_to_lovable(scored_picks, secret, url)
+
+    print(
+        f"[score-game-props] game_pk={game_pk} "
+        f"content_type={request.content_type!r} raw_body_len={len(raw_body)} "
+        f"matchup={result['matchup']} "
+        f"odds_entries={result['match_summary']['odds_entries_total']} "
+        f"matched={result['match_summary']['matched']} "
+        f"unmatched={result['match_summary']['unmatched_odds_count']} "
+        f"scoring_errors={len(result['errors'])} "
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']}",
+        flush=True,
+    )
+
+    return jsonify({
+        "game_pk": game_pk,
+        "matchup": result["matchup"],
+        "scored_count": len(scored_picks),
+        "match_summary": result["match_summary"],
+        "errors": result["errors"],
+        "forwarded": forward_result["success"],
+        "lovable_status_code": forward_result["status_code"],
+        "forward_error": forward_result["error"],
+        "lovable_response": forward_result.get("response_body"),
+    }), (502 if forward_result["success"] is False else 200)
+
+
+@app.route("/api/score-game-props", methods=["GET"])
+def score_game_props_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/score-game-props/game/<game_pk> with a raw Odds API event "
+                 "(same shape as /api/flatten-and-forward) to get real scored picks for that game.",
         "deployed_via": "github-auto-deploy",
     })

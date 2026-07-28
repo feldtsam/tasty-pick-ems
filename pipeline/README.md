@@ -369,6 +369,192 @@ fetch one game's ~18-20 players per call instead:
   explicit fix once testing revealed `feed/live` doesn't 404 on its own
   for a bad ID (see `game_data.py` above).
 
+## Scored picks (`api/scored_picks.py`) — deployed, NOT wired to Make.com yet
+
+Ties together everything above into the final orchestration piece: raw
+Odds API event data + a game_pk in, real scored HR-prop picks out,
+forwarded to a new Lovable webhook. Combines three already-tested,
+independent pieces with zero reimplementation — `flatten_hr_props.py`
+(odds flattening), `live_data`'s `build_candidates_for_game()` (lineup/
+matchup/environment), and `live_scoring`'s `score_candidate()` (the
+five-pillar scorer) — plus one genuinely new piece: matching a player
+between the two data sources.
+
+### `/api/score-game-props/game/<game_pk>` — one game, POST, same odds body as `/api/flatten-and-forward`
+
+`https://pipeline-coral.vercel.app/api/score-game-props/game/<game_pk>`
+
+Deliberately reuses two existing shapes rather than inventing a new
+contract: the URL path parameter matches `/api/live-data/game/<game_pk>`,
+and the POST body is the *exact* same raw-odds shape
+`/api/flatten-and-forward` already accepts (single event object, list of
+events, or `{"events": [...]}`) — Make.com's existing odds-fetch step
+needs zero changes to feed this once it's wired in.
+
+**Architecture decision, made deliberately (per explicit direction)**: this
+endpoint does NOT read back from `hr_props_raw` to get the odds it needs —
+that would require a new read-access pathway into Lovable that doesn't
+exist yet. Instead, Make.com passes the raw odds data it already fetched
+earlier in its existing loop straight into this endpoint alongside the
+game_pk. Reuses a working pathway instead of solving a new permissions
+problem.
+
+### Player matching — the one genuinely new piece
+
+Odds data identifies players by free-text name (The Odds API's
+`description` field); live-data candidates are keyed by MLBAM ID with a
+name from the MLB Stats API. There's no shared ID between the two
+sources, so this has to match on name — confirmed to be a REAL failure
+mode, not a theoretical one: pulling real data for this exact module (BAL
+@ DET, 2026-07-28, game_pk 824243), **The Odds API's own feed spells a
+real player "Javier Baez" while the MLB Stats API spells the same person
+"Javier Báez"** — same game, same player, different bytes.
+
+`scored_picks.py`'s `match_players()` handles this in two ordered steps,
+never silently guessing:
+
+1. **Exact, after normalization** (`normalize_name()`) — the primary
+   path. Normalization strips accents (Unicode NFKD decompose + drop
+   combining marks: `Báez` → `baez`), lowercases, strips punctuation, and
+   drops a trailing generational suffix (`Jr`/`Sr`/`II`/`III`/`IV`/`V`) —
+   confirmed necessary because real bookmaker feeds are inconsistent about
+   including these (a real player's odds-feed name dropped a suffix the
+   MLB Stats API includes). This one step was enough to resolve the real
+   Báez/Baez case above via the exact path, not the fuzzy fallback below —
+   a better outcome than needing fuzzy logic for it.
+2. **Bounded fuzzy fallback**, only if step 1 finds nothing:
+   `difflib.SequenceMatcher`, cutoff 0.85, run only against that one
+   game's own small (~18-name) lineup pool — never the whole league, which
+   keeps false-positive risk low even at a fairly loose cutoff. Accepted
+   ONLY if exactly one candidate is a confident, unambiguous best match
+   (the top match must beat the runner-up by ≥0.05); otherwise treated as
+   unmatched rather than guessed. Every fuzzy match is tagged
+   `match_type: "fuzzy"` in the output — never silently treated the same
+   as an exact match, so a caller can flag it for human review.
+
+A name that normalizes to **more than one** live-data candidate in the
+same game (a genuine collision — odds data has no team field to
+disambiguate with) is also reported as unmatched rather than guessed.
+Anything left unmatched after both steps is preserved in the response's
+`match_summary.unmatched_odds`, with the raw name and its odds rows intact
+— never silently dropped. A lineup player with no odds offered at all
+(normal — not every bench bat gets a market) is separately reported in
+`unmatched_candidates`, informational only, not treated as an error.
+
+**Tested** (`test_scored_picks.py`) at two levels: synthetic edge cases
+hand-crafted to exercise every path (exact w/ accent+suffix, the fuzzy
+path via a real near-miss spelling `"Bobby Wit Jr"` → `"Bobby Witt Jr."`,
+an ambiguous same-name collision, a fully unmatched name, an unmatched
+lineup player) — needed because a real slate's odds proved the *exact*
+path alone was enough for that one game, which would leave fuzzy/ambiguous
+logic unverified without dedicated fixtures — plus a full **real,
+no-mocks** end-to-end run: real Odds API `batter_home_runs` data for BAL @
+DET joined against that game's real live-data candidates. All 18 real
+odds entries matched (17 direct, 1 — Báez — via the accent-stripping exact
+path), zero unmatched, zero per-player scoring errors, scores directionally
+sane (non-degenerate spread, star ratings monotonic with `final_score`).
+22/22 checks pass.
+
+Multiple bookmakers offering the same player: `score_candidate()` takes a
+single scalar `odds` value, so the best (numerically highest, which for
+American odds is always the more favorable price for the bettor
+regardless of sign) price across bookmakers is used, with `bookmaker` and
+`num_bookmakers` recorded on the output so which book it came from is
+never hidden.
+
+Each returned "scored pick" is: player identity (`player_name`,
+`mlbam_id`, `team`, `batting_order_slot`), opposing pitcher, game info
+(`game_pk`, teams, `game_date_utc`, `venue_name`), the odds actually used
+(`odds`, `bookmaker`, `num_bookmakers`, `match_type`), the four pillar
+scores (`skill_score`/`matchup_score`/`environment_score`/`opportunity_score`),
+`final_score`, `star_rating`, `score_tier`, `passes_odds_filter`, the full
+nested pillar detail (components + notes, for drill-down) in
+`pillar_detail`, and `scored_at` (UTC timestamp of when this was computed —
+distinct from the game's own time).
+
+The endpoint's own response to the CALLER (Make.com) is separate from what
+gets forwarded to Lovable — it's a summary: `scored_count`,
+`match_summary` (`odds_entries_total`, `matched`, `unmatched_odds`,
+`unmatched_odds_count`, `unmatched_candidates_count`), `errors` (per-player
+scoring failures — one bad candidate never sinks the whole batch),
+`forwarded` (bool), `lovable_status_code`, `forward_error`. Returns `400`
+for an unrecognized odds payload shape (matching `/api/flatten-and-forward`'s
+existing convention), `404` for an unknown game_pk, `502` if forwarding to
+Lovable fails or `LOVABLE_WEBHOOK_SECRET` isn't configured.
+
+**Confirmed working end-to-end against the real, live Lovable endpoint**
+(`https://tastypickems.lovable.app/api/public/scored-picks-write`).
+`LOVABLE_SCORED_PICKS_WEBHOOK_URL` is set in Vercel (Production + Preview,
+same pattern as `LOVABLE_WEBHOOK_URL`); it reuses the existing
+`LOVABLE_WEBHOOK_SECRET` (no new secret) — confirmed by the forward itself
+succeeding, since a wrong secret would fail HMAC verification on Lovable's
+side. Real test against BAL @ DET (game_pk 824243), sent twice in a row to
+check upsert behavior on a duplicate submission (same discipline that
+caught the real `rows_sent: 0` bug in the `hr_props_raw` pipeline):
+
+| Send | HTTP | Lovable's response |
+|---|---|---|
+| 1st | 200 | `{"ok":true,"received":18,"upserted":18,"deduped":0}` |
+| 2nd (identical, immediate) | 200 | `{"ok":true,"received":18,"upserted":18,"deduped":0}` |
+
+Both sends succeeded identically with no error and no different behavior
+on the repeat — consistent with a correct upsert-in-place (same 18 rows
+updated, not accumulated). Caveat, stated plainly rather than overclaimed:
+this is read from Lovable's own reported counts, not a direct row-count
+check against the underlying table (no DB access from this side, same
+limitation already noted for `hr_props_raw`) — if airtight certainty on
+row counts matters, check the table directly on the Lovable/Supabase side.
+
+`forward_to_lovable()` (`lovable_forward.py`) now captures and returns the
+full response body on success too, not just on failure as before — needed
+specifically to surface Lovable's real received/upserted/deduped numbers
+rather than an opaque `"success": true`. Surfaced in this endpoint's own
+response as `lovable_response`.
+
+Tested via an isolated Vercel PREVIEW deployment (not touching
+production/`main` and not requiring a git push first) — the only way to
+exercise the real configured secret, since Vercel env values are
+write-only from this side. This pipeline function is fully built, tested
+against real data and the real live webhook, and ready to commit; the
+Lovable side (`scored_picks` table + route) already exists per the schema
+below.
+
+### `scored_picks` table schema (for the Lovable side)
+
+Same shape convention as the existing `hr_props_raw` table/`pipeline-write`
+route — flat, queryable columns for everything a caller would filter or
+sort on, plus one `jsonb` column for full drill-down detail:
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid / serial | primary key, auto-generated |
+| `player_name` | text | |
+| `mlbam_id` | integer | MLB Stats API player ID |
+| `team` | text | batter's team abbreviation |
+| `batting_order_slot` | integer | 1-9 |
+| `opp_pitcher_name` | text | |
+| `opp_pitcher_mlbam_id` | integer | |
+| `game_pk` | integer | MLB Stats API game ID |
+| `home_team` | text | |
+| `away_team` | text | |
+| `game_date_utc` | timestamptz | the game's own start time |
+| `venue_name` | text | |
+| `odds` | integer | American odds, best price across bookmakers |
+| `bookmaker` | text | which book gave that best price |
+| `num_bookmakers` | integer | how many books offered this player at all |
+| `match_type` | text | `"exact"` or `"fuzzy"` — see matching section above |
+| `skill_score` | numeric | pillar 1 |
+| `matchup_score` | numeric | pillar 2 |
+| `environment_score` | numeric | pillar 3 |
+| `opportunity_score` | numeric | pillar 4 |
+| `final_score` | numeric | weighted final |
+| `star_rating` | integer | 1-5 |
+| `score_tier` | text | Elite/Strong/Moderate/Weak/Poor |
+| `passes_odds_filter` | boolean | odds ≥ +300 |
+| `pillar_detail` | jsonb | full nested pillar components + notes |
+| `scored_at` | timestamptz | when this pick was computed |
+| `created_at` | timestamptz | standard insert timestamp, default `now()` |
+
 ## Deployment
 
 Auto-deploys on every push to `main` via Vercel's GitHub integration
@@ -377,10 +563,10 @@ Environment variable changes need a new deployment to take effect for
 already-running functions — push something (even trivial) after adding or
 changing one. `api/live_scoring/` has no route wired up yet (it's a
 function other endpoints call into, not deployed standalone) — see the
-section above. `api/live_data/` DOES have a live route
-(`/api/live-data/game/<game_pk>`, see above) once this is pushed, but it
-isn't called from anywhere yet — no Make.com scenario is configured to hit
-it.
+section above. `api/live_data/` and `api/scored_picks.py` DO have live
+routes (`/api/live-data/game/<game_pk>`, `/api/score-game-props/game/<game_pk>`)
+once this is pushed, but neither is called from anywhere yet — no Make.com
+scenario is configured to hit either.
 
 ## Local development
 
@@ -392,6 +578,7 @@ cd api
 python3 test_flatten_hr_props.py     # flatten/filter test suite
 python3 test_malformed_input.py      # defensive-parsing test suite
 python3 test_lovable_forward.py      # signing + forwarding test suite
+python3 test_scored_picks.py         # name-matching + full orchestration test suite — real data, no mocks
 cd live_scoring
 python3 test_score_candidate.py      # live single-candidate scoring test suite
 cd ../live_data

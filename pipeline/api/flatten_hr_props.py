@@ -155,3 +155,36 @@ def flatten_hr_props_batch(events, diagnostics: dict = None) -> list:
         _bump(diagnostics, "events_processed")
         all_rows.extend(flatten_hr_props(event, diagnostics=diagnostics))
     return all_rows
+
+
+def flatten_any(data, diagnostics: dict = None):
+    """
+    Accepts any of the three input shapes this pipeline's callers use for
+    raw odds data: a single event object (has a "bookmakers" key), a list
+    of event objects, or {"events": [...]}. Also recovers a top-level
+    JSON-encoded string, same defensive reasoning as the nested-field
+    recovery above. Returns None for an unrecognized shape (the caller
+    decides what a 400 looks like) or a flat list of rows otherwise —
+    including an empty list for a recognized-but-empty input.
+
+    Shared by index.py's /api/flatten routes and scored_picks.py's
+    orchestrator so both give callers the exact same input flexibility
+    without duplicating this shape-detection logic in two places.
+    """
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+            if diagnostics is not None:
+                diagnostics["top_level_recovered_from_string"] = True
+        except (json.JSONDecodeError, TypeError):
+            if diagnostics is not None:
+                diagnostics["top_level_unparseable_string"] = True
+            return None
+
+    if isinstance(data, dict) and "events" in data:
+        return flatten_hr_props_batch(data["events"], diagnostics=diagnostics)
+    if isinstance(data, list):
+        return flatten_hr_props_batch(data, diagnostics=diagnostics)
+    if isinstance(data, dict) and "bookmakers" in data:
+        return flatten_hr_props(data, diagnostics=diagnostics)
+    return None
