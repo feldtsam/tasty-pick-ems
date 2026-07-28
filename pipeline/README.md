@@ -555,6 +555,100 @@ sort on, plus one `jsonb` column for full drill-down detail:
 | `scored_at` | timestamptz | when this pick was computed |
 | `created_at` | timestamptz | standard insert timestamp, default `now()` |
 
+## Game ID resolution (`api/game_lookup.py`) — the odds pipeline / MLB pipeline ID mismatch
+
+Real problem, surfaced before wiring `/api/score-game-props` into Make.com:
+Make.com's existing odds-fetch loop identifies each game by The Odds API's
+own event ID (plus `home_team`, `away_team`, `commence_time` — everything
+on The Odds API's own event object), never by MLB's numeric `game_pk`. But
+`/api/score-game-props/game/<game_pk>` (and `/api/live-data/game/<game_pk>`)
+both key off `game_pk` — a completely different ID system from a
+completely different data source.
+
+**Recommendation, and why the other options were rejected**: resolve
+`game_pk` internally, inside a new route
+(`POST /api/score-game-props/by-event`), from fields the raw odds event
+ALREADY carries — not a separate lookup endpoint Make.com calls first, and
+not new fields Make.com has to start passing.
+
+- A standalone "team names + date → game_pk" endpoint that Make.com calls
+  once per game *before* `score-game-props` (the first option on the
+  table) would work, but adds a mandatory second HTTP round-trip per game
+  for information the raw odds event already contains — `home_team`,
+  `away_team`, and `commence_time` are already top-level fields on every
+  real Odds API event object. Solving a problem Make.com doesn't actually
+  have (missing data) isn't worth the extra call.
+- Having Make.com fetch the day's schedule once and build its own
+  team-name lookup table (the third option) was rejected for the same
+  reason logic has consistently moved OUT of Make.com's UI throughout this
+  whole project: it would mean re-implementing name-matching and
+  date-window logic in Make.com's no-code formulas, un-unit-testable,
+  instead of in code that can be — the exact anti-pattern this pipeline
+  was built to get away from in the first place.
+- So: resolve internally, using data already in hand. `game_lookup.py`'s
+  `resolve_game_pk()` is a clean, independently-tested function; the new
+  route is a thin wrapper around it plus the existing pipeline — zero new
+  data Make.com needs to fetch or pass, zero extra round-trip, and the
+  matching logic stays in Python where it's actually testable.
+
+### `/api/score-game-props/by-event` — the route built for Make.com's real situation
+
+`https://pipeline-coral.vercel.app/api/score-game-props/by-event`
+
+POST body: a single raw Odds API event object (must have `home_team`,
+`away_team`, `commence_time`, `bookmakers`) — not a list or
+`{"events": [...]}`, since resolution needs exactly one target matchup.
+Resolves `game_pk` internally, then runs the identical pipeline
+`/game/<game_pk>` does. Response includes `resolved_game_pk`,
+`resolved_via`, and `disambiguated_by_time` in addition to everything the
+`game_pk` route already returns.
+
+**Team name matching is deliberately NOT fuzzy**, unlike player names.
+Pulled real data from both APIs for the same real dates specifically to
+check, rather than assuming: The Odds API's and MLB Stats API's team-name
+strings are **byte-identical for all 30 real teams** as of this writing —
+including the "Athletics" rename (both APIs just say "Athletics", no
+city) and "St. Louis Cardinals"'s period. Team names turned out to be a
+much smaller, more stable problem than player names — `normalize_team_name()`
+only handles case/period/whitespace, cheap insurance against future
+formatting drift rather than a real observed mismatch. Given that,
+`resolve_game_pk()` deliberately does NOT fuzzy-fallback the way
+`match_players()` does for players: a wrong fuzzy match between two TEAMS
+would misattribute an entire game's worth of lineups/stats/odds — a much
+worse failure mode than one mismatched player — so an unresolved team pair
+raises a clear error instead of guessing.
+
+**Two real scheduling gotchas found and handled, not assumed**:
+
+1. **Cross-UTC-midnight games.** MLB's schedule is keyed by `officialDate`
+   — the game's LOCAL wall-clock date — which for a US evening game is
+   often one UTC calendar day earlier than The Odds API's `commence_time`
+   (always UTC). Confirmed with a real game: Houston Astros @ Los Angeles
+   Angels, `commence_time` `"2026-07-29T01:38:00Z"`, but MLB's own
+   `officialDate` is `"2026-07-28"` — querying MLB's schedule for
+   `2026-07-29` directly does not find this game AT ALL. Handled by always
+   searching both `commence_time`'s own UTC date and the day before.
+2. **Two teams playing on consecutive days can make "a match was found"
+   the WRONG signal**, not just doubleheaders needing disambiguation. An
+   earlier version of this code only searched the day before when the
+   first date came up empty — a real test caught why that's wrong: real
+   series between the same two teams span consecutive days, so the naive
+   date can already have exactly one match that's simply the *next* game
+   in the series, not the one this specific `commence_time` refers to.
+   The fix: always gather every team-name match from BOTH dates, then let
+   actual game start time — never date, never match count — be the sole
+   tiebreaker. This one rule also correctly handles the real doubleheader
+   case confirmed in testing (Cleveland Guardians @ Cincinnati Reds,
+   `game_pk`s 824490 and 824489, same date, 17:40Z and 23:10Z) without
+   needing separate doubleheader-specific logic.
+
+**Tested against real data** (`test_game_lookup.py`, 12/12 checks): the
+ordinary case (Baltimore Orioles @ Detroit Tigers — itself a real
+multi-game series, confirming the closest-time tiebreak works on everyday
+data, not just crafted edge cases), the real cross-midnight game, the real
+doubleheader (both directions), and a confirmed-nonexistent team pair
+correctly raising an error instead of guessing.
+
 ## Deployment
 
 Auto-deploys on every push to `main` via Vercel's GitHub integration
@@ -579,6 +673,7 @@ python3 test_flatten_hr_props.py     # flatten/filter test suite
 python3 test_malformed_input.py      # defensive-parsing test suite
 python3 test_lovable_forward.py      # signing + forwarding test suite
 python3 test_scored_picks.py         # name-matching + full orchestration test suite — real data, no mocks
+python3 test_game_lookup.py          # game_pk resolution test suite — real data, no mocks
 cd live_scoring
 python3 test_score_candidate.py      # live single-candidate scoring test suite
 cd ../live_data

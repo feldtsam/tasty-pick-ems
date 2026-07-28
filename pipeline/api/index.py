@@ -28,6 +28,7 @@ import requests
 from flatten_hr_props import flatten_any, flatten_hr_props, flatten_hr_props_batch
 from lovable_forward import forward_to_lovable
 from build_game_candidates import build_candidates_for_game
+from game_lookup import resolve_game_pk
 from scored_picks import build_scored_picks_for_game
 
 app = Flask(__name__)
@@ -191,32 +192,19 @@ def live_data_health_check():
     })
 
 
-@app.route("/api/score-game-props/game/<int:game_pk>", methods=["POST"])
-def score_game_props_endpoint(game_pk):
+def _score_and_forward(game_pk, data, raw_body, log_label):
     """
-    The full orchestration: raw odds event data (POST body — the EXACT
-    same shape /api/flatten-and-forward already accepts: a single event
-    object, a list of events, or {"events": [...]}) + a game_pk (URL path,
-    same as /api/live-data/game/<game_pk>) in, real scored picks out,
-    forwarded to Lovable's scored_picks webhook. See scored_picks.py for
-    the full pipeline (flatten -> live-data fetch -> name-match -> score).
-
-    NOT wired into any Make.com scenario yet, and LOVABLE_SCORED_PICKS_WEBHOOK_URL
-    isn't a real endpoint yet either (see README for the scored_picks
-    table schema handed off for the Lovable side to build) — this is
-    deployed and independently callable/testable, but forwarding will
-    502 with a clear error until that URL exists and the env var is set.
+    Shared by both score-game-props routes below: run the orchestrator,
+    forward any resulting scored picks to Lovable, log, and build the
+    JSON response + status code. The only difference between the two
+    routes is how they arrive at `game_pk` — one gets it directly, the
+    other resolves it first — everything downstream of that is identical,
+    so it lives in one place rather than two.
     """
-    raw_body = request.get_data()
-    data = request.get_json(force=True, silent=True)
-
     try:
         result = build_scored_picks_for_game(game_pk, data)
-    except ValueError as e:
-        print(f"[score-game-props] game_pk={game_pk} not_found={e}", flush=True)
-        return jsonify({"error": str(e)}), 404
     except requests.exceptions.RequestException as e:
-        print(f"[score-game-props] game_pk={game_pk} network_error={e}", flush=True)
+        print(f"[{log_label}] game_pk={game_pk} network_error={e}", flush=True)
         return jsonify({"error": "Network error reaching an upstream API.", "detail": str(e)}), 502
 
     if result["matchup"] is None:
@@ -224,7 +212,7 @@ def score_game_props_endpoint(game_pk):
         # payload itself wasn't a recognized shape — matches
         # /api/flatten-and-forward's 400 for the same class of bad input,
         # rather than a misleading 200.
-        print(f"[score-game-props] game_pk={game_pk} bad_odds_shape={result['errors']}", flush=True)
+        print(f"[{log_label}] game_pk={game_pk} bad_odds_shape={result['errors']}", flush=True)
         return jsonify({"error": result["errors"][0]["error"]}), 400
 
     scored_picks = result["scored_picks"]
@@ -238,7 +226,7 @@ def score_game_props_endpoint(game_pk):
             forward_result = forward_to_lovable(scored_picks, secret, url)
 
     print(
-        f"[score-game-props] game_pk={game_pk} "
+        f"[{log_label}] game_pk={game_pk} "
         f"content_type={request.content_type!r} raw_body_len={len(raw_body)} "
         f"matchup={result['matchup']} "
         f"odds_entries={result['match_summary']['odds_entries_total']} "
@@ -262,11 +250,96 @@ def score_game_props_endpoint(game_pk):
     }), (502 if forward_result["success"] is False else 200)
 
 
+@app.route("/api/score-game-props/game/<int:game_pk>", methods=["POST"])
+def score_game_props_endpoint(game_pk):
+    """
+    The full orchestration: raw odds event data (POST body — the EXACT
+    same shape /api/flatten-and-forward already accepts: a single event
+    object, a list of events, or {"events": [...]}) + a game_pk (URL path,
+    same as /api/live-data/game/<game_pk>) in, real scored picks out,
+    forwarded to Lovable's scored_picks webhook. See scored_picks.py for
+    the full pipeline (flatten -> live-data fetch -> name-match -> score).
+
+    Use this route when the caller already knows MLB's game_pk. Make.com's
+    real odds-fetch loop does NOT — see /api/score-game-props/by-event
+    below for the route built for that actual situation.
+    """
+    raw_body = request.get_data()
+    data = request.get_json(force=True, silent=True)
+
+    try:
+        return _score_and_forward(game_pk, data, raw_body, "score-game-props")
+    except ValueError as e:
+        print(f"[score-game-props] game_pk={game_pk} not_found={e}", flush=True)
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/api/score-game-props/by-event", methods=["POST"])
+def score_game_props_by_event_endpoint():
+    """
+    The route built for Make.com's ACTUAL situation: its odds-fetch loop
+    has The Odds API's own event ID, home_team, away_team, and
+    commence_time per game — never MLB's numeric game_pk. Rather than
+    requiring a separate lookup call before this one, this route resolves
+    game_pk internally from fields that are ALREADY top-level on the raw
+    odds event Make.com already has to send anyway (see game_lookup.py for
+    the full reasoning, including two real scheduling gotchas it had to
+    handle: a real cross-UTC-midnight game and a real doubleheader).
+
+    POST body: a SINGLE raw Odds API event object (must have home_team,
+    away_team, commence_time, and bookmakers) — not a list or
+    {"events": [...]}, since resolution needs exactly one target matchup.
+    Everything after resolution is identical to /game/<game_pk> above.
+    """
+    raw_body = request.get_data()
+    data = request.get_json(force=True, silent=True)
+
+    if not isinstance(data, dict) or not all(k in data for k in ("home_team", "away_team", "commence_time")):
+        return jsonify({
+            "error": "Expected a single Odds API event object with home_team, away_team, commence_time, "
+                     "and bookmakers fields — not a list or {'events': [...]}.",
+        }), 400
+
+    try:
+        resolution = resolve_game_pk(data["home_team"], data["away_team"], data["commence_time"])
+    except ValueError as e:
+        print(f"[score-game-props:by-event] resolution_failed={e}", flush=True)
+        return jsonify({"error": str(e)}), 404
+    except requests.exceptions.RequestException as e:
+        print(f"[score-game-props:by-event] network_error={e}", flush=True)
+        return jsonify({"error": "Network error reaching the MLB Stats API.", "detail": str(e)}), 502
+
+    game_pk = resolution["game_pk"]
+    print(
+        f"[score-game-props:by-event] resolved {data['away_team']!r} @ {data['home_team']!r} "
+        f"near {data['commence_time']} -> game_pk={game_pk} "
+        f"disambiguated_by_time={resolution['disambiguated_by_time']} candidates={resolution['candidates']}",
+        flush=True,
+    )
+
+    try:
+        response, status = _score_and_forward(game_pk, data, raw_body, "score-game-props:by-event")
+    except ValueError as e:
+        # A resolved game_pk turning out invalid against feed/live would be
+        # a genuine internal inconsistency (resolution and scoring reading
+        # different MLB data), not a caller error — still surfaced as 404
+        # rather than a raw 500, but logged distinctly for that reason.
+        print(f"[score-game-props:by-event] game_pk={game_pk} unexpectedly not_found={e}", flush=True)
+        return jsonify({"error": str(e)}), 404
+
+    response_data = response.get_json()
+    response_data["resolved_game_pk"] = game_pk
+    response_data["resolved_via"] = "team_name_and_commence_time"
+    response_data["disambiguated_by_time"] = resolution["disambiguated_by_time"]
+    return jsonify(response_data), status
+
+
 @app.route("/api/score-game-props", methods=["GET"])
 def score_game_props_health_check():
     return jsonify({
         "status": "ok",
-        "usage": "POST /api/score-game-props/game/<game_pk> with a raw Odds API event "
-                 "(same shape as /api/flatten-and-forward) to get real scored picks for that game.",
+        "usage": "POST /api/score-game-props/game/<game_pk>, or POST /api/score-game-props/by-event "
+                 "with a raw Odds API event (no game_pk needed — resolved internally), to get real "
+                 "scored picks for that game.",
         "deployed_via": "github-auto-deploy",
     })
