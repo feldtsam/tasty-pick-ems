@@ -894,6 +894,108 @@ mirroring the same "Make.com already has what it needs, don't invent a new
 read-permission problem" approach used for `by-event` resolution. Not
 built yet, deliberately, per the same "validate standalone first" sequencing.
 
+## Result grading (`api/live_data/grading.py`) — NOT wired to anything yet
+
+Grades a saved HR-prop pick against the real, final outcome of its game —
+did the player actually hit a home run? Pure, standalone logic — no
+endpoint, no storage, no Make.com connection yet, same sequencing as
+everything else here.
+
+**Reuses the exact same MLB Stats API `feed/live` call `game_data.py`
+already makes for pre-game lineups/weather** — just read after the game
+concludes instead of before it starts. No new data source.
+
+### Real findings that changed the design from the original spec
+
+1. **The day-level `/schedule` endpoint can go stale for a rescheduled
+   game — confirmed, not assumed.** A real game (Atlanta @ NY Mets,
+   2026-07-28, `game_pk` 823598) showed `detailedState: "Postponed"` via
+   `/schedule`, while `feed/live` for the *exact same* `game_pk`, checked
+   moments later, showed `"In Progress"` — the game had been postponed
+   from its original date and rescheduled under the same `game_pk`, and
+   was actively being played. Grading off a cached schedule snapshot could
+   have permanently voided a pick whose game was genuinely still going to
+   produce a result. Fixed: `grading.py` always re-fetches `feed/live`
+   fresh at grading time, never trusts an earlier schedule-level status.
+   Confirmed correct against a second real case: Cleveland @ Cincinnati
+   (`game_pk` 824490), also postponed the same day — `feed/live` now
+   correctly shows `"Final"` with a complete real box score once its
+   doubleheader makeup actually finished.
+2. **"Postponed" almost never means "cancelled forever," so the original
+   3-state design (won/lost/void) was wrong.** The overwhelming majority
+   of real postponements get made up later — voiding immediately on
+   "Postponed" would misgrade the common case, not the exception.
+   `grade_pick()` returns a **4th status, `"pending"`**, covering
+   not-yet-started, in-progress, AND postponed-awaiting-makeup games alike
+   — "check again later," never a wrong final verdict. `"void"` is
+   reserved for a game `feed/live` itself currently reports as terminally
+   Postponed/Cancelled/Suspended (`abstractGameState == "Final"` but the
+   game never actually completed real play). This is a deliberate
+   refinement of the original spec, flagged rather than silently
+   substituted — worth confirming before this gets wired into anything
+   that acts on the result.
+3. **A player can be on the active roster and get zero plate
+   appearances — confirmed real, not hypothetical.** Two real players
+   (Hao-Yu Lee, Jeremiah Jackson, both 2026-07-28) were on the game-day
+   roster but never batted. Graded as `"void"`, not `"lost"` — matches
+   standard prop-betting convention that a player who never played didn't
+   get a fair chance to resolve the prop. A player scratched entirely off
+   the day-of roster (not just benched) would likely be absent from the
+   box score altogether rather than present with 0 PA — handled by the
+   same code path, though a fully real example of that specific case
+   wasn't found today.
+4. **Extra innings and mid-game substitutions needed no special
+   handling** — confirmed against real data, not just reasoned about. The
+   box score is a running total for whatever the player actually did in
+   the whole game regardless of length or when they entered/exited
+   (confirmed: a real partial-game substitute with only 2 plate
+   appearances graded correctly as a real `"lost"`, not mishandled as
+   incomplete data).
+
+### Idempotency
+
+`grade_pick(mlbam_id, game_pk)` is pure and deterministic — no timestamp
+in its own output, so grading the same real, truly-final game twice (or a
+hundred times) returns byte-identical results. Verified directly in
+`test_grading.py`: three repeated real calls compared for exact equality
+— the same discipline as the duplicate-submission test that caught a real
+upsert bug in `scored_picks` earlier in this project. A future storage
+layer stamps its own `graded_at` at write time and should upsert on
+`(mlbam_id, game_pk)`, mirroring the same pattern already used for
+`scored_picks` and `shelf_assignments`.
+
+### Tested against real data — `test_grading.py`, 13/13 checks
+
+Real wins (2-HR and 1-HR games), real losses (including a real
+partial-game substitute), two real "benched all game" void cases, and a
+real live confirmation of the pending-vs-void distinction — one game
+across two of these real cases was itself a real same-day postponement
+that later completed, directly validating finding #1 and #2 together, not
+just in isolation. One check is explicitly synthetic and labeled as such:
+a genuinely cancelled-forever game wasn't found in real data today (every
+real postponement encountered either resolved to Final-played or was
+still pending), so that specific branch is verified with a hand-built
+status dict rather than a real example.
+
+### Recommended connection (not built — design only, per this phase's scope)
+
+Same architectural boundary as everywhere else: the pipeline never reads
+Lovable's tables directly. Make.com (which *can* query Lovable's
+`bookmarks`/saved-picks table) would supply a batch of `{mlbam_id,
+game_pk, pick_id}` needing grading to a new endpoint (e.g. `POST
+/api/grade-picks`); the pipeline does the real-time MLB lookup and returns
+verdicts; Make.com (or an Edge Function) writes results back to Lovable —
+mirroring the exact pattern already used for `score-game-props`.
+
+**Cadence recommendation**: not a single fixed daily time. Games finish at
+very different times through the evening (day games mid-afternoon, night
+games as late as 1am local) — a recurring check every 30-60 minutes during
+the real game-finishing window fits better than one daily pass, and
+mirrors the trigger-based-not-clock-based philosophy the product blueprint
+already applies to lineup-confirmation notifications. A pick whose game
+grades `"pending"` should simply be left alone until the next scheduled
+check — no special retry logic needed beyond "ask again next cycle."
+
 ## Deployment
 
 Auto-deploys on every push to `main` via Vercel's GitHub integration
@@ -926,6 +1028,7 @@ python3 test_score_candidate.py      # live single-candidate scoring test suite
 cd ../live_data
 python3 test_live_data.py            # live-data test suite — hits real APIs, no mocks
 python3 test_recent_form.py          # recent-form test suite — real player game logs, no mocks
+python3 test_grading.py              # result-grading test suite — real completed games, no mocks
 cd ..
 FLASK_APP=index.py python3 -m flask run --port 5099   # run locally
 ```
