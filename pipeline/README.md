@@ -475,7 +475,9 @@ distinct from the game's own time).
 The endpoint's own response to the CALLER (Make.com) is separate from what
 gets forwarded to Lovable — it's a summary: `scored_count`,
 `match_summary` (`odds_entries_total`, `matched`, `unmatched_odds`,
-`unmatched_odds_count`, `unmatched_candidates_count`), `errors` (per-player
+`unmatched_odds_count`, `unmatched_candidates_count`,
+`excluded_below_odds_filter`, `excluded_below_odds_filter_count` — matched
+by name but below the hard +300 gate, never scored), `errors` (per-player
 scoring failures — one bad candidate never sinks the whole batch),
 `forwarded` (bool), `lovable_status_code`, `forward_error`. Returns `400`
 for an unrecognized odds payload shape (matching `/api/flatten-and-forward`'s
@@ -550,10 +552,42 @@ sort on, plus one `jsonb` column for full drill-down detail:
 | `final_score` | numeric | weighted final |
 | `star_rating` | integer | 1-5 |
 | `score_tier` | text | Elite/Strong/Moderate/Weak/Poor |
-| `passes_odds_filter` | boolean | odds ≥ +300 |
+| `passes_odds_filter` | boolean | odds ≥ +300 — see note below, this is now also enforced as a hard pre-scoring gate, not just this informational flag |
 | `pillar_detail` | jsonb | full nested pillar components + notes |
+| `temp_f` | numeric | raw game temperature — see note below |
+| `wind_speed_mph` | numeric | raw wind speed |
+| `wind_description` | text | raw wind direction text, e.g. `"Out To RF"` |
+| `roof_status` | text | `"outdoor"` / `"closed"` / `"dome"` |
 | `scored_at` | timestamptz | when this pick was computed |
 | `created_at` | timestamptz | standard insert timestamp, default `now()` |
+
+**Two real fixes, both confirmed against live data (not just unit tests):**
+
+1. **The +300 odds filter is now a genuine hard pre-scoring gate**, matching
+   the product spec (Tasty Pick Ems Master Product Blueprint §6:
+   "anything under +300 is discarded before the AI or the rules engine
+   ever touches it"). An earlier version scored every matched candidate
+   regardless of odds and only recorded `passes_odds_filter` as an
+   informational flag — real sub-+300 candidates (confirmed: Willson
+   Contreras at +245) were reaching `scored_picks` anyway.
+   `scored_picks.py`'s `build_scored_picks_for_game()` now filters matched
+   candidates against `score_candidate.MIN_ODDS_FOR_FILTER` *before*
+   `score_candidate()` is ever called — excluded candidates are reported
+   by name in `match_summary.excluded_below_odds_filter`, never silently
+   dropped. Re-confirmed against real live odds after the fix (odds move
+   over time, so this wasn't the same players as the original bug, but
+   the same mechanism): a real BAL @ DET pull excluded Riley Greene
+   (+290) and Pete Alonso (+270) before scoring, while every one of the
+   16 remaining real candidates scored had odds ≥ +300.
+2. **Raw weather is now persisted**, not just the normalized 0-100
+   `pillar_detail.environment` sub-scores. `build_game_candidates.py`
+   already computes real `temp_f`/`wind_speed_mph`/`wind_description`/
+   `roof_status` per candidate from the game's actual live weather —
+   `score_candidate()` consumes them to compute `environment_score` but
+   never returns them, so they were being discarded before this fix
+   rather than stored. Needed for any caller (e.g. a future content
+   writer) that wants to reference real conditions ("wind blowing out at
+   7 mph") rather than only a percentile score.
 
 ## Game ID resolution (`api/game_lookup.py`) — the odds pipeline / MLB pipeline ID mismatch
 

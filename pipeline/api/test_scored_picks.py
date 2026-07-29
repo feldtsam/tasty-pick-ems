@@ -102,12 +102,24 @@ if __name__ == "__main__":
         print(f"  match_summary: {({k: v for k, v in real_result['match_summary'].items() if k != 'unmatched_odds'})}")
 
         results.append(check("real run: lineup_status is confirmed", real_result["matchup"]["lineup_status"] == "confirmed"))
-        results.append(check("real run: all 18 real odds entries matched", real_result["match_summary"]["matched"] == 18))
+        results.append(check("real run: all 18 real odds entries matched by name", real_result["match_summary"]["matched"] == 18))
         results.append(check("real run: zero unmatched odds entries", real_result["match_summary"]["unmatched_odds_count"] == 0))
         results.append(check("real run: zero per-player scoring errors", len(real_result["errors"]) == 0))
-        results.append(check("real run: 18 scored picks produced", len(real_result["scored_picks"]) == 18))
 
         picks = real_result["scored_picks"]
+        excluded = real_result["match_summary"]["excluded_below_odds_filter"]
+        print(f"  excluded below +300 (real, odds move over time): {excluded}")
+
+        # --- The +300 hard gate fix: every real matched candidate is
+        # accounted for as either scored (odds >= 300) or excluded
+        # (odds < 300) — never silently missing, never scored anyway. ---
+        results.append(check(
+            "real run: matched count == scored + excluded-below-300 (nothing silently dropped)",
+            real_result["match_summary"]["matched"] == len(picks) + real_result["match_summary"]["excluded_below_odds_filter_count"],
+        ))
+        results.append(check("real run: every SCORED pick's odds is actually >= +300", all(p["odds"] >= 300 for p in picks)))
+        results.append(check("real run: every EXCLUDED candidate's odds is actually < +300", all(e["odds"] < 300 for e in excluded)))
+
         results.append(check("real run: every scored pick has a final_score in 0-100",
                               all(0 <= p["final_score"] <= 100 for p in picks)))
         results.append(check("real run: final_score distribution isn't degenerate",
@@ -118,6 +130,14 @@ if __name__ == "__main__":
                               any(p["player_name"] == "Javier Báez" and p["match_type"] == "exact" for p in picks)))
         results.append(check("real run: every scored pick has a non-null pillar_detail and notes list",
                               all(p["pillar_detail"] and isinstance(p["notes"], list) for p in picks)))
+
+        # --- Raw weather persistence fix: real temp/wind fields present,
+        # not just the normalized environment_score. ---
+        results.append(check(
+            "real run: every scored pick carries real raw weather fields (temp_f, wind_speed_mph, wind_description, roof_status)",
+            all(p["temp_f"] is not None and p["wind_speed_mph"] is not None
+                and p["wind_description"] is not None and p["roof_status"] is not None for p in picks),
+        ))
 
         print(f"\n  top 3 by final_score:")
         for p in sorted(picks, key=lambda x: -x["final_score"])[:3]:

@@ -24,6 +24,23 @@ different bytes. See normalize_name() and match_players() below for how
 this is handled — always exact-match first, a bounded fuzzy fallback
 second, and every odds entry that still can't be matched is reported, not
 silently dropped.
+
+ODDS FILTER — a genuine HARD PRE-SCORING GATE, not just an informational
+flag. The product spec (Tasty Pick Ems Master Product Blueprint §6) is
+explicit: "Every candidate bet must clear +300 or higher before it enters
+scoring at all... anything under +300 is discarded before the AI or the
+rules engine ever touches it." An earlier version of this module didn't
+actually do that — it matched and scored every candidate regardless of
+odds, and only recorded a `passes_odds_filter` boolean on the output
+(score_candidate.py's own field, still present and still useful as a
+self-descriptive flag on anything scored directly). That let real
+sub-+300 candidates (confirmed: Willson Contreras at +245) reach
+`scored_picks`. Fixed here: any matched candidate whose best odds fall
+below `MIN_ODDS_FOR_FILTER` (imported from score_candidate.py, so there's
+one source of truth for the threshold, not two) is filtered out BEFORE
+score_candidate() is ever called on it — never scored, never stored, and
+reported by name in `match_summary.excluded_below_odds_filter` rather than
+silently vanishing.
 """
 import difflib
 import re
@@ -38,7 +55,7 @@ sys.path.insert(0, str(_API_DIR / "live_scoring"))
 
 from build_game_candidates import build_candidates_for_game, clean_for_score_candidate  # noqa: E402
 from flatten_hr_props import flatten_any  # noqa: E402
-from score_candidate import score_candidate  # noqa: E402
+from score_candidate import MIN_ODDS_FOR_FILTER, score_candidate  # noqa: E402
 
 # Suffixes stripped from both sides before comparing. Real bookmaker feeds
 # are inconsistent about including these — confirmed against real data:
@@ -223,6 +240,18 @@ def _build_scored_pick(match: dict, game: dict, score_result: dict) -> dict:
         "score_tier": score_result["score_tier"],
         "passes_odds_filter": score_result["passes_odds_filter"],
         "pillar_detail": pillars,
+        # Raw environmental inputs, not just the normalized 0-100 environment
+        # sub-scores already in pillar_detail. These already exist on the
+        # live_data candidate dict (build_game_candidates.py sets them from
+        # the game's real feed/live weather) but were being discarded here
+        # rather than persisted — score_candidate() consumes them to compute
+        # environment_score and never returns them. A caller writing
+        # specific, real weather copy (e.g. "wind blowing out at 7 mph")
+        # needs the actual units, not just the percentile.
+        "temp_f": c.get("temp_f"),
+        "wind_speed_mph": c.get("wind_speed_mph"),
+        "wind_description": c.get("wind_description"),
+        "roof_status": c.get("roof_status"),
         "notes": score_result["notes"],
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -241,11 +270,14 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
       {
         "game_pk": int,
         "matchup": {"away_team": str, "home_team": str, "lineup_status": str},
-        "scored_picks": [ ...one dict per matched, successfully-scored player... ],
+        "scored_picks": [ ...one dict per matched, odds-eligible, successfully-scored player... ],
         "match_summary": {
-          "odds_entries_total": int, "matched": int,
+          "odds_entries_total": int,
+          "matched": int,                          # matched by NAME — before the odds gate
           "unmatched_odds": [...], "unmatched_odds_count": int,
           "unmatched_candidates_count": int,
+          "excluded_below_odds_filter": [...],      # matched by name, but odds < MIN_ODDS_FOR_FILTER — never scored
+          "excluded_below_odds_filter_count": int,
         },
         "errors": [ {"player_name": str, "error": str}, ... ],  # per-player scoring failures — never silently swallowed
       }
@@ -257,7 +289,8 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
             "matchup": None,
             "scored_picks": [],
             "match_summary": {"odds_entries_total": 0, "matched": 0, "unmatched_odds": [],
-                               "unmatched_odds_count": 0, "unmatched_candidates_count": 0},
+                               "unmatched_odds_count": 0, "unmatched_candidates_count": 0,
+                               "excluded_below_odds_filter": [], "excluded_below_odds_filter_count": 0},
             "errors": [{"player_name": None, "error": "raw_odds_event was not a recognized shape "
                                                         "(expected a single event object, a list of events, or {'events': [...]})"}],
         }
@@ -279,15 +312,22 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
                                    for r in odds_rows],
                 "unmatched_odds_count": len(odds_rows),
                 "unmatched_candidates_count": 0,
+                "excluded_below_odds_filter": [], "excluded_below_odds_filter_count": 0,
             },
             "errors": [],
         }
 
     match_result = match_players(odds_rows, game["candidates"])
 
+    # Hard pre-scoring odds gate (see module docstring) — anything below
+    # +300 never reaches score_candidate() at all, matching the product
+    # spec's "discarded before... scoring... ever touches it".
+    below_odds_filter = [m for m in match_result["matched"] if m["best_odds"] < MIN_ODDS_FOR_FILTER]
+    eligible_matches = [m for m in match_result["matched"] if m["best_odds"] >= MIN_ODDS_FOR_FILTER]
+
     scored_picks = []
     errors = []
-    for match in match_result["matched"]:
+    for match in eligible_matches:
         clean = clean_for_score_candidate(match["candidate"])
         clean["odds"] = match["best_odds"]
         try:
@@ -307,6 +347,10 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
             "unmatched_odds": match_result["unmatched_odds"],
             "unmatched_odds_count": len(match_result["unmatched_odds"]),
             "unmatched_candidates_count": len(match_result["unmatched_candidates"]),
+            "excluded_below_odds_filter": [
+                {"player_name": m["candidate"]["player_name"], "odds": m["best_odds"]} for m in below_odds_filter
+            ],
+            "excluded_below_odds_filter_count": len(below_odds_filter),
         },
         "errors": errors,
     }
