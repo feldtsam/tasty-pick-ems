@@ -896,10 +896,14 @@ built yet, deliberately, per the same "validate standalone first" sequencing.
 
 ## Result grading (`api/live_data/grading.py`) — NOT wired to anything yet
 
-Grades a saved HR-prop pick against the real, final outcome of its game —
-did the player actually hit a home run? Pure, standalone logic — no
-endpoint, no storage, no Make.com connection yet, same sequencing as
-everything else here.
+The CORE, shared fact-checking primitive: did a given player actually hit
+a home run in a given game? `grade_pick(mlbam_id, game_pk)` answers that
+one question, real-time, from real MLB data — nothing else. Two separate
+systems consume it (see below), but this function itself has no concept
+of "official pick" or "user pick" — that separation lives entirely in the
+orchestration layer built on top, never in this shared primitive. Pure,
+standalone logic — no endpoint, no storage, no Make.com connection yet,
+same sequencing as everything else here.
 
 **Reuses the exact same MLB Stats API `feed/live` call `game_data.py`
 already makes for pre-game lineups/weather** — just read after the game
@@ -977,7 +981,7 @@ real postponement encountered either resolved to Final-played or was
 still pending), so that specific branch is verified with a hand-built
 status dict rather than a real example.
 
-### Recommended connection (not built — design only, per this phase's scope)
+### Recommended connection for USER-SAVED picks (not built — design only, per this phase's scope)
 
 Same architectural boundary as everywhere else: the pipeline never reads
 Lovable's tables directly. Make.com (which *can* query Lovable's
@@ -985,7 +989,10 @@ Lovable's tables directly. Make.com (which *can* query Lovable's
 game_pk, pick_id}` needing grading to a new endpoint (e.g. `POST
 /api/grade-picks`); the pipeline does the real-time MLB lookup and returns
 verdicts; Make.com (or an Edge Function) writes results back to Lovable —
-mirroring the exact pattern already used for `score-game-props`.
+mirroring the exact pattern already used for `score-game-props`. **This
+is the user-saved-picks path specifically** — see the next section for the
+separate official-picks path, which shares `grade_pick()` but nothing
+else (no table, no query, no endpoint in common).
 
 **Cadence recommendation**: not a single fixed daily time. Games finish at
 very different times through the evening (day games mid-afternoon, night
@@ -995,6 +1002,111 @@ mirrors the trigger-based-not-clock-based philosophy the product blueprint
 already applies to lineup-confirmation notifications. A pick whose game
 grades `"pending"` should simply be left alone until the next scheduled
 check — no special retry logic needed beyond "ask again next cycle."
+
+## Official-pick grading (`api/official_pick_grading.py`) — feeds the Performance Tracker, NOT wired to anything yet
+
+Grades every OFFICIAL Tasty Pick Ems pick — everything in `scored_picks`/
+`shelf_assignments` — not just a user's individually saved picks. A
+**deliberately separate system** from the user-saved-picks grading above,
+per an explicit boundary: **official picks and user-saved picks must
+never share a table or a query.** That separation is kept at the code
+level here, not only the schema level — this module never imports
+anything from, or writes anything resembling, a user-picks concept. It's
+a genuinely different consumer: potentially 30-40+ picks a day across all
+six shelves (confirmed real: 48 shelf appearances across a real 14-game
+slate this session), versus a handful of individual user selections.
+
+**Reuses, does not reimplement, the core fact-checking logic.**
+`grade_official_picks()` calls the exact same `grade_pick()` from
+`api/live_data/grading.py`, unmodified — this module is pure
+orchestration on top of it, mirroring how `scored_picks.py` orchestrates
+`live_data`/`live_scoring` primitives without reimplementing either.
+
+### The one genuinely new problem this solves: multi-shelf candidates
+
+Confirmed and tested repeatedly this session: a candidate can legitimately
+appear on multiple shelves. The Performance Tracker needs a result **per
+shelf appearance** (so "Hot Hitters: 12-8" tracks separately from "Going
+Nuclear: 3-15" even for the same real player/game) — but the underlying
+real-world fact (did this player actually hit a home run) cannot differ
+by shelf. `grade_official_picks()` groups the input by `(mlbam_id,
+game_pk)`, performs the real MLB lookup exactly **once** per unique pair,
+and fans that single result out to every shelf appearance sharing it —
+never re-querying MLB's API redundantly, and guaranteeing every shelf
+appearance of the same real pick reports an identical verdict, never a
+contradiction.
+
+Confirmed against real data (`test_official_pick_grading.py`, reusing the
+same real 239-candidate, 14-game pool `test_shelf_curation.py` uses): a
+real day's 48 official shelf picks resolved to only 42 unique
+`(mlbam_id, game_pk)` real MLB lookups — 6 real candidates each appeared
+on 2 shelves (e.g. CJ Abrams: `+300-499` and `Hot Hitters`; Riley Greene:
+`Going Nuclear` and `Cold Pitchers to Attack`), and every one of those 6
+reported the exact same real verdict across both of its shelf rows.
+Real status breakdown that day: 42 lost, 6 won — including real winners
+Yordan Alvarez, Cal Raleigh, and Julio Rodríguez — zero errors, zero
+pending/void (all 14 real games were genuinely Final).
+
+### Idempotency
+
+Inherits `grade_pick()`'s determinism directly — the orchestration layer
+adds no randomness or accumulating state of its own. Verified explicitly:
+grading the identical real 48-pick batch twice produces byte-identical
+`results`, `errors`, and `unique_games_graded` counts.
+
+### `official_pick_results` table schema (draft — not applied)
+
+A new, standalone table — never `bookmarks`, never merged into
+`scored_picks` or `shelf_assignments` directly. Grain matches
+`shelf_assignments` exactly (`mlbam_id`, `game_pk`, `shelf`) since that's
+the real unit the Performance Tracker needs to track — a candidate's two
+shelf appearances get two independent result rows, both computed from one
+real MLB lookup (see above).
+
+```sql
+CREATE TABLE public.official_pick_results (
+  id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  mlbam_id integer NOT NULL,
+  game_pk text NOT NULL,
+  shelf text NOT NULL,
+  status text NOT NULL,               -- won | lost | void | pending
+  home_runs integer,
+  plate_appearances integer,
+  reason text,
+  game_detailed_state text,
+  graded_at timestamp with time zone NOT NULL DEFAULT now(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT official_pick_results_shelf_assignment_fk
+    FOREIGN KEY (mlbam_id, game_pk, shelf)
+    REFERENCES public.shelf_assignments (mlbam_id, game_pk, shelf)
+    ON DELETE CASCADE
+);
+
+GRANT ALL ON public.official_pick_results TO service_role;
+ALTER TABLE public.official_pick_results ENABLE ROW LEVEL SECURITY;
+
+CREATE UNIQUE INDEX official_pick_results_uniq
+  ON public.official_pick_results (mlbam_id, game_pk, shelf);
+
+CREATE INDEX official_pick_results_status_idx ON public.official_pick_results (status);
+```
+
+The unique key matches the natural upsert target for idempotent writes,
+same pattern as `scored_picks`/`shelf_assignments`. Not applied — for your
+review first, same workflow as the `scored_picks` schema fix.
+
+### Recommended connection (not built — design only, per this phase's scope)
+
+Same boundary as the rest of this pipeline: Make.com (or an Edge Function
+with real Supabase read access) supplies the day's `shelf_assignments`
+rows to a future endpoint (e.g. `POST /api/grade-official-picks`); the
+pipeline grades them and returns results; the caller forwards them to the
+new `official_pick_results` webhook via the same signed pattern already
+used for `scored_picks`/`shelf_assignments`. Cadence: same 30-60-minute
+recurring-check recommendation as user-picks grading above — both
+consumers are checking the same real, shared fact (has this game finished
+yet?), just applied to two different, never-overlapping datasets.
 
 ## Deployment
 
@@ -1023,6 +1135,7 @@ python3 test_scored_picks.py         # name-matching + full orchestration test s
 python3 test_game_lookup.py          # game_pk resolution test suite — real data, no mocks
 python3 ../scripts/build_shelf_test_pool.py  # regenerates the real pool test_shelf_curation.py reads (spends real Odds API requests — not automatic)
 python3 test_shelf_curation.py       # shelf curation test suite — real pool, no mocks
+python3 test_official_pick_grading.py  # official-picks batch grading test suite — reuses the same real pool, no mocks
 cd live_scoring
 python3 test_score_candidate.py      # live single-candidate scoring test suite
 cd ../live_data
