@@ -649,6 +649,217 @@ data, not just crafted edge cases), the real cross-midnight game, the real
 doubleheader (both directions), and a confirmed-nonexistent team pair
 correctly raising an error instead of guessing.
 
+## Shelf curation (`api/shelf_curation.py`) — NOT deployed or wired to Make.com yet
+
+Decides which scored candidates (the same flat dicts `scored_picks.py`
+already produces) populate each of the app's six shelves, plus the Tasty
+Six. Pure logic, no new endpoint deployed yet — validated standalone
+against real data first, same sequencing as everything else here.
+
+### The real correction that shaped this: recent form needed a new data source
+
+"Hot Hitters" and "Cold Pitchers to Attack" both imply RECENT form (a hot
+streak / a recent slump) — but the core model's Skill and Matchup pillars
+are built entirely from season-long aggregates. Using season-long pillar
+dominance to populate these two shelves would be a real mismatch between
+what the shelf name promises and what it actually measures. "Weather
+Factors" didn't have this problem — weather is inherently about *today's*
+specific game, not a historical trend — so it's still driven by the
+Environment pillar being the dominant (highest) of the four pillar scores.
+
+### `api/live_data/recent_form.py` — the new recent-form data source
+
+**Source: the MLB Stats API's `gameLog` stats** (`/people/{id}/stats?stats=gameLog&...`)
+— the same free API already used everywhere else in `live_data/`, NOT
+pybaseball/Statcast. Deliberate: introducing pybaseball (pandas + real
+Statcast pulls) would undo the exact latency work `build_game_candidates.py`
+already went through (whole-slate → per-game, to stay under Vercel
+Hobby's 10s timeout). A genuine recent-*window* Statcast pull (hard-hit%/
+barrel% allowed over a pitcher's last 5 starts specifically, as opposed to
+the season-long Baseball Savant leaderboards `savant_stats.py` already
+uses) means pulling raw pitch-by-pitch data per player — multi-second,
+per-player, not something that fits a live request budget multiplied
+across every candidate on a shelf.
+
+**Known, deliberate gap as a result**: pitcher recent-form here is ERA/
+HR-per-9/K-per-9/BB-per-9 over their last N real starts — fast, official
+box-score counting stats — NOT recent hard-hit%/barrel% allowed, which the
+original spec listed as an "and/or" alternative to ERA/runs-allowed. Runs
+allowed is the standard way to describe a pitcher's recent struggles, and
+it's what's achievable here without a much heavier pull — flagged
+explicitly rather than faking a "recent barrel%" from data that isn't
+really recent-windowed.
+
+**Window size — deliberately different units for hitters vs. pitchers**,
+not "10-15 games" for both:
+- **Hitters: last 15 games played.** A meaningful hot-streak window
+  (~2.5-3 weeks) while staying genuinely recent.
+- **Pitchers: last 5 starts**, not "10-15 games". Confirmed against real
+  data that starters appear roughly every 5th calendar day — "10-15
+  games" would span 2+ months for a starter, defeating the point of a
+  RECENT signal. 5 starts (~3-4 weeks on a normal rotation turn) is the
+  much closer real-world analog to "15 games" for a hitter.
+
+**A real bug caught by hand-checking real output, not assumed away**: the
+first version took a pitcher's last 5 game-log *appearances* regardless of
+role. A real 2026 pitcher (Caleb Ferguson) is used almost entirely as a
+reliever/opener — `gamesStarted: 0` for nearly every real appearance,
+mostly 0.1-1.2 IP relief stints — and his "5 most recent appearances"
+produced a wildly distorted "5-start" ERA (9.64 over just 4.7 total
+innings) that doesn't represent a struggling starter at all. Fixed by
+filtering to real starts (`gamesStarted == 1`) before windowing — a true
+swingman/opener then correctly has too few real starts to clear the
+eligibility threshold below, instead of ranking on relief-appearance
+noise. Regression-tested in `test_recent_form.py`.
+
+### The six shelves
+
+Three odds-tier shelves, unchanged from the original design — filter by
+odds range, rank by `final_score`:
+
+| Shelf | Range |
+|---|---|
+| `+300-499` | 300 ≤ odds ≤ 499 |
+| `+500-699` | 500 ≤ odds ≤ 699 |
+| `Going Nuclear` | odds ≥ 700 |
+
+Three themed shelves:
+
+- **Hot Hitters** — ranked by the candidate's own `recent_ops` (real
+  recent-window data, see above). Gated on `MIN_HITTER_RECENT_SAMPLE = 8`
+  (of the 15-game window) — a candidate with too thin a recent sample
+  (a rookie a few games into their debut) isn't ranked on noise.
+- **Cold Pitchers to Attack** — still a shelf of BATTER picks (every
+  candidate here is a batter HR prop); ranked by the candidate's
+  **opposing pitcher's** `recent_era`. Gated on
+  `MIN_PITCHER_RECENT_SAMPLE = 3` (of the 5-start window). Multiple
+  batters facing the SAME cold pitcher is expected, not deduplicated —
+  if a real pitcher is having a real historically bad stretch, every
+  batter in that lineup is a legitimately good pick for the same reason.
+- **Weather Factors** — ranked by `environment_score`, restricted to
+  candidates where Environment is the single highest of the four pillar
+  scores (not just "environment score is decent" — genuinely the
+  dominant factor). No new data needed for this one.
+
+### Design questions, answered against real data
+
+**1. Candidates per shelf.** `DEFAULT_SHELF_SIZE = 8`. Proposed from real
+eligible-pool sizes observed on a real 14-game, 239-candidate slate
+(`test_shelf_curation.py`'s fixture):
+
+| Shelf | Real eligible pool (uncapped) |
+|---|---|
+| `+300-499` | 12 |
+| `+500-699` | 38 |
+| `Going Nuclear` | 100 |
+| Hot Hitters | ~all (most active hitters clear 8 games by late July) |
+| Cold Pitchers to Attack | ~all (most opposing pitchers clear 3 starts) |
+| Weather Factors | 25 |
+
+8 fits comfortably under even the smallest real pool (`+300-499`, 12)
+while still curating meaningfully on the larger pools — on a lighter
+slate, `+300-499` may show fewer than 8, which is correct (shows what's
+really there, same "don't fabricate" philosophy as the Tasty Six below),
+not a bug.
+
+**2. Can a candidate appear in multiple shelves?** Yes, confirmed
+deliberate and confirmed nothing breaks. Shelves are computed completely
+independently over the full pool — no cross-shelf dedup. On the real test
+slate, 6 of the pooled candidates appeared in 2+ shelves (e.g., a real
+elite hitter who was both a `+300-499` pick AND a Hot Hitter). Checked for
+the failure mode this could hide — near-identical shelves — and confirmed
+against real data it doesn't happen: the largest real pairwise overlap
+between any two shelves was 2 of 8 entries, not a suspicious majority.
+
+Real edge case this surfaced: on one real test slate, the SAME real player
+(Riley Greene) was independently the #1 pick for both `Going Nuclear` and
+`Cold Pitchers to Attack` — meaning a naive "just take each shelf's #1"
+Tasty Six could show the same player twice. **Decision: the underlying
+shelves stay exactly as designed (a candidate can appear in as many
+shelves as it legitimately qualifies for — that's still correct and
+unchanged), but the Tasty Six specifically enforces six distinct players**
+via a deterministic fallback.
+
+**3. Tasty Six** — `compute_tasty_six()`: processes shelves in a fixed
+order (the three odds tiers, then Hot Hitters, then Cold Pitchers to
+Attack, then Weather Factors — the same order `assign_shelves()` builds
+them in every time, so which shelf "wins" a contested player is
+deterministic, never incidental to run order). For each shelf, walks down
+its own ranked list and picks the first candidate not already claimed by
+an earlier shelf in this pass. If a shelf's entire list is already claimed
+by earlier shelves — a real edge case on a thin slate — falls back to that
+shelf's own #1 as a last resort rather than leaving the slot empty, and
+that shelf name shows up in the returned `repeats` list so it's visible,
+not silent. A shelf with zero eligible candidates at all still contributes
+`None` rather than a fabricated pick (didn't happen on the real test
+slate — all six were populated).
+
+Returns `{"picks": {shelf_name: entry_or_None}, "repeats": [shelf_name, ...]}`.
+
+Verified two ways in `test_shelf_curation.py`: (1) on the real current
+pool, confirming six distinct real players with an empty `repeats` list;
+(2) a deterministic regression check that doesn't depend on today's data
+happening to collide — artificially rigs one shelf's #1 to exactly
+duplicate another shelf's #1, then confirms the later shelf falls through
+to its own #2 instead of accepting the duplicate. This proves the
+mechanism itself works regardless of whether real data collides on any
+given day.
+
+### Tested against real data, hand-verified — `test_shelf_curation.py`, 21/21 checks
+
+Real pool: 239 real scored picks across 14 real confirmed-lineup games
+(built by `scripts/build_shelf_test_pool.py` — real odds + real live-data,
+via the existing tested `game_lookup`/`scored_picks` pipeline, no
+reimplementation). Checks cover: no empty shelves, odds-tier ranges/ranking
+correctness, Hot Hitters/Cold Pitchers sample-size gating and ranking,
+Weather Factors' dominant-pillar restriction, multi-shelf membership,
+no near-identical shelves, and a fully-populated Tasty Six.
+
+Every themed-shelf finding was hand-verified against independently-pulled
+raw MLB Stats API data before being trusted, not just checked for internal
+consistency:
+- **Hot Hitters #1 (CJ Abrams, recent OPS 1.390, 8 HR/15g)**: independently
+  re-pulled his raw game log and confirmed 8 real home runs across 6
+  distinct real games in the window — a genuinely exceptional real hot
+  streak, not a counting artifact.
+- **Cold Pitchers to Attack (Dean Kremer, recent ERA 7.56; Gage Jump,
+  recent ERA 8.31)**: both independently re-pulled and hand-computed from
+  raw last-5-real-starts data — Kremer's is a real, severe, escalating
+  decline (1, 4, 2, 6, 8 earned runs across his last 5 starts, most recent
+  worst); both math checks matched the module's output exactly.
+
+### `shelf_assignments` table schema (for the Lovable side)
+
+Same convention as `scored_picks`/`hr_props_raw`: flat, queryable columns.
+One row per (candidate, shelf) — deliberately a many-to-many bridge table,
+not a column-per-shelf on `scored_picks`, since a candidate can legitimately
+belong to several shelves at once (see above).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid / serial | primary key, auto-generated |
+| `mlbam_id` | integer | references the player in `scored_picks` |
+| `game_pk` | integer | references the game in `scored_picks` |
+| `shelf` | text | one of the six shelf names above |
+| `rank` | integer | 1-based rank within that shelf |
+| `is_tasty_six` | boolean | true for whichever row `compute_tasty_six()` picked for this shelf — usually `rank = 1`, but NOT always: the fallback rule (see below) can make a shelf's Tasty Six pick its `rank = 2` (or later) entry when `rank = 1` was already claimed by an earlier shelf. Explicit, queryable convenience column rather than assuming `rank = 1` client-side |
+| `shelf_score` | numeric | the metric value that produced this rank — `final_score` for odds-tier shelves, `recent_ops` for Hot Hitters, the opposing pitcher's `recent_era` for Cold Pitchers, `environment_score` for Weather Factors |
+| `shelf_score_label` | text | which metric `shelf_score` actually is for this row (`"final_score"` / `"recent_ops"` / `"opp_recent_era"` / `"environment_score"`) — `shelf_score`'s meaning differs per shelf, so this makes it self-describing without hardcoding a shelf-name-to-meaning mapping on the Lovable side |
+| `assigned_at` | timestamptz | when this shelf assignment was computed |
+| `created_at` | timestamptz | standard insert timestamp, default `now()` |
+
+**Not wired up yet.** No endpoint deployed for this — `assign_shelves()`
+and `compute_tasty_six()` are pure functions, tested standalone against a
+real multi-game pool assembled locally (this pipeline has no read access
+back to Lovable's `scored_picks` table, same constraint documented for
+`scored_picks.py` itself). The real open question for wiring this in:
+Make.com would need to accumulate a full day's `scored_picks` across its
+per-game Iterator loop (e.g. an Array Aggregator module) and pass the
+whole array to a future `/api/curate-shelves`-style endpoint in one call —
+mirroring the same "Make.com already has what it needs, don't invent a new
+read-permission problem" approach used for `by-event` resolution. Not
+built yet, deliberately, per the same "validate standalone first" sequencing.
+
 ## Deployment
 
 Auto-deploys on every push to `main` via Vercel's GitHub integration
@@ -674,10 +885,13 @@ python3 test_malformed_input.py      # defensive-parsing test suite
 python3 test_lovable_forward.py      # signing + forwarding test suite
 python3 test_scored_picks.py         # name-matching + full orchestration test suite — real data, no mocks
 python3 test_game_lookup.py          # game_pk resolution test suite — real data, no mocks
+python3 ../scripts/build_shelf_test_pool.py  # regenerates the real pool test_shelf_curation.py reads (spends real Odds API requests — not automatic)
+python3 test_shelf_curation.py       # shelf curation test suite — real pool, no mocks
 cd live_scoring
 python3 test_score_candidate.py      # live single-candidate scoring test suite
 cd ../live_data
 python3 test_live_data.py            # live-data test suite — hits real APIs, no mocks
+python3 test_recent_form.py          # recent-form test suite — real player game logs, no mocks
 cd ..
 FLASK_APP=index.py python3 -m flask run --port 5099   # run locally
 ```
