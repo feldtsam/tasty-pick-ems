@@ -1108,6 +1108,118 @@ recurring-check recommendation as user-picks grading above — both
 consumers are checking the same real, shared fact (has this game finished
 yet?), just applied to two different, never-overlapping datasets.
 
+## Shelf curation orchestrator (`api/curate_shelves.py`) — NOT wired to Make.com yet, depends on two undeployed Lovable routes
+
+`shelf_curation.py`'s logic (see above) needs an entire day's `scored_picks`
+at once — every other piece of this pipeline works one game at a time, but
+ranking "the best Hot Hitter on the slate" is inherently a cross-game
+comparison. The pipeline was deliberately never given `service_role`
+access to read the database directly (same least-privilege boundary as
+everywhere else here), so this needed its own design decision.
+
+**Chosen: a new signed read endpoint on the Lovable side**
+(`POST /api/public/scored-picks-read`), mirroring the existing write
+routes' HMAC pattern exactly, rather than either (a) an RLS read policy
+grantable to the public `anon` key, or (b) having Make.com accumulate the
+day's results in memory across its own execution and never touch the
+database until a final write. (a) was rejected because the `anon` key
+ships in every client bundle — that's "readable by the entire internet,"
+not "readable by this one trusted caller." (b) was rejected because it's
+actually the more fragile option against the real failure mode this needs
+to guard against: `scored_picks` is already durable and survives a
+Make.com scenario failing partway through the day; trusting one long
+in-memory run to hold the whole day's state correctly reintroduces the
+monolithic execution shape this pipeline has deliberately avoided
+elsewhere (per-game scoring, `by-event` resolution).
+
+Two new Lovable-side routes were drafted (staged for review, not yet
+applied — same review-before-apply sequence as every other schema/route
+change in this project):
+
+- `POST /api/public/scored-picks-read` — same HMAC verification as the
+  write routes; body `{"date": "YYYY-MM-DD"}` (optional, defaults to
+  today UTC); queries `scored_picks` over a **widened UTC window** (date
+  00:00 through the next day at noon UTC), not a naive
+  `game_date_utc::date = date` equality check — the same real finding
+  from `game_lookup.py` applies here too: a real evening game's UTC
+  timestamp can fall on the calendar day after its local game date, and a
+  naive equality filter would silently drop those games from "today's"
+  slate. Response includes both `row_count` and `distinct_game_pk_count`
+  specifically so the caller can sanity-check completeness before
+  trusting the data.
+- `POST /api/public/shelf-assignments-write` — mirrors
+  `scored-picks-write.ts` exactly, upserting on the real
+  `(mlbam_id, game_pk, shelf)` unique index. The one meaningful
+  difference from `scored-picks-write.ts`'s dedup key: it must include
+  `shelf`, not just `(mlbam_id, game_pk)` — a candidate legitimately
+  appearing on multiple shelves produces multiple real rows that must NOT
+  collide with each other during in-batch deduplication.
+
+### `curate_shelves_for_date(date, secret, read_url, shelf_size=DEFAULT_SHELF_SIZE)`
+
+The orchestrator, pure aside from the one real network call to the read
+endpoint: fetches the day's `scored_picks`, sanity-checks the slate isn't
+suspiciously incomplete, runs `assign_shelves()` + `compute_tasty_six()`
+unmodified, then flattens the result into `shelf_assignments`-shaped rows
+(one row per real (candidate, shelf) appearance, `is_tasty_six` set on
+exactly the row `compute_tasty_six()` picked for that shelf). Does not
+itself forward the result to Lovable — same separation between pure
+orchestration and network calls used throughout this pipeline.
+
+**Reliability gate:** `sanity_check_slate()` flags the run (does not
+silently curate) whenever the read response reports fewer than
+`MIN_EXPECTED_GAMES` (5) distinct `game_pk`s — a real full MLB day is
+typically 10-15 games, so a suspiciously low count means an upstream
+Make.com scoring run likely failed partway through, and curating shelves
+from a broken partial day would be worse than not curating at all.
+
+### `POST /api/curate-shelves`
+
+Reuses the existing `LOVABLE_WEBHOOK_SECRET` (no new secret — same shared
+secret every signed route in this pipeline already uses). Target URLs
+come from `LOVABLE_SCORED_PICKS_READ_URL` and
+`LOVABLE_SHELF_ASSIGNMENTS_WRITE_URL` (Vercel env vars, same pattern as
+`LOVABLE_WEBHOOK_URL`/`LOVABLE_SCORED_PICKS_WEBHOOK_URL`), falling back to
+the not-yet-real `https://tastypickems.lovable.app/api/public/scored-picks-read`
+/ `.../shelf-assignments-write` placeholders if unset.
+
+Body (all optional): `{"date": "YYYY-MM-DD", "shelf_size": 8}` — defaults
+to today (UTC) and `DEFAULT_SHELF_SIZE`. Calls the read endpoint, runs
+`curate_shelves_for_date()`, forwards the resulting rows to the write
+endpoint via the same `lovable_forward.forward_to_lovable()` every other
+route already uses. Returns `422` (not curated, not forwarded) if the
+sanity check flags the slate; `502` if forwarding to the write endpoint
+fails; `200` on a genuine success. NOT wired into any Make.com scenario
+yet — deployed and independently callable once the two Lovable routes it
+depends on are live, but that connection is a deliberately separate step.
+
+### Tested against real data, no mocked HTTP — `test_curate_shelves.py`, 18/18 checks
+
+Neither Lovable route is deployed yet, so there's no live endpoint to
+round-trip against. Rather than mock `requests.post` or stub out
+signature verification, the test spins up a genuine local Flask server in
+a background thread implementing the exact same HMAC-SHA256
+signature-verification logic as the two drafted TypeScript routes, and
+serves/accepts the real cached 239-candidate/14-game pool
+(`/tmp/shelf_test_pool.json`, same one `test_shelf_curation.py` and
+`test_official_pick_grading.py` use). This exercises the real signed HTTP
+round-trip in both directions, not just the orchestration logic in
+isolation:
+
+- Full chain output (shelf sizes, Tasty Six repeats, row counts, shelf
+  names) matches `shelf_curation.py`'s own direct output exactly.
+- Exactly one `is_tasty_six=True` row per shelf with a real pick, drawn
+  from distinct `(mlbam_id, game_pk)` pairs — a real deduplicated Tasty
+  Six survives the read → curate → write path.
+- The write endpoint genuinely receives every curated row over the wire.
+- Idempotent — the same real input curated twice produces byte-identical
+  output.
+- A deliberately truncated slate (2 of the real 14 games) is flagged and
+  aborted, not silently curated — and the `MIN_EXPECTED_GAMES` boundary
+  itself is checked on both sides (5 games: not suspicious; 4: suspicious).
+- A wrong shared secret is genuinely rejected with a real HTTP 401 by the
+  signature-verification code, not assumed to fail by code review alone.
+
 ## Deployment
 
 Auto-deploys on every push to `main` via Vercel's GitHub integration
@@ -1136,6 +1248,7 @@ python3 test_game_lookup.py          # game_pk resolution test suite — real da
 python3 ../scripts/build_shelf_test_pool.py  # regenerates the real pool test_shelf_curation.py reads (spends real Odds API requests — not automatic)
 python3 test_shelf_curation.py       # shelf curation test suite — real pool, no mocks
 python3 test_official_pick_grading.py  # official-picks batch grading test suite — reuses the same real pool, no mocks
+python3 test_curate_shelves.py       # shelf curation read->curate->write chain — real pool, real local HMAC server, no mocks
 cd live_scoring
 python3 test_score_candidate.py      # live single-candidate scoring test suite
 cd ../live_data

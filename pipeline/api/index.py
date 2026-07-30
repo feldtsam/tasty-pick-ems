@@ -13,6 +13,7 @@ Returns the flattened, filtered list of HR prop rows as JSON.
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Vercel's Python runtime doesn't put this file's own directory on the
@@ -30,6 +31,8 @@ from lovable_forward import forward_to_lovable
 from build_game_candidates import build_candidates_for_game
 from game_lookup import resolve_game_pk
 from scored_picks import build_scored_picks_for_game
+from curate_shelves import curate_shelves_for_date
+from shelf_curation import DEFAULT_SHELF_SIZE
 
 app = Flask(__name__)
 
@@ -46,6 +49,14 @@ DEFAULT_LOVABLE_URL = "https://tastypickems.lovable.app/api/public/pipeline-writ
 # expected naming convention and will 502 harmlessly (not silently
 # succeed) until it's set.
 DEFAULT_SCORED_PICKS_URL = "https://tastypickems.lovable.app/api/public/scored-picks-write"
+
+# Same status as DEFAULT_SCORED_PICKS_URL above when it was first added:
+# these two routes are drafted and staged for review, not yet applied to
+# the live Lovable app. Placeholders document the expected naming
+# convention; the real *_WEBHOOK_URL env vars below are the source of
+# truth once the routes exist.
+DEFAULT_SCORED_PICKS_READ_URL = "https://tastypickems.lovable.app/api/public/scored-picks-read"
+DEFAULT_SHELF_ASSIGNMENTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/shelf-assignments-write"
 
 
 def _parse_events(data, diagnostics=None):
@@ -341,5 +352,85 @@ def score_game_props_health_check():
         "usage": "POST /api/score-game-props/game/<game_pk>, or POST /api/score-game-props/by-event "
                  "with a raw Odds API event (no game_pk needed — resolved internally), to get real "
                  "scored picks for that game.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/curate-shelves", methods=["POST"])
+def curate_shelves_endpoint():
+    """
+    Whole-slate shelf curation: reads a full day's scored_picks from
+    Lovable's signed read endpoint, sanity-checks the slate isn't
+    suspiciously incomplete, runs shelf_curation.py's tested logic, and
+    forwards the resulting shelf_assignments (including Tasty Six flags)
+    to Lovable's write endpoint. See curate_shelves.py for the full
+    reasoning behind this shape.
+
+    NOT wired into any Make.com scenario yet — deployed and independently
+    callable once the two Lovable routes it depends on are live, but that
+    connection is a deliberately separate step.
+
+    POST body (all optional): {"date": "YYYY-MM-DD", "shelf_size": 8}.
+    Defaults to today (UTC) and shelf_curation.py's DEFAULT_SHELF_SIZE.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    date = data.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    shelf_size = data.get("shelf_size", DEFAULT_SHELF_SIZE)
+
+    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
+
+    read_url = os.environ.get("LOVABLE_SCORED_PICKS_READ_URL", DEFAULT_SCORED_PICKS_READ_URL)
+    write_url = os.environ.get("LOVABLE_SHELF_ASSIGNMENTS_WRITE_URL", DEFAULT_SHELF_ASSIGNMENTS_WRITE_URL)
+
+    try:
+        result = curate_shelves_for_date(date, secret, read_url, shelf_size=shelf_size)
+    except requests.exceptions.RequestException as e:
+        print(f"[curate-shelves] date={date} network_error_reading={e}", flush=True)
+        return jsonify({"error": "Network error reaching the scored-picks-read endpoint.", "detail": str(e)}), 502
+
+    if result["error"] is not None:
+        print(f"[curate-shelves] date={date} aborted error={result['error']}", flush=True)
+        return jsonify({
+            "date": date,
+            "curated": False,
+            "error": result["error"],
+            "sanity_check": result["sanity_check"],
+        }), 422
+
+    forward_result = {"success": None, "status_code": None, "error": None}
+    if result["shelf_assignments"]:
+        forward_result = forward_to_lovable(result["shelf_assignments"], secret, write_url)
+
+    print(
+        f"[curate-shelves] date={date} "
+        f"sanity_check={result['sanity_check']} "
+        f"shelf_sizes={result['shelf_sizes']} "
+        f"tasty_six_repeats={result['tasty_six_repeats']} "
+        f"rows={len(result['shelf_assignments'])} "
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']}",
+        flush=True,
+    )
+
+    return jsonify({
+        "date": date,
+        "curated": True,
+        "sanity_check": result["sanity_check"],
+        "shelf_sizes": result["shelf_sizes"],
+        "tasty_six_repeats": result["tasty_six_repeats"],
+        "rows_curated": len(result["shelf_assignments"]),
+        "forwarded": forward_result["success"],
+        "lovable_status_code": forward_result["status_code"],
+        "forward_error": forward_result["error"],
+    }), (502 if forward_result["success"] is False else 200)
+
+
+@app.route("/api/curate-shelves", methods=["GET"])
+def curate_shelves_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/curate-shelves with an optional {\"date\": \"YYYY-MM-DD\", \"shelf_size\": 8} body "
+                 "to curate that day's six shelves + Tasty Six from scored_picks and forward them to Lovable.",
         "deployed_via": "github-auto-deploy",
     })
