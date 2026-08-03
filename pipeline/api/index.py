@@ -502,6 +502,7 @@ def grade_official_picks_endpoint():
         "forwarded": forward["success"] if forward else None,
         "lovable_status_code": forward["status_code"] if forward else None,
         "forward_error": forward["error"] if forward else None,
+        "lovable_response": forward.get("response_body") if forward else None,
     }), (502 if forward_success is False else 200)
 
 
