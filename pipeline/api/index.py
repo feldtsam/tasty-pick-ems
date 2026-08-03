@@ -495,6 +495,8 @@ def grade_official_picks_endpoint():
 
     return jsonify({
         "graded": True,
+        "total_shelf_assignments_in_window": result["total_shelf_assignments_in_window"],
+        "already_graded_count": result["already_graded_count"],
         "picks_needing_grading_count": result["picks_needing_grading_count"],
         "graded_count": result["graded_count"],
         "still_pending_count": result["still_pending_count"],

@@ -102,6 +102,8 @@ def grade_official_picks_for_pending(secret: str, read_url: str, write_url: str,
     """
     empty_result = {
         "error": None,
+        "total_shelf_assignments_in_window": 0,
+        "already_graded_count": 0,
         "picks_needing_grading_count": 0,
         "graded_count": 0,
         "still_pending_count": 0,
@@ -115,9 +117,17 @@ def grade_official_picks_for_pending(secret: str, read_url: str, write_url: str,
     if not read_result.get("ok"):
         return {**empty_result, "error": f"read endpoint returned an error: {read_result.get('error')}"}
 
+    # Surfaced for real diagnosability: picks_needing_grading_count==0 means
+    # two very different things depending on these — an empty
+    # shelf_assignments table (nothing to grade yet) versus a fully-graded
+    # one (everything already has a real official_pick_results row) — and a
+    # caller shouldn't have to guess which.
+    total_in_window = read_result.get("total_shelf_assignments_in_window", 0)
+    already_graded = read_result.get("already_graded_count", 0)
+
     picks = read_result["picks_needing_grading"]
     if not picks:
-        return empty_result
+        return {**empty_result, "total_shelf_assignments_in_window": total_in_window, "already_graded_count": already_graded}
 
     grading_result = grade_official_picks(picks)
     terminal = [r for r in grading_result["results"] if r["status"] in TERMINAL_STATUSES]
@@ -129,6 +139,8 @@ def grade_official_picks_for_pending(secret: str, read_url: str, write_url: str,
 
     return {
         "error": None,
+        "total_shelf_assignments_in_window": total_in_window,
+        "already_graded_count": already_graded,
         "picks_needing_grading_count": len(picks),
         "graded_count": len(terminal),
         "still_pending_count": len(still_pending),
