@@ -33,6 +33,7 @@ from game_lookup import resolve_game_pk
 from scored_picks import build_scored_picks_for_game
 from curate_shelves import curate_shelves_for_date
 from shelf_curation import DEFAULT_SHELF_SIZE
+from grade_official_picks_live import grade_official_picks_for_pending
 
 app = Flask(__name__)
 
@@ -57,6 +58,11 @@ DEFAULT_SCORED_PICKS_URL = "https://tastypickems.lovable.app/api/public/scored-p
 # truth once the routes exist.
 DEFAULT_SCORED_PICKS_READ_URL = "https://tastypickems.lovable.app/api/public/scored-picks-read"
 DEFAULT_SHELF_ASSIGNMENTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/shelf-assignments-write"
+
+# Same status as the two URLs above — drafted, staged for review, not yet
+# applied to the live Lovable app at the time this was written.
+DEFAULT_PICKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/api/public/picks-needing-grading-read"
+DEFAULT_OFFICIAL_PICK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/official-pick-results-write"
 
 
 def _parse_events(data, diagnostics=None):
@@ -432,5 +438,78 @@ def curate_shelves_health_check():
         "status": "ok",
         "usage": "POST /api/curate-shelves with an optional {\"date\": \"YYYY-MM-DD\", \"shelf_size\": 8} body "
                  "to curate that day's six shelves + Tasty Six from scored_picks and forward them to Lovable.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/grade-official-picks", methods=["POST"])
+def grade_official_picks_endpoint():
+    """
+    Grades every official pick (shelf_assignments row) that doesn't yet
+    have a matching official_pick_results row: reads the ungraded set from
+    Lovable's signed picks-needing-grading-read endpoint, grades it via
+    official_pick_grading.py (real MLB lookups, deduplicated per unique
+    game), forwards only the terminal (won/lost/void) results to
+    official-pick-results-write. See grade_official_picks_live.py for the
+    full reasoning, including why this is an anti-join rather than a
+    game-status pre-filter.
+
+    NOT wired into any Make.com scenario yet — deployed and independently
+    callable once the two Lovable routes it depends on are live, but that
+    connection is a deliberately separate step.
+
+    POST body (all optional): {"lookback_days": 3}. A batch of 0 graded
+    picks is a normal result, not an error — see the module docstring.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    lookback_days = data.get("lookback_days")
+
+    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
+
+    read_url = os.environ.get("LOVABLE_PICKS_NEEDING_GRADING_READ_URL", DEFAULT_PICKS_NEEDING_GRADING_READ_URL)
+    write_url = os.environ.get("LOVABLE_OFFICIAL_PICK_RESULTS_WRITE_URL", DEFAULT_OFFICIAL_PICK_RESULTS_WRITE_URL)
+
+    try:
+        result = grade_official_picks_for_pending(secret, read_url, write_url, lookback_days=lookback_days)
+    except requests.exceptions.RequestException as e:
+        print(f"[grade-official-picks] network_error_reading={e}", flush=True)
+        return jsonify({"error": "Network error reaching the picks-needing-grading-read endpoint.", "detail": str(e)}), 502
+
+    if result["error"] is not None:
+        print(f"[grade-official-picks] aborted error={result['error']}", flush=True)
+        return jsonify({"graded": False, "error": result["error"]}), 502
+
+    forward = result["forwarded"]
+    forward_success = forward["success"] if forward is not None else True  # nothing to forward is not a failure
+
+    print(
+        f"[grade-official-picks] picks_needing_grading={result['picks_needing_grading_count']} "
+        f"graded={result['graded_count']} still_pending={result['still_pending_count']} "
+        f"grading_errors={len(result['grading_errors'])} "
+        f"forward_success={forward['success'] if forward else None} "
+        f"forward_status={forward['status_code'] if forward else None}",
+        flush=True,
+    )
+
+    return jsonify({
+        "graded": True,
+        "picks_needing_grading_count": result["picks_needing_grading_count"],
+        "graded_count": result["graded_count"],
+        "still_pending_count": result["still_pending_count"],
+        "grading_errors": result["grading_errors"],
+        "forwarded": forward["success"] if forward else None,
+        "lovable_status_code": forward["status_code"] if forward else None,
+        "forward_error": forward["error"] if forward else None,
+    }), (502 if forward_success is False else 200)
+
+
+@app.route("/api/grade-official-picks", methods=["GET"])
+def grade_official_picks_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/grade-official-picks with an optional {\"lookback_days\": 3} body to grade every "
+                 "ungraded official pick (won/lost/void only) and forward results to Lovable.",
         "deployed_via": "github-auto-deploy",
     })

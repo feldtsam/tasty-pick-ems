@@ -1220,6 +1220,142 @@ isolation:
 - A wrong shared secret is genuinely rejected with a real HTTP 401 by the
   signature-verification code, not assumed to fail by code review alone.
 
+## Official-pick grading, live (`api/grade_official_picks_live.py`) — NOT wired to Make.com yet, depends on two undeployed Lovable routes
+
+The last piece connecting `official_pick_grading.py` (built earlier, already
+validated against real data) to a live source of "which official picks
+actually need grading right now." Grading runs on its own schedule — after
+games finish, not when they're scored — so it can't reuse in-memory data
+from the scoring/curation loop; it needs to independently determine what's
+ungraded.
+
+**"Needs grading" is an anti-join, not a game-status pre-filter.** A pick
+needs grading iff its `shelf_assignments` row has no matching
+`official_pick_results` row on the real `(mlbam_id, game_pk, shelf)` unique
+index. Deliberately NOT pre-checking which games have finished before
+querying — `grade_pick()` (in `live_data/grading.py`, reused unmodified)
+already does a fresh `feed/live` lookup per unique game and returns
+`status: "pending"` for anything not yet final, so a separate upfront
+game-status check would just be a second live MLB lookup for information
+grading already produces as a side effect. Instead: pull every ungraded
+shelf pick regardless of the underlying game's status, grade all of them,
+and only forward the TERMINAL results (`won`/`lost`/`void`) to the write
+step. A still-in-progress game simply produces no `official_pick_results`
+row this run — meaning it's still "ungraded" next run, with no separate
+tracking needed. That's the same idempotency mechanism as the anti-join
+itself: nothing marks a pick as "attempted," only "graded."
+
+**A dedicated read endpoint, not an extension of `scored-picks-read.ts`.**
+Different grain (`shelf_assignments` rows, not `scored_picks` rows) and a
+fundamentally different filter (an anti-join against a second table, not a
+date window) — reusing the HMAC/verification boilerplate is right, reusing
+the query shape would not be.
+
+Two new Lovable-side routes were drafted (staged for review, not yet
+applied):
+
+- `POST /api/public/picks-needing-grading-read` — body
+  `{"lookback_days": 3}` (optional, defaults to 3). Fetches
+  `shelf_assignments` rows and `official_pick_results` keys within the same
+  bounded lookback window, builds the anti-join in application code (two
+  plain `supabase-js` selects + an in-memory filter, not a raw SQL
+  `NOT EXISTS` — cheap at real volume, and keeps this route a plain
+  `supabase-js` call like every other route in this codebase). Response
+  includes `total_shelf_assignments_in_window` and `already_graded_count`
+  for observability. Deliberately has no minimum-count sanity gate like
+  `curate_shelves.py`'s — a grading batch of 0 is a normal, expected
+  outcome here, not a sign something broke.
+- `POST /api/public/official-pick-results-write` — same fixed reporting
+  discipline as the `shelf-assignments-write.ts` patch (`received` is the
+  true pre-filter count; a row with an invalid `mlbam_id` is dropped and
+  named with a reason, not silently excluded). `status` is a strict
+  `z.enum(["won", "lost", "void"])` — a stray `"pending"` fails the WHOLE
+  batch loud with a 400, rather than being silently dropped per-row like a
+  bad `mlbam_id`. Different failure category: a malformed `mlbam_id` is
+  expected real-world messiness; a `"pending"` status arriving here means
+  the caller has a bug, since `grade_official_picks_live.py` should never
+  forward a pending result by design.
+
+### `grade_official_picks_for_pending(secret, read_url, write_url, lookback_days=None)`
+
+The orchestrator: fetches picks needing grading, runs
+`official_pick_grading.grade_official_picks()` unmodified (real MLB
+lookups, deduplicated per unique game, fanned out per shelf appearance),
+filters to terminal results only, forwards them. Treats "zero picks need
+grading" and "some picks are still pending" as normal outcomes, not
+errors — unlike `curate_shelves.py`, there's no minimum-batch-size gate
+here.
+
+### `POST /api/grade-official-picks`
+
+Body (all optional): `{"lookback_days": 3}`. Reuses the existing
+`LOVABLE_WEBHOOK_SECRET`. Target URLs come from
+`LOVABLE_PICKS_NEEDING_GRADING_READ_URL` and
+`LOVABLE_OFFICIAL_PICK_RESULTS_WRITE_URL` (Vercel env vars, same pattern as
+the other Lovable URL env vars), falling back to the not-yet-real
+`https://tastypickems.lovable.app/api/public/picks-needing-grading-read` /
+`.../official-pick-results-write` placeholders if unset. Returns `502` if
+the read endpoint is unreachable or forwarding fails; `200` on success
+(including when there was nothing to grade). NOT wired into any Make.com
+scenario yet.
+
+### A REAL BUG this work caught: `grade_pick()` only ever worked with an `int` `game_pk`
+
+`shelf_assignments.game_pk` is a real `text` column, so a genuine live
+caller reading from it hands `grade_pick()` a numeric STRING. Every
+existing call site (`test_grading.py`, `official_pick_grading.py`) only
+ever passed a Python `int`, so this went uncaught until real data actually
+flowed through the new live chain: `_fetch_feed_live()`'s defensive check
+(`data.get("gamePk") != game_pk`, guarding against MLB's real behavior of
+returning a placeholder body instead of a 404 for an unknown `game_pk`)
+compares against the JSON response's integer `gamePk` — a string `game_pk`
+always failed that comparison, so every real grading call through this new
+chain would have incorrectly reported a genuinely valid game as "not a
+known MLB game." Fixed by coercing `game_pk = int(game_pk)` once at the top
+of `grade_pick()` (`live_data/grading.py`), rather than loosening the
+equality check itself — keeps the placeholder-response defense exact while
+making the function tolerant of either caller convention.
+
+### Tested against real data, with a stateful test double — `test_grade_official_picks_live.py`, 19/19 checks
+
+Reuses the exact real, hand-verified `(mlbam_id, game_pk)` pairs
+`live_data/test_grading.py` already validated against real MLB box
+scores — real players, real completed games, real `grade_pick()` calls —
+rather than the cached odds-derived `shelf_test_pool.json` (expired from
+`/tmp`; regenerating it spends real, budgeted Odds API requests that
+grading itself doesn't need, since grading only ever reads
+`mlbam_id`/`game_pk`/`shelf` off a pick).
+
+The part neither `test_grading.py` nor `test_official_pick_grading.py`
+proves: the anti-join itself. Both already prove `grade_pick()`/
+`grade_official_picks()` are individually idempotent (same input -> same
+output). Neither proves the LIVE CHAIN avoids re-grading something already
+graded — that guarantee lives entirely in the Lovable-side read endpoint's
+query, which isn't deployable code yet. So this test spins up a STATEFUL
+local Flask double — an in-memory `shelf_assignments`/`official_pick_results`
+pair that the read endpoint genuinely queries and the write endpoint
+genuinely mutates — because a stateless double could confirm the write
+step upserts correctly without ever proving the read step's exclusion
+logic does anything at all:
+
+- A real batch of 10 picks (9 unique real games/players, including one
+  player on two real shelves for the same game) is graded through the full
+  read → grade → write chain with zero grading errors.
+- The two real shelf appearances for the same real multi-shelf player
+  report an identical verdict — the one genuinely new guarantee
+  `official_pick_grading.py` exists for, now proven through the live chain.
+- **The key check**: a second read call after grading excludes exactly the
+  picks just graded — real anti-join correctness, not just a clean
+  re-upsert.
+- Write-step idempotency: re-sending the same terminal results doesn't
+  duplicate rows.
+- Full-chain idempotency: running the whole chain again only sees the
+  still-pending remainder.
+- A synthetic invalid `mlbam_id` is dropped and named, not silently
+  swallowed; a synthetic stray `"pending"` status is rejected with a real
+  400 for the whole batch.
+- A wrong shared secret is genuinely rejected with a real HTTP 401.
+
 ## Deployment
 
 Auto-deploys on every push to `main` via Vercel's GitHub integration
@@ -1249,6 +1385,7 @@ python3 ../scripts/build_shelf_test_pool.py  # regenerates the real pool test_sh
 python3 test_shelf_curation.py       # shelf curation test suite — real pool, no mocks
 python3 test_official_pick_grading.py  # official-picks batch grading test suite — reuses the same real pool, no mocks
 python3 test_curate_shelves.py       # shelf curation read->curate->write chain — real pool, real local HMAC server, no mocks
+python3 test_grade_official_picks_live.py  # official-pick grading live chain — real games, stateful HMAC double proving the anti-join, no mocks
 cd live_scoring
 python3 test_score_candidate.py      # live single-candidate scoring test suite
 cd ../live_data

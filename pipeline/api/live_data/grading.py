@@ -138,7 +138,7 @@ def _player_batting_line(data: dict, mlbam_id: int) -> dict:
     return {"found": False, "plate_appearances": 0, "home_runs": 0}
 
 
-def grade_pick(mlbam_id: int, game_pk: int, pick_type: str = "home_run") -> dict:
+def grade_pick(mlbam_id: int, game_pk: int | str, pick_type: str = "home_run") -> dict:
     """
     Pure, deterministic, side-effect-free: reads real, current MLB data
     and returns a verdict. Deliberately returns NO timestamp — grading the
@@ -155,6 +155,19 @@ def grade_pick(mlbam_id: int, game_pk: int, pick_type: str = "home_run") -> dict
     """
     if pick_type not in SUPPORTED_PICK_TYPES:
         raise ValueError(f"pick_type {pick_type!r} is not supported yet — only {SUPPORTED_PICK_TYPES} implemented so far.")
+
+    # Real finding from wiring up the live official-picks grading chain:
+    # shelf_assignments.game_pk is a `text` column, so a real caller reading
+    # from it hands this function a numeric STRING, not an int. Every call
+    # site up to that point (test_grading.py, official_pick_grading.py)
+    # only ever passed a Python int, so this went uncaught until real data
+    # from a text column hit _fetch_feed_live()'s `gamePk` equality check
+    # below, which compares against the JSON response's integer gamePk.
+    # Coercing once here — rather than loosening that equality check to a
+    # string comparison — keeps the "placeholder response for an unknown
+    # game_pk" defense exact while making this function itself tolerant of
+    # either caller convention.
+    game_pk = int(game_pk)
 
     data = _fetch_feed_live(game_pk)
     state = _game_state(data)
