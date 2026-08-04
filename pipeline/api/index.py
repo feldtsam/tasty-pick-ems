@@ -22,6 +22,8 @@ from pathlib import Path
 # this file's directory explicitly before importing.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "live_data"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer" / "voice"))
 
 from flask import Flask, jsonify, request
 import requests
@@ -34,6 +36,7 @@ from scored_picks import build_scored_picks_for_game
 from curate_shelves import curate_shelves_for_date
 from shelf_curation import DEFAULT_SHELF_SIZE
 from grade_official_picks_live import grade_official_picks_for_pending
+from generate_tasty_six_content import draft_for_write, generate_tasty_six_draft
 
 app = Flask(__name__)
 
@@ -63,6 +66,10 @@ DEFAULT_SHELF_ASSIGNMENTS_WRITE_URL = "https://tastypickems.lovable.app/api/publ
 # applied to the live Lovable app at the time this was written.
 DEFAULT_PICKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/api/public/picks-needing-grading-read"
 DEFAULT_OFFICIAL_PICK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/official-pick-results-write"
+
+# Same status as the URLs above — drafted, staged for review, not yet
+# applied to the live Lovable app at the time this was written.
+DEFAULT_CONTENT_DRAFTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/content-drafts-write"
 
 
 def _parse_events(data, diagnostics=None):
@@ -529,5 +536,79 @@ def grade_official_picks_health_check():
         "status": "ok",
         "usage": "POST /api/grade-official-picks with an optional {\"lookback_days\": 3} body to grade every "
                  "ungraded official pick (won/lost/void only) and forward results to Lovable.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/content-writer/tasty-six/generate", methods=["POST"])
+def generate_tasty_six_endpoint():
+    """
+    Generates ONE real Tasty Six card for ONE real candidate: builds the
+    real prompt (shelf personality + confidence band + real source facts),
+    calls Claude via forced tool-use, runs the full deterministic
+    validation suite, and forwards the result to content_drafts.
+
+    NEVER auto-approves or publishes anything — see generate_tasty_six_
+    content.py for the full reasoning. A draft that fails validation is
+    still returned and still forwarded, marked "flagged" rather than
+    "pending_review" — never silently discarded.
+
+    POST body: {"candidate": {...}} — one entry from /api/curate-shelves's
+    shelf_candidates_detailed response (include_rows: true). The pipeline
+    has no independent read access to Lovable's tables, same boundary as
+    every other endpoint here — the caller supplies the real candidate
+    directly, same shape as score-game-props taking odds data directly.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    candidate = data.get("candidate")
+    if not isinstance(candidate, dict) or "candidate" not in candidate or "shelf" not in candidate:
+        return jsonify({
+            "error": "POST body must include a real candidate entry: "
+                     "{\"candidate\": {...one shelf_candidates_detailed entry, with its own "
+                     "\"candidate\"/\"shelf\" keys...}}",
+        }), 400
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY is not configured"}), 500
+
+    try:
+        draft = generate_tasty_six_draft(candidate, api_key)
+    except ValueError as e:
+        print(f"[content-writer:tasty-six:generate] bad input: {e}", flush=True)
+        return jsonify({"error": str(e)}), 400
+    except requests.exceptions.RequestException as e:
+        print(f"[content-writer:tasty-six:generate] network_error={e}", flush=True)
+        return jsonify({"error": "Network error reaching the Claude API.", "detail": str(e)}), 502
+
+    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    write_url = os.environ.get("LOVABLE_CONTENT_DRAFTS_WRITE_URL", DEFAULT_CONTENT_DRAFTS_WRITE_URL)
+    forward_result = {"success": None, "status_code": None, "error": None}
+    if secret:
+        forward_result = forward_to_lovable([draft_for_write(draft)], secret, write_url)
+
+    print(
+        f"[content-writer:tasty-six:generate] mlbam_id={draft['mlbam_id']} shelf={draft['shelf']} "
+        f"confidence_band={draft['confidence_band']} validation_passed={draft['validation_passed']} "
+        f"issues={len(draft['validation_issues'])} "
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']}",
+        flush=True,
+    )
+
+    return jsonify({
+        "draft": draft,
+        "forwarded": forward_result["success"],
+        "lovable_status_code": forward_result["status_code"],
+        "forward_error": forward_result["error"],
+    }), 200
+
+
+@app.route("/api/content-writer/tasty-six/generate", methods=["GET"])
+def generate_tasty_six_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/content-writer/tasty-six/generate with {\"candidate\": {...one "
+                 "shelf_candidates_detailed entry...}} to generate one real, validated Tasty Six "
+                 "draft and forward it to content_drafts.",
         "deployed_via": "github-auto-deploy",
     })
