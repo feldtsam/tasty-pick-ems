@@ -77,7 +77,14 @@ def call_claude_for_tasty_six_card(api_key: str, system_prompt: str, user_prompt
         },
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        # requests' default HTTPError message is just the status line --
+        # loses Anthropic's actual real error body (e.g. which field was
+        # invalid), which is the one thing actually needed to diagnose a
+        # 400. Raised as ValueError specifically so index.py's route
+        # surfaces this real detail to the caller instead of a generic
+        # "network error" with no explanation.
+        raise ValueError(f"Claude API returned {response.status_code}: {response.text}")
     data = response.json()
 
     for block in data.get("content", []):
