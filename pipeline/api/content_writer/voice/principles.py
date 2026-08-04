@@ -28,13 +28,32 @@ CONFIDENCE_BANDS = (
     "premium_signal",     # final_score 75-90
 )
 
-# (low, high, band) — final_score outside 25-90 deliberately returns no
-# band (see confidence_band_for_score below), rather than being forced
-# into the nearest one.
+# (low_inclusive, high_exclusive, band) — CONTINUOUS, not integer-gapped.
+# Real finding (2026-08-04): final_score is a float, and the original
+# integer-edged bounds (25-39, 40-59, 60-74, 75-90) left real gaps at
+# every boundary — a genuine 39.6 fell between quiet_signal's 39 and
+# developing_angle's 40 and got no band at all, discovered via a real
+# candidate (Andres Gimenez, Cold Pitchers to Attack) rather than a
+# hypothetical. Every band here is now [low, high) — half-open, so a
+# boundary value like 39.9 or 59.9 or 74.9 always resolves to exactly one
+# band, with no gap and no double-coverage. The top band is the one
+# exception: it stays closed at 90 (upper-inclusive), matching the
+# original "scores above 90 need deliberate handling" cutoff exactly —
+# below is still the real intended extreme-score case, not a new gap.
+#
+# final_score outside 25-90 still deliberately returns no band (see
+# confidence_band_for_score below) — that part of the original design is
+# unchanged. A real score above 90 or below 25 is a genuine outlier this
+# pipeline hasn't seen in practice; forcing it into the nearest band would
+# quietly justify overconfident (or overly muted) copy at an extreme this
+# voice hasn't actually been designed for yet, so it's surfaced as "no
+# band" for deliberate human handling rather than escalating the copy's
+# drama indefinitely as scores climb, or apologizing indefinitely as they
+# fall.
 CONFIDENCE_BAND_THRESHOLDS = (
-    (25, 39, "quiet_signal"),
-    (40, 59, "developing_angle"),
-    (60, 74, "strong_setup"),
+    (25, 40, "quiet_signal"),
+    (40, 60, "developing_angle"),
+    (60, 75, "strong_setup"),
     (75, 90, "premium_signal"),
 )
 
@@ -43,9 +62,16 @@ def confidence_band_for_score(final_score: float) -> Optional[str]:
     """None for scores below 25 or above 90 — those need deliberate
     handling (see the reference doc's "scores outside normal bands"
     guidance), not a silent nearest-band fallback that could quietly
-    justify overconfident copy at the extremes."""
-    for lo, hi, band in CONFIDENCE_BAND_THRESHOLDS:
-        if lo <= final_score <= hi:
+    justify overconfident copy at the extremes. Every score from 25 up to
+    and including 90 resolves to exactly one band — see
+    CONFIDENCE_BAND_THRESHOLDS above for why the top band alone keeps an
+    inclusive upper bound."""
+    last_index = len(CONFIDENCE_BAND_THRESHOLDS) - 1
+    for i, (lo, hi, band) in enumerate(CONFIDENCE_BAND_THRESHOLDS):
+        if i == last_index:
+            if lo <= final_score <= hi:
+                return band
+        elif lo <= final_score < hi:
             return band
     return None
 
