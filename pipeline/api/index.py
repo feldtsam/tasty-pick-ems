@@ -376,12 +376,21 @@ def curate_shelves_endpoint():
     callable once the two Lovable routes it depends on are live, but that
     connection is a deliberately separate step.
 
-    POST body (all optional): {"date": "YYYY-MM-DD", "shelf_size": 8}.
-    Defaults to today (UTC) and shelf_curation.py's DEFAULT_SHELF_SIZE.
+    POST body (all optional): {"date": "YYYY-MM-DD", "shelf_size": 8,
+    "include_rows": false}. Defaults to today (UTC) and shelf_curation.py's
+    DEFAULT_SHELF_SIZE. include_rows, off by default, adds the real, FULL
+    curated candidate data (shelf_candidates_detailed — pillar_detail, all
+    four pillar scores, recent-form extras) to the response, not just the
+    thin shelf_assignments shape that gets forwarded to Lovable. Useful for
+    pulling real candidate data for local testing (e.g. the content
+    writer, which needs pillar_detail) without direct DB read access;
+    never needed by Make.com's real read->curate->write flow, which
+    already gets the thin rows via the write forward, not this response.
     """
     data = request.get_json(force=True, silent=True) or {}
     date = data.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     shelf_size = data.get("shelf_size", DEFAULT_SHELF_SIZE)
+    include_rows = bool(data.get("include_rows", False))
 
     secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
     if not secret:
@@ -419,7 +428,7 @@ def curate_shelves_endpoint():
         flush=True,
     )
 
-    return jsonify({
+    response = {
         "date": date,
         "curated": True,
         "sanity_check": result["sanity_check"],
@@ -429,15 +438,21 @@ def curate_shelves_endpoint():
         "forwarded": forward_result["success"],
         "lovable_status_code": forward_result["status_code"],
         "forward_error": forward_result["error"],
-    }), (502 if forward_result["success"] is False else 200)
+    }
+    if include_rows:
+        response["shelf_candidates_detailed"] = result["shelf_candidates_detailed"]
+
+    return jsonify(response), (502 if forward_result["success"] is False else 200)
 
 
 @app.route("/api/curate-shelves", methods=["GET"])
 def curate_shelves_health_check():
     return jsonify({
         "status": "ok",
-        "usage": "POST /api/curate-shelves with an optional {\"date\": \"YYYY-MM-DD\", \"shelf_size\": 8} body "
-                 "to curate that day's six shelves + Tasty Six from scored_picks and forward them to Lovable.",
+        "usage": "POST /api/curate-shelves with an optional {\"date\": \"YYYY-MM-DD\", \"shelf_size\": 8, "
+                 "\"include_rows\": false} body to curate that day's six shelves + Tasty Six from scored_picks "
+                 "and forward them to Lovable. include_rows adds the real full candidate data "
+                 "(shelf_candidates_detailed) to the response.",
         "deployed_via": "github-auto-deploy",
     })
 

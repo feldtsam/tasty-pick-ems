@@ -1183,15 +1183,29 @@ come from `LOVABLE_SCORED_PICKS_READ_URL` and
 the not-yet-real `https://tastypickems.lovable.app/api/public/scored-picks-read`
 / `.../shelf-assignments-write` placeholders if unset.
 
-Body (all optional): `{"date": "YYYY-MM-DD", "shelf_size": 8}` — defaults
-to today (UTC) and `DEFAULT_SHELF_SIZE`. Calls the read endpoint, runs
-`curate_shelves_for_date()`, forwards the resulting rows to the write
-endpoint via the same `lovable_forward.forward_to_lovable()` every other
-route already uses. Returns `422` (not curated, not forwarded) if the
-sanity check flags the slate; `502` if forwarding to the write endpoint
-fails; `200` on a genuine success. NOT wired into any Make.com scenario
-yet — deployed and independently callable once the two Lovable routes it
-depends on are live, but that connection is a deliberately separate step.
+Body (all optional): `{"date": "YYYY-MM-DD", "shelf_size": 8, "include_rows": false}`
+— defaults to today (UTC) and `DEFAULT_SHELF_SIZE`. Calls the read
+endpoint, runs `curate_shelves_for_date()`, forwards the resulting rows to
+the write endpoint via the same `lovable_forward.forward_to_lovable()`
+every other route already uses. Returns `422` (not curated, not
+forwarded) if the sanity check flags the slate; `502` if forwarding to
+the write endpoint fails; `200` on a genuine success. NOT wired into any
+Make.com scenario yet — deployed and independently callable once the two
+Lovable routes it depends on are live, but that connection is a
+deliberately separate step.
+
+`include_rows` (off by default, never needed by Make.com's real flow)
+adds `shelf_candidates_detailed` to the response — the FULL real
+candidate data behind each shelf entry (`pillar_detail`, all four pillar
+scores, recent-form extras), not just the thin `shelf_assignments` shape
+that actually gets forwarded to Lovable (which has no columns for most of
+this). Exists to pull real curated candidates for local testing without
+needing direct DB read access — first used for the content writer's
+citation/numeric-grounding checks, which need `pillar_detail` and can't
+work from the thin rows alone. `_shelf_candidates_detailed()` and
+`_shelf_assignment_rows()` in `curate_shelves.py` are built from the same
+shared `_tasty_lookup()` so the two views can never disagree about which
+entry is the real Tasty Six pick for a shelf.
 
 ### Tested against real data, no mocked HTTP — `test_curate_shelves.py`, 18/18 checks
 

@@ -115,21 +115,29 @@ def sanity_check_slate(read_result: dict, min_expected_games: int = MIN_EXPECTED
     }
 
 
-def _shelf_assignment_rows(shelves: dict, tasty_six: dict) -> list:
-    """
-    Flattens `assign_shelves()`'s output into `shelf_assignments`-shaped
-    rows — one row per (candidate, shelf) appearance, exactly the grain
-    the real table is keyed on. `is_tasty_six` is determined by matching
-    each shelf's own Tasty Six pick (which `compute_tasty_six()` always
-    draws from that same shelf's own ranked list — see its docstring)
-    back to the specific candidate within that shelf's entries.
-    """
-    tasty_lookup = {}
+def _tasty_lookup(tasty_six: dict) -> dict:
+    """shelf_name -> (mlbam_id, game_pk) for whichever candidate
+    compute_tasty_six() actually picked for that shelf. Shared by both
+    _shelf_assignment_rows() and _shelf_candidates_detailed() below so the
+    thin write-shape rows and the rich debug view can never disagree about
+    which entry is the real Tasty Six pick."""
+    lookup = {}
     for shelf_name, entry in tasty_six["picks"].items():
         if entry is not None:
             c = entry["candidate"]
-            tasty_lookup[shelf_name] = (c["mlbam_id"], c["game_pk"])
+            lookup[shelf_name] = (c["mlbam_id"], c["game_pk"])
+    return lookup
 
+
+def _shelf_assignment_rows(shelves: dict, tasty_lookup: dict) -> list:
+    """
+    Flattens `assign_shelves()`'s output into `shelf_assignments`-shaped
+    rows — one row per (candidate, shelf) appearance, exactly the grain
+    the real table is keyed on, and exactly what gets forwarded to
+    Lovable's real write endpoint. Deliberately thin — real column names
+    only, nothing extra, so this payload never drifts from what
+    shelf_assignments actually has columns for.
+    """
     rows = []
     for shelf_name, entries in shelves.items():
         for entry in entries:
@@ -147,6 +155,32 @@ def _shelf_assignment_rows(shelves: dict, tasty_six: dict) -> list:
     return rows
 
 
+def _shelf_candidates_detailed(shelves: dict, tasty_lookup: dict) -> dict:
+    """
+    The FULL real candidate data behind each shelf entry — pillar_detail,
+    all four pillar scores, odds, and the recent-form extras Hot Hitters/
+    Cold Pitchers to Attack entries carry — tagged with the same real
+    is_tasty_six flag as _shelf_assignment_rows(), via the same shared
+    tasty_lookup so the two views can't disagree.
+
+    NEVER forwarded to Lovable — shelf_assignments has no columns for most
+    of this. Exists only to be surfaced locally through
+    /api/curate-shelves's include_rows debug option, for pulling real
+    candidate data to test against (e.g. the content writer's citation/
+    numeric-grounding checks in tasty_six_writer_schema.py, which need
+    pillar_detail and can't work from the thin write-shape rows alone).
+    """
+    detailed = {}
+    for shelf_name, entries in shelves.items():
+        rows = []
+        for entry in entries:
+            c = entry["candidate"]
+            is_tasty = tasty_lookup.get(shelf_name) == (c["mlbam_id"], c["game_pk"])
+            rows.append({**entry, "shelf": shelf_name, "is_tasty_six": is_tasty})
+        detailed[shelf_name] = rows
+    return detailed
+
+
 def curate_shelves_for_date(date: str, secret: str, read_url: str, shelf_size: int = DEFAULT_SHELF_SIZE) -> dict:
     """
     The full chain: read -> sanity-check -> curate -> shape for write.
@@ -158,6 +192,8 @@ def curate_shelves_for_date(date: str, secret: str, read_url: str, shelf_size: i
       {
         "date": str, "error": str|None, "sanity_check": dict,
         "shelf_assignments": [...rows, or [] if error/suspicious...],
+        "shelf_candidates_detailed": {shelf_name: [...full candidate rows...],
+                                       or {} if error/suspicious},
         "tasty_six_repeats": [...shelf names that needed a fallback...],
         "shelf_sizes": {shelf_name: count, ...},
       }
@@ -170,6 +206,7 @@ def curate_shelves_for_date(date: str, secret: str, read_url: str, shelf_size: i
             "error": f"read endpoint returned an error: {read_result.get('error')}",
             "sanity_check": None,
             "shelf_assignments": [],
+            "shelf_candidates_detailed": {},
             "tasty_six_repeats": [],
             "shelf_sizes": {},
         }
@@ -181,6 +218,7 @@ def curate_shelves_for_date(date: str, secret: str, read_url: str, shelf_size: i
             "error": sanity["reason"],
             "sanity_check": sanity,
             "shelf_assignments": [],
+            "shelf_candidates_detailed": {},
             "tasty_six_repeats": [],
             "shelf_sizes": {},
         }
@@ -189,13 +227,16 @@ def curate_shelves_for_date(date: str, secret: str, read_url: str, shelf_size: i
     season = int(date[:4])
     shelves = assign_shelves(candidates, season=season, shelf_size=shelf_size)
     tasty_six = compute_tasty_six(shelves)
-    rows = _shelf_assignment_rows(shelves, tasty_six)
+    tasty_lookup = _tasty_lookup(tasty_six)
+    rows = _shelf_assignment_rows(shelves, tasty_lookup)
+    detailed = _shelf_candidates_detailed(shelves, tasty_lookup)
 
     return {
         "date": date,
         "error": None,
         "sanity_check": sanity,
         "shelf_assignments": rows,
+        "shelf_candidates_detailed": detailed,
         "tasty_six_repeats": tasty_six["repeats"],
         "shelf_sizes": {name: len(entries) for name, entries in shelves.items()},
     }

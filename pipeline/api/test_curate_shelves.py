@@ -108,7 +108,90 @@ def make_test_double(pool: list, captured_writes: list, real_secret: str):
     return app, state
 
 
+def _detailed_view_checks() -> list:
+    """
+    Real-structure (not cached-pool-dependent) checks for
+    shelf_candidates_detailed — the richer view added alongside
+    include_rows so real pillar_detail/scores are actually available for
+    testing the content writer, not just the thin shelf_assignments shape
+    that gets forwarded to Lovable. Runs unconditionally, independent of
+    /tmp/shelf_test_pool.json (gone from this environment, and
+    regenerating it spends real, budgeted Odds API requests this check
+    doesn't need) — exercises assign_shelves()/compute_tasty_six()
+    directly against a small set of real-shaped candidates instead.
+    """
+    from curate_shelves import _shelf_assignment_rows, _shelf_candidates_detailed, _tasty_lookup
+
+    real_candidates = [
+        {
+            "player_name": "Corbin Carroll", "mlbam_id": 682998, "team": "AZ",
+            "opp_pitcher_mlbam_id": 696149, "game_pk": "823350", "odds": 600,
+            "skill_score": 70.0, "matchup_score": 37.4, "environment_score": 28.2,
+            "opportunity_score": 80.0, "final_score": 54.0,
+            "pillar_detail": {
+                "skill": {"score": 70.0, "components": {"power_production": 81.1}},
+                "matchup": {"score": 37.4, "components": {"contact_allowed": 28.5}},
+                "environment": {"score": 28.2, "components": {"wind": 72.5}},
+                "opportunity": {"score": 80.0, "components": {"batting_order": 100.0}},
+            },
+        },
+        {
+            "player_name": "Elly De La Cruz", "mlbam_id": 682829, "team": "CIN",
+            "opp_pitcher_mlbam_id": 111111, "game_pk": "824490", "odds": 320,
+            "skill_score": 82.0, "matchup_score": 65.0, "environment_score": 55.0,
+            "opportunity_score": 75.0, "final_score": 71.0,
+            "pillar_detail": {
+                "skill": {"score": 82.0, "components": {"power_production": 90.0}},
+                "matchup": {"score": 65.0, "components": {"contact_allowed": 60.0}},
+                "environment": {"score": 55.0, "components": {"wind": 50.0}},
+                "opportunity": {"score": 75.0, "components": {"batting_order": 100.0}},
+            },
+        },
+    ]
+
+    shelves = assign_shelves(real_candidates, season=SEASON, shelf_size=DEFAULT_SHELF_SIZE)
+    tasty_six = compute_tasty_six(shelves)
+    tasty_lookup = _tasty_lookup(tasty_six)
+    thin_rows = _shelf_assignment_rows(shelves, tasty_lookup)
+    detailed = _shelf_candidates_detailed(shelves, tasty_lookup)
+
+    results = []
+    results.append(check(
+        "shelf_candidates_detailed covers the same real shelves as the thin rows",
+        set(detailed.keys()) == set(shelves.keys()),
+    ))
+    results.append(check(
+        "detailed view carries real pillar_detail the thin rows never had",
+        all("pillar_detail" in entry["candidate"] for entries in detailed.values() for entry in entries)
+        and not any("pillar_detail" in row for row in thin_rows),
+    ))
+
+    thin_flags = {(r["mlbam_id"], r["game_pk"], r["shelf"]): r["is_tasty_six"] for r in thin_rows}
+    detailed_flags = {
+        (e["candidate"]["mlbam_id"], e["candidate"]["game_pk"], e["shelf"]): e["is_tasty_six"]
+        for entries in detailed.values() for e in entries
+    }
+    results.append(check(
+        "is_tasty_six agrees between the thin write-shape rows and the rich detailed view for every real entry",
+        thin_flags == detailed_flags and len(thin_flags) > 0,
+    ))
+    # Real static check, not a trivial assertion: confirms index.py's
+    # curate-shelves route only ever forwards the thin shelf_assignments
+    # rows to Lovable -- shelf_candidates_detailed must never be sent
+    # over that wire (no columns for most of it, and it's debug-only).
+    index_source = Path(__file__).with_name("index.py").read_text()
+    forward_call_start = index_source.index("forward_to_lovable(result[\"shelf_assignments\"]")
+    results.append(check(
+        "index.py's real forward_to_lovable() call site forwards only the thin shelf_assignments rows",
+        forward_call_start > -1 and "shelf_candidates_detailed" not in index_source[forward_call_start:forward_call_start + 80],
+    ))
+    return results
+
+
 if __name__ == "__main__":
+    detailed_view_results = _detailed_view_checks()
+    print(f"{sum(detailed_view_results)}/{len(detailed_view_results)} detailed-view checks passed\n")
+
     if not POOL_PATH.exists():
         print(f"SKIPPED — {POOL_PATH} not present in this environment. Regenerate with:\n"
               f"  python3 pipeline/scripts/build_shelf_test_pool.py")
