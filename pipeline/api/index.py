@@ -558,9 +558,16 @@ def generate_tasty_six_endpoint():
     has no independent read access to Lovable's tables, same boundary as
     every other endpoint here — the caller supplies the real candidate
     directly, same shape as score-game-props taking odds data directly.
+
+    Optional "debug_inject_violation_instruction" (string): TESTING ONLY
+    — appends an extra, deliberately rule-breaking instruction to the
+    real system prompt, so the validators can be proven against a genuine
+    adversarial model response rather than only a hand-crafted fixture.
+    Never set by real content generation.
     """
     data = request.get_json(force=True, silent=True) or {}
     candidate = data.get("candidate")
+    debug_inject_violation_instruction = data.get("debug_inject_violation_instruction")
     if not isinstance(candidate, dict) or "candidate" not in candidate or "shelf" not in candidate:
         return jsonify({
             "error": "POST body must include a real candidate entry: "
@@ -573,7 +580,7 @@ def generate_tasty_six_endpoint():
         return jsonify({"error": "ANTHROPIC_API_KEY is not configured"}), 500
 
     try:
-        draft = generate_tasty_six_draft(candidate, api_key)
+        draft = generate_tasty_six_draft(candidate, api_key, debug_inject_violation_instruction)
     except ValueError as e:
         print(f"[content-writer:tasty-six:generate] bad input: {e}", flush=True)
         return jsonify({"error": str(e)}), 400

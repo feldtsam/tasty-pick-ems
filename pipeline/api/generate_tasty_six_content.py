@@ -119,7 +119,7 @@ def run_all_validators(output: dict, source_facts: dict, candidate: dict) -> lis
     return issues
 
 
-def generate_tasty_six_draft(candidate: dict, anthropic_api_key: str) -> dict:
+def generate_tasty_six_draft(candidate: dict, anthropic_api_key: str, debug_inject_violation_instruction: str = None) -> dict:
     """
     The full pipeline for one real candidate: build the real prompt, make
     the real Claude call, run every real validator, shape the result into
@@ -128,6 +128,9 @@ def generate_tasty_six_draft(candidate: dict, anthropic_api_key: str) -> dict:
     `candidate` is one entry from /api/curate-shelves's
     shelf_candidates_detailed (or the same shape built by hand for
     testing) -- must have "candidate" (the real scored-pick dict), "shelf".
+
+    `debug_inject_violation_instruction` is TESTING ONLY -- see its use
+    below. Never set by real content generation.
 
     Raises ValueError if final_score falls outside confidence_band_for_
     score()'s normal 25-90 range -- that's deliberate handling territory
@@ -157,6 +160,17 @@ def generate_tasty_six_draft(candidate: dict, anthropic_api_key: str) -> dict:
     source_facts = flatten_source_facts(candidate)
     system_prompt = build_system_prompt(shelf, confidence_band)
     user_prompt = build_user_prompt(source_facts)
+
+    # TESTING ONLY -- never set by real content generation (Make.com would
+    # never send this field). Appends an extra, deliberately rule-breaking
+    # instruction to the system prompt so a REAL adversarial model
+    # response can be produced and run through the REAL validators, rather
+    # than only ever proving the checks work against a hand-crafted
+    # fixture. Kept as an explicit, separate parameter (not folded into
+    # the normal prompt-building path) specifically so it can never be
+    # triggered by accident.
+    if debug_inject_violation_instruction:
+        system_prompt += f"\n\nFOR THIS GENERATION ONLY, additionally: {debug_inject_violation_instruction}"
 
     output = call_claude_for_tasty_six_card(anthropic_api_key, system_prompt, user_prompt)
     issues = run_all_validators(output, source_facts, candidate)
