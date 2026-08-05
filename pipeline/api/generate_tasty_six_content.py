@@ -1,10 +1,17 @@
 """
-Ties everything built tonight for the Tasty Six card writer into one real
-call: prompt construction (content_writer/tasty_six_prompt.py) -> a real
-Claude API call (forced tool-use against TASTY_SIX_TOOL_SCHEMA, never
-free-form prose) -> the full deterministic validation suite (schema
-shape, citations, numeric grounding, star consistency, banned language)
--> shaping the result into a content_drafts-ready row.
+Ties everything built for the Tasty Six card writer into one real call:
+prompt construction (content_writer/tasty_six_prompt.py) -> a real Claude
+API call (forced tool-use against TASTY_SIX_TOOL_SCHEMA, via the shared
+card_writer_common.call_claude_with_tool()) -> the full deterministic
+validation suite (schema shape, citations, numeric grounding, star
+consistency, banned language) -> shaping the result into a
+content_drafts-ready row.
+
+REFACTORED 2026-08-04: the actual API-calling code and every generic
+validator moved to card_writer_common.py, shared with the new regular-
+shelf-card writer (generate_shelf_card_content.py). Pure refactor, no
+behavior change here — confirmed by re-running the pre-existing test
+suite before and after and diffing the output.
 
 NEVER auto-approves or publishes anything -- this only ever produces a
 draft. review_status is set mechanically from validation_passed
@@ -24,74 +31,33 @@ this pipeline.
 import sys
 from pathlib import Path
 
-import requests
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer" / "voice"))
 
 from banned_language import find_banned_phrases  # noqa: E402
-from principles import confidence_band_for_score  # noqa: E402
-from tasty_six_prompt import build_system_prompt, build_user_prompt  # noqa: E402
-from tasty_six_writer_schema import (  # noqa: E402
-    TASTY_SIX_TOOL_SCHEMA,
+from card_writer_common import (  # noqa: E402
+    MODEL_NAME,
+    call_claude_with_tool,
     flatten_source_facts,
     validate_citations,
     validate_numeric_grounding,
-    validate_schema_shape,
     validate_star_consistency,
 )
-
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_VERSION = "2023-06-01"
-MODEL_NAME = "claude-sonnet-5"
-MAX_TOKENS = 1024
-REQUEST_TIMEOUT_SECONDS = 60
+from principles import confidence_band_for_score  # noqa: E402
+from tasty_six_prompt import build_system_prompt, build_user_prompt  # noqa: E402
+from tasty_six_writer_schema import TASTY_SIX_TOOL_SCHEMA, validate_schema_shape  # noqa: E402
 
 WRITER_TYPE = "tasty_six"
 
 
 def call_claude_for_tasty_six_card(api_key: str, system_prompt: str, user_prompt: str) -> dict:
-    """
-    One real Claude API call, forced tool-use against TASTY_SIX_TOOL_SCHEMA
-    -- structured output enforced by the API itself, never parsed from
-    free-form prose. Raises for network/HTTP errors (including a real
-    401/invalid-key); raises ValueError if the model response somehow has
-    no tool_use block -- shouldn't happen with tool_choice forced, but not
-    assumed.
-    """
-    response = requests.post(
-        ANTHROPIC_API_URL,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        },
-        json={
-            "model": MODEL_NAME,
-            "max_tokens": MAX_TOKENS,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}],
-            "tools": [TASTY_SIX_TOOL_SCHEMA],
-            "tool_choice": {"type": "tool", "name": TASTY_SIX_TOOL_SCHEMA["name"]},
-        },
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    if response.status_code >= 400:
-        # requests' default HTTPError message is just the status line --
-        # loses Anthropic's actual real error body (e.g. which field was
-        # invalid), which is the one thing actually needed to diagnose a
-        # 400. Raised as ValueError specifically so index.py's route
-        # surfaces this real detail to the caller instead of a generic
-        # "network error" with no explanation.
-        raise ValueError(f"Claude API returned {response.status_code}: {response.text}")
-    data = response.json()
-
-    for block in data.get("content", []):
-        if block.get("type") == "tool_use" and block.get("name") == TASTY_SIX_TOOL_SCHEMA["name"]:
-            return block["input"]
-
-    raise ValueError(f"Claude response had no {TASTY_SIX_TOOL_SCHEMA['name']} tool_use block: {data}")
+    """Thin, named wrapper around the shared call_claude_with_tool() —
+    kept as its own function (rather than inlining the shared call at the
+    one call site below) so anything reading this file sees a
+    Tasty-Six-specific entry point, matching the same shape every other
+    writer type's module will have."""
+    return call_claude_with_tool(api_key, system_prompt, user_prompt, TASTY_SIX_TOOL_SCHEMA)
 
 
 def run_all_validators(output: dict, source_facts: dict, candidate: dict) -> list:

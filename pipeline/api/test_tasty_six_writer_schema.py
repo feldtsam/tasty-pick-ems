@@ -1,10 +1,12 @@
 """
-Tests tasty_six_writer_schema.py's citation, numeric-grounding, and
-star-consistency validators against a REAL scored candidate shape (Corbin
-Carroll, PIT@AZ, 2026-07-28 — the same real pool this session has used
-throughout) plus deliberately adversarial why_reasons that violate each
-check exactly one way at a time, so a failure here points at a specific,
-explainable cause rather than a vague "something's wrong."
+Tests card_writer_common.py's citation, numeric-grounding, and
+star-consistency validators (shared across every writer type) plus
+tasty_six_writer_schema.py's own validate_schema_shape(), against a REAL
+scored candidate shape (Corbin Carroll, PIT@AZ, 2026-07-28 — the same
+real pool this session has used throughout) and deliberately adversarial
+why_reasons that violate each check exactly one way at a time, so a
+failure here points at a specific, explainable cause rather than a vague
+"something's wrong."
 
 Run: python3 pipeline/api/test_tasty_six_writer_schema.py
 """
@@ -13,13 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 
-from tasty_six_writer_schema import (
+from card_writer_common import (
     flatten_source_facts,
     validate_citations,
     validate_numeric_grounding,
-    validate_schema_shape,
     validate_star_consistency,
 )
+from tasty_six_writer_schema import validate_schema_shape
 
 REAL_CANDIDATE = {
     "candidate": {
@@ -313,6 +315,91 @@ if __name__ == "__main__":
     results.append(check(
         "a validly-cited real recent_form number is genuinely found and grounded (not silently unfindable)",
         validate_numeric_grounding(real_recent_form_citation_reasons, facts) == [],
+    ))
+
+    # --- Real production false positive (2026-08-04, Jeremy Pena):
+    # "both sit above N" where the real values round to N+1, not N, but
+    # genuinely DO exceed N -- must be validated as a comparative claim,
+    # not forced through point-value rounding. Uses this fixture's own
+    # real matchup components (28.5, 46.4), both genuinely above 25. ---
+    comparative_true_reasons = [{
+        "pillar": "matchup", "stars": 3,
+        "reason_text": "Contact-allowed and rate-outcome marks both sit above 25, a real tell here.",
+        "source_fact_keys": ["pillar_detail.matchup.components.contact_allowed", "pillar_detail.matchup.components.rate_outcome"],
+    }]
+    results.append(check(
+        "a TRUE comparative claim ('both above 25' when real values are 28.5/46.4) is NOT flagged, even though neither rounds to 25",
+        validate_numeric_grounding(comparative_true_reasons, facts) == [],
+    ))
+
+    # --- The exact real shape of the false positive this fix targets:
+    # real values 90.7/90.8 (hand-added here to mirror Pena's real numbers
+    # precisely) genuinely exceed 90 but round to 91, not 90. ---
+    pena_shaped_facts = dict(facts)
+    pena_shaped_facts["pillar_detail.matchup.components.contact_allowed"] = 90.8
+    pena_shaped_facts["pillar_detail.matchup.components.rate_outcome"] = 90.7
+    pena_shaped_reasons = [{
+        "pillar": "matchup", "stars": 5,
+        "reason_text": "Contact-allowed and rate-outcome marks both sit above 90, one of the strongest reads on the board.",
+        "source_fact_keys": ["pillar_detail.matchup.components.contact_allowed", "pillar_detail.matchup.components.rate_outcome"],
+    }]
+    results.append(check(
+        "the exact real Jeremy Pena false positive (90.7/90.8 vs claimed 'above 90') no longer triggers",
+        validate_numeric_grounding(pena_shaped_reasons, pena_shaped_facts) == [],
+    ))
+
+    # --- A comparative claim that is genuinely FALSE must still be caught
+    # -- this fix must not turn "above/over/under" into a free pass. ---
+    comparative_false_reasons = [{
+        "pillar": "matchup", "stars": 5,
+        "reason_text": "Contact-allowed and rate-outcome marks both sit above 200, elite by any measure.",
+        "source_fact_keys": ["pillar_detail.matchup.components.contact_allowed", "pillar_detail.matchup.components.rate_outcome"],
+    }]
+    comparative_false_violations = validate_numeric_grounding(comparative_false_reasons, facts)
+    results.append(check(
+        "a FALSE comparative claim ('above 200' when real values are 28.5/46.4) is still caught",
+        len(comparative_false_violations) == 1 and "above 200" in comparative_false_violations[0]["issue"],
+    ))
+
+    # --- Real production false negative (2026-08-04, deliberate
+    # adversarial test): a fabricated ".385 batting average" landed within
+    # the old flat 0.5 tolerance of a real wind_speed_mph=0 (roof closed,
+    # no wind) and passed as grounded by pure numeric coincidence. Uses
+    # this fixture's own real near-zero value
+    # (pillar_detail.environment.components.park=0.0) rather than a
+    # fabricated fixture. ---
+    near_zero_fabrication_reasons = [{
+        "pillar": "environment", "stars": 3,
+        "reason_text": "A real park factor near .3 backs up the case here.",
+        "source_fact_keys": ["pillar_detail.environment.components.park"],
+    }]
+    near_zero_violations = validate_numeric_grounding(near_zero_fabrication_reasons, facts)
+    results.append(check(
+        "a fabricated 0.3 near a real 0.0 is now caught (was silently accepted under the old flat 0.5 tolerance)",
+        len(near_zero_violations) == 1 and "0.3" in near_zero_violations[0]["issue"],
+    ))
+
+    # --- The near-zero fix must not break legitimately writing '0' for a
+    # real 0 -- the floor must still accept the exact real value itself. ---
+    real_zero_reasons = [{
+        "pillar": "environment", "stars": 2,
+        "reason_text": "Real park factor here sits at 0, a neutral read.",
+        "source_fact_keys": ["pillar_detail.environment.components.park"],
+    }]
+    results.append(check(
+        "writing the real value itself (0 for a real 0.0) still passes under the tightened near-zero tolerance",
+        validate_numeric_grounding(real_zero_reasons, facts) == [],
+    ))
+
+    # --- The near-zero fix must not affect normal-magnitude rounding --
+    # already covered above, but re-confirmed explicitly here since this
+    # is exactly the behavior that must NOT regress. ---
+    results.append(check(
+        "normal-magnitude rounding tolerance is unaffected by the near-zero fix (81.1 -> 81 still passes)",
+        validate_numeric_grounding(
+            [{"pillar": "skill", "stars": 4, "reason_text": "Power grade of 81 here.", "source_fact_keys": ["pillar_detail.skill.components.power_production"]}],
+            facts,
+        ) == [],
     ))
 
     print(f"\n{sum(results)}/{len(results)} checks passed")

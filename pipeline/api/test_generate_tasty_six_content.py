@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer" / "voice"))
 
+from card_writer_common import flatten_source_facts  # noqa: E402
 from content_writer.tasty_six_prompt import build_system_prompt, build_user_prompt  # noqa: E402
 from generate_tasty_six_content import draft_for_write, run_all_validators  # noqa: E402
-from tasty_six_writer_schema import flatten_source_facts  # noqa: E402
 
 REAL_CANDIDATE = {
     "candidate": {
