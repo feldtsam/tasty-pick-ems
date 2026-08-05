@@ -37,6 +37,10 @@ from curate_shelves import curate_shelves_for_date
 from shelf_curation import DEFAULT_SHELF_SIZE
 from grade_official_picks_live import grade_official_picks_for_pending
 from generate_tasty_six_content import draft_for_write, generate_tasty_six_draft
+from generate_shelf_card_content import (
+    draft_for_write as shelf_card_draft_for_write,
+    generate_shelf_card_draft,
+)
 
 app = Flask(__name__)
 
@@ -617,5 +621,78 @@ def generate_tasty_six_health_check():
         "usage": "POST /api/content-writer/tasty-six/generate with {\"candidate\": {...one "
                  "shelf_candidates_detailed entry...}} to generate one real, validated Tasty Six "
                  "draft and forward it to content_drafts.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/content-writer/shelf-card/generate", methods=["POST"])
+def generate_shelf_card_endpoint():
+    """
+    Generates ONE real regular shelf card for ONE real candidate — same
+    chain as /api/content-writer/tasty-six/generate (shared validators,
+    shared Claude-calling code, same content_drafts destination), except
+    the card is title + why_reasons only, no editorial_sentence. See
+    generate_shelf_card_content.py and shelf_card_writer_schema.py for the
+    one real structural difference from the Tasty Six writer.
+
+    NEVER auto-approves or publishes anything. POST body: {"candidate": {...}}
+    — one entry from /api/curate-shelves's shelf_candidates_detailed
+    response (include_rows: true).
+
+    Optional "debug_inject_violation_instruction" (string): TESTING ONLY,
+    same as the Tasty Six endpoint.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    candidate = data.get("candidate")
+    debug_inject_violation_instruction = data.get("debug_inject_violation_instruction")
+    if not isinstance(candidate, dict) or "candidate" not in candidate or "shelf" not in candidate:
+        return jsonify({
+            "error": "POST body must include a real candidate entry: "
+                     "{\"candidate\": {...one shelf_candidates_detailed entry, with its own "
+                     "\"candidate\"/\"shelf\" keys...}}",
+        }), 400
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY is not configured"}), 500
+
+    try:
+        draft = generate_shelf_card_draft(candidate, api_key, debug_inject_violation_instruction)
+    except ValueError as e:
+        print(f"[content-writer:shelf-card:generate] bad input: {e}", flush=True)
+        return jsonify({"error": str(e)}), 400
+    except requests.exceptions.RequestException as e:
+        print(f"[content-writer:shelf-card:generate] network_error={e}", flush=True)
+        return jsonify({"error": "Network error reaching the Claude API.", "detail": str(e)}), 502
+
+    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    write_url = os.environ.get("LOVABLE_CONTENT_DRAFTS_WRITE_URL", DEFAULT_CONTENT_DRAFTS_WRITE_URL)
+    forward_result = {"success": None, "status_code": None, "error": None}
+    if secret:
+        forward_result = forward_to_lovable([shelf_card_draft_for_write(draft)], secret, write_url)
+
+    print(
+        f"[content-writer:shelf-card:generate] mlbam_id={draft['mlbam_id']} shelf={draft['shelf']} "
+        f"confidence_band={draft['confidence_band']} validation_passed={draft['validation_passed']} "
+        f"issues={len(draft['validation_issues'])} "
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']}",
+        flush=True,
+    )
+
+    return jsonify({
+        "draft": draft,
+        "forwarded": forward_result["success"],
+        "lovable_status_code": forward_result["status_code"],
+        "forward_error": forward_result["error"],
+    }), 200
+
+
+@app.route("/api/content-writer/shelf-card/generate", methods=["GET"])
+def generate_shelf_card_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/content-writer/shelf-card/generate with {\"candidate\": {...one "
+                 "shelf_candidates_detailed entry...}} to generate one real, validated regular "
+                 "shelf card draft (title + why_reasons only) and forward it to content_drafts.",
         "deployed_via": "github-auto-deploy",
     })
