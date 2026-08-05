@@ -198,6 +198,28 @@ def validate_citations(why_reasons: list, source_facts: dict) -> list[dict]:
 _NUMBER_PATTERN = re.compile(r"(?<![a-zA-Z])-?\d*\.?\d+(?!\s*(?:st|nd|rd|th)\b)")
 
 
+# Real false positive found in production generation (2026-08-04, George
+# Springer, Cold Pitchers to Attack): "a 9.33 recent ERA and 1.47 HR/9" and
+# "walking nearly 6 per 9" both got the "9" extracted as its own separate
+# ungrounded number. Baseball's standard "per nine innings" rate-stat
+# notation (K/9, BB/9, HR/9, or spelled out as "X per 9") uses a literal
+# "9" as a unit denominator, not a separate factual claim -- the real
+# numbers in those two examples (9.33, 1.47) were already correctly
+# grounded; the bare "9" from the notation itself is what got wrongly
+# flagged. Real and recurring, not a one-off: Cold Pitchers to Attack's
+# whole premise is citing opposing-pitcher recent form, which is almost
+# always exactly these per-9 stats.
+#
+# Word-boundary-anchored so this ONLY matches the exact "/9" or "per 9"
+# notation, never a genuinely different number that happens to follow a
+# slash or the word "per" for some other reason: the \b immediately after
+# the "9" requires a non-digit boundary right there, which two adjacent
+# digits never have -- so "/90", "/95", "per 90" don't match. An unrelated
+# fraction like "3/4" or a date like "8/15" doesn't match either, since
+# neither contains a literal 9 in that position at all.
+_PER_NINE_PATTERN = re.compile(r"(?:/|per\s+)(9)\b", re.IGNORECASE)
+
+
 # Real false positive found in production generation (2026-08-04, Jeremy
 # Pena): "Bieber's contact-allowed and rate-outcome marks both sit above
 # 90" was flagged as ungrounded because the real values (90.8, 90.7) don't
@@ -489,6 +511,13 @@ def validate_numeric_grounding(why_reasons: list, source_facts: dict) -> list[di
     production; see _extract_comparative_claims' docstring). Numbers
     consumed by a detected comparative phrase are excluded from the
     point-value pass so they're never double-checked.
+
+    "/9" AND "PER 9" NOTATION IS EXCLUDED ENTIRELY, not validated as a
+    claim at all — see _PER_NINE_PATTERN's docstring. The "9" in "1.47
+    HR/9" or "walking 6 per 9" is a unit denominator (per nine innings
+    pitched), not a separate factual number, and word-boundary-anchoring
+    keeps this narrow: a genuinely different number that happens to
+    follow a slash or the word "per" for an unrelated reason is untouched.
     """
     source_pairs = _source_numbers_with_tolerance(source_facts)
 
@@ -510,9 +539,17 @@ def validate_numeric_grounding(why_reasons: list, source_facts: dict) -> list[di
                     ),
                 })
 
+        # "/9" and "per 9" per-nine-innings notation -- the "9" is a unit
+        # denominator, not a claimed fact, so it's excluded from grounding
+        # the same way a comparative-claim number is. Never validated
+        # against source facts at all (unlike comparative claims, there's
+        # no "claim" here to check) -- just excluded from the point-value
+        # pass below.
+        exclude_spans += [m.span(1) for m in _PER_NINE_PATTERN.finditer(text)]
+
         for m in _NUMBER_PATTERN.finditer(text):
             if any(m.start() >= lo and m.end() <= hi for lo, hi in exclude_spans):
-                continue  # already validated as a comparative claim above
+                continue  # already validated as a comparative claim, or is per-nine notation, above
             n = round(float(m.group()), 2)
             if 1 <= n <= 5 and n == int(n):
                 continue  # small narrative integer, not flagged — see docstring

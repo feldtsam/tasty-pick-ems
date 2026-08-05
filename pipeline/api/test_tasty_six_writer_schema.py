@@ -402,5 +402,45 @@ if __name__ == "__main__":
         ) == [],
     ))
 
+    # --- Real production false positive (2026-08-04, George Springer,
+    # Cold Pitchers to Attack): "1.47 HR/9" and "6 per 9" both had their
+    # "9" extracted as a separate ungrounded number. Reproduces the exact
+    # real shape using this fixture's own real opposing_pitcher_recent_form
+    # (era=3.19, hr_per_9=1.74, bb_per_9=0.87, starts_sampled=5). ---
+    per_nine_reasons = [{
+        "pillar": "matchup", "stars": 4,
+        "reason_text": (
+            "The opposing pitcher is leaking hard right now -- a 3.19 recent ERA and 1.74 HR/9 "
+            "over his last 5 starts show real trouble, and he is also walking batters at 0.87 "
+            "per 9 in that stretch."
+        ),
+        "source_fact_keys": [
+            "opposing_pitcher_recent_form.recent_era",
+            "opposing_pitcher_recent_form.recent_hr_per_9",
+            "opposing_pitcher_recent_form.recent_bb_per_9",
+            "opposing_pitcher_recent_form.recent_starts_sampled",
+        ],
+    }]
+    results.append(check(
+        "the exact real George Springer false positive ('1.74 HR/9' and '0.87 per 9') no longer triggers",
+        validate_numeric_grounding(per_nine_reasons, facts) == [],
+    ))
+
+    # --- The per-9 exclusion must stay narrow: a genuinely different,
+    # fabricated number that happens to follow a slash or the word "per"
+    # for an unrelated reason must still be caught, not swallowed by this
+    # fix. "/95" and "per 90" don't match the word-boundary-anchored "9"
+    # pattern (a real digit immediately follows), so they're untouched. ---
+    fake_slash_reasons = [{
+        "pillar": "matchup", "stars": 3,
+        "reason_text": "A fabricated career mark of 8/95 backs this up, along with a rate of 12 per 90.",
+        "source_fact_keys": ["opposing_pitcher_recent_form.recent_era"],
+    }]
+    fake_slash_violations = validate_numeric_grounding(fake_slash_reasons, facts)
+    results.append(check(
+        "a genuinely fabricated number following a slash or 'per' for an unrelated reason ('8/95', '12 per 90') is still caught, not swallowed by the per-9 exclusion",
+        any("95" in v["issue"] for v in fake_slash_violations) and any("12" in v["issue"] for v in fake_slash_violations),
+    ))
+
     print(f"\n{sum(results)}/{len(results)} checks passed")
     raise SystemExit(0 if all(results) else 1)
