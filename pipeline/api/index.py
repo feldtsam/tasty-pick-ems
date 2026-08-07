@@ -36,6 +36,7 @@ from scored_picks import build_scored_picks_for_game
 from curate_shelves import curate_shelves_for_date
 from shelf_curation import DEFAULT_SHELF_SIZE
 from grade_official_picks_live import grade_official_picks_for_pending
+from grade_bookmarks_live import grade_bookmarks_for_pending
 from generate_tasty_six_content import draft_for_write, generate_tasty_six_draft
 from generate_shelf_card_content import (
     draft_for_write as shelf_card_draft_for_write,
@@ -74,6 +75,11 @@ DEFAULT_OFFICIAL_PICK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/
 # Same status as the URLs above — drafted, staged for review, not yet
 # applied to the live Lovable app at the time this was written.
 DEFAULT_CONTENT_DRAFTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/content-drafts-write"
+
+# Same status as the URLs above — drafted, staged for review, not yet
+# applied to the live Lovable app at the time this was written.
+DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/api/public/bookmarks-needing-grading-read"
+DEFAULT_BOOKMARK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/bookmark-results-write"
 
 
 def _parse_events(data, diagnostics=None):
@@ -540,6 +546,78 @@ def grade_official_picks_health_check():
         "status": "ok",
         "usage": "POST /api/grade-official-picks with an optional {\"lookback_days\": 3} body to grade every "
                  "ungraded official pick (won/lost/void only) and forward results to Lovable.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/grade-bookmarks", methods=["POST"])
+def grade_bookmarks_endpoint():
+    """
+    Grades every user-saved pick (bookmarks row) that has real mlbam_id/
+    game_pk, hasn't been graded yet, and whose game has already started:
+    reads the ungraded set from Lovable's signed bookmarks-needing-grading-
+    read endpoint, grades it via bookmark_grading.py (real MLB lookups,
+    deduplicated per unique game, same grade_pick() as official picks),
+    forwards only the terminal (won/lost/void) results to
+    bookmark-results-write, which UPDATEs each bookmark row in place. See
+    grade_bookmarks_live.py for the full reasoning, including how this
+    differs from official-picks grading (per-user fan-out, UPDATE instead
+    of insert/upsert, win/loss/void vocabulary mapped server-side).
+
+    Deliberately separate from /api/grade-official-picks — never shares a
+    table, a query, or a request body shape with it.
+
+    POST body: none required. A batch of 0 graded picks is a normal
+    result, not an error — same reasoning as official-picks grading.
+    """
+    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
+
+    read_url = os.environ.get("LOVABLE_BOOKMARKS_NEEDING_GRADING_READ_URL", DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL)
+    write_url = os.environ.get("LOVABLE_BOOKMARK_RESULTS_WRITE_URL", DEFAULT_BOOKMARK_RESULTS_WRITE_URL)
+
+    try:
+        result = grade_bookmarks_for_pending(secret, read_url, write_url)
+    except requests.exceptions.RequestException as e:
+        print(f"[grade-bookmarks] network_error_reading={e}", flush=True)
+        return jsonify({"error": "Network error reaching the bookmarks-needing-grading-read endpoint.", "detail": str(e)}), 502
+
+    if result["error"] is not None:
+        print(f"[grade-bookmarks] aborted error={result['error']}", flush=True)
+        return jsonify({"graded": False, "error": result["error"]}), 502
+
+    forward = result["forwarded"]
+    forward_success = forward["success"] if forward is not None else True  # nothing to forward is not a failure
+
+    print(
+        f"[grade-bookmarks] picks_needing_grading={result['picks_needing_grading_count']} "
+        f"graded={result['graded_count']} still_pending={result['still_pending_count']} "
+        f"grading_errors={len(result['grading_errors'])} "
+        f"forward_success={forward['success'] if forward else None} "
+        f"forward_status={forward['status_code'] if forward else None}",
+        flush=True,
+    )
+
+    return jsonify({
+        "graded": True,
+        "picks_needing_grading_count": result["picks_needing_grading_count"],
+        "graded_count": result["graded_count"],
+        "still_pending_count": result["still_pending_count"],
+        "grading_errors": result["grading_errors"],
+        "forwarded": forward["success"] if forward else None,
+        "lovable_status_code": forward["status_code"] if forward else None,
+        "forward_error": forward["error"] if forward else None,
+        "lovable_response": forward.get("response_body") if forward else None,
+    }), (502 if forward_success is False else 200)
+
+
+@app.route("/api/grade-bookmarks", methods=["GET"])
+def grade_bookmarks_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/grade-bookmarks (no body needed) to grade every ungraded user-saved pick "
+                 "(won/lost/void only) whose game has started, and forward results to Lovable.",
         "deployed_via": "github-auto-deploy",
     })
 
