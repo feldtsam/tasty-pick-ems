@@ -37,6 +37,7 @@ from curate_shelves import curate_shelves_for_date
 from shelf_curation import DEFAULT_SHELF_SIZE
 from grade_official_picks_live import grade_official_picks_for_pending
 from grade_bookmarks_live import grade_bookmarks_for_pending
+from content_draft_generation_live import generate_content_drafts_for_pending
 from generate_tasty_six_content import draft_for_write, generate_tasty_six_draft
 from generate_shelf_card_content import (
     draft_for_write as shelf_card_draft_for_write,
@@ -80,6 +81,10 @@ DEFAULT_CONTENT_DRAFTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/
 # applied to the live Lovable app at the time this was written.
 DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/api/public/bookmarks-needing-grading-read"
 DEFAULT_BOOKMARK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/bookmark-results-write"
+
+# Same status as the URLs above — drafted, staged for review, not yet
+# applied to the live Lovable app at the time this was written.
+DEFAULT_CONTENT_DRAFTS_NEEDING_GENERATION_READ_URL = "https://tastypickems.lovable.app/api/public/content-drafts-needing-generation-read"
 
 
 def resolve_url_env(name: str, default: str) -> str:
@@ -655,6 +660,95 @@ def grade_bookmarks_health_check():
         "status": "ok",
         "usage": "POST /api/grade-bookmarks (no body needed) to grade every ungraded user-saved pick "
                  "(won/lost/void only) whose game has started, and forward results to Lovable.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/generate-content-drafts", methods=["POST"])
+def generate_content_drafts_endpoint():
+    """
+    Closes the automation gap between curate-shelves and the content
+    writers: reads today's real shelf_assignments rows that don't yet have
+    a matching content_drafts row (via the signed
+    content-drafts-needing-generation-read anti-join), generates a real
+    draft for each via generate_tasty_six_draft()/generate_shelf_card_draft()
+    (unmodified — the exact same functions the manual /content-writer/*/
+    generate routes already use), and forwards each real draft to
+    content_drafts, one at a time, same as those routes do internally. See
+    content_draft_generation_live.py for the full reasoning.
+
+    IDEMPOTENT BY CONSTRUCTION: running this twice in a row is safe —
+    the second run's read step returns nothing for candidates the first
+    run already wrote a draft for. No separate "already attempted"
+    tracking needed, same anti-join philosophy as official-picks grading.
+
+    Deliberately a single endpoint doing the internal per-candidate
+    fan-out (one real Claude call + one real forward each), so Make.com
+    calls this once per scheduled run instead of looping through every
+    curated candidate itself — same shape as /api/grade-official-picks
+    and /api/grade-bookmarks.
+
+    POST body (optional): {"slate": "YYYY-MM-DD"}. Defaults to today
+    (America/New_York) on the Lovable side. A batch of 0 candidates
+    needing content is a normal result, not an error — the same slate can
+    legitimately be fully covered already.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    slate = data.get("slate")
+
+    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY is not configured"}), 500
+
+    read_url = resolve_url_env("LOVABLE_CONTENT_DRAFTS_NEEDING_GENERATION_READ_URL", DEFAULT_CONTENT_DRAFTS_NEEDING_GENERATION_READ_URL)
+    write_url = resolve_url_env("LOVABLE_CONTENT_DRAFTS_WRITE_URL", DEFAULT_CONTENT_DRAFTS_WRITE_URL)
+
+    try:
+        result = generate_content_drafts_for_pending(secret, read_url, write_url, api_key, slate=slate)
+    except requests.exceptions.RequestException as e:
+        print(f"[generate-content-drafts] network_error_reading={e}", flush=True)
+        return jsonify({"error": "Network error reaching the content-drafts-needing-generation-read endpoint.", "detail": str(e)}), 502
+
+    if result["error"] is not None:
+        print(f"[generate-content-drafts] aborted error={result['error']}", flush=True)
+        return jsonify({"generated": False, "error": result["error"]}), 502
+
+    print(
+        f"[generate-content-drafts] candidates_found={result['candidates_found']} "
+        f"(tasty_six={result['tasty_six_found']} shelf_card={result['shelf_card_found']}) "
+        f"generated={result['generated_count']} "
+        f"validation_passed={result['validation_passed_count']} validation_failed={result['validation_failed_count']} "
+        f"generation_errors={len(result['generation_errors'])} "
+        f"forwarded={result['forwarded_count']} forward_errors={len(result['forward_errors'])}",
+        flush=True,
+    )
+
+    return jsonify({
+        "generated": True,
+        "candidates_found": result["candidates_found"],
+        "tasty_six_found": result["tasty_six_found"],
+        "shelf_card_found": result["shelf_card_found"],
+        "generated_count": result["generated_count"],
+        "validation_passed_count": result["validation_passed_count"],
+        "validation_failed_count": result["validation_failed_count"],
+        "generation_errors": result["generation_errors"],
+        "forwarded_count": result["forwarded_count"],
+        "forward_errors": result["forward_errors"],
+        "results": result["results"],
+    }), 200
+
+
+@app.route("/api/generate-content-drafts", methods=["GET"])
+def generate_content_drafts_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/generate-content-drafts with an optional {\"slate\": \"YYYY-MM-DD\"} body to "
+                 "generate real content_drafts for every curated candidate that doesn't have one yet, and "
+                 "forward each to Lovable. Idempotent — safe to call repeatedly.",
         "deployed_via": "github-auto-deploy",
     })
 
