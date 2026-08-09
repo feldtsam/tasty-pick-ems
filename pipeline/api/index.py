@@ -10,6 +10,7 @@ Accepts a POST with a JSON body that's either:
 
 Returns the flattened, filtered list of HR prop rows as JSON.
 """
+import hmac
 import json
 import os
 import sys
@@ -122,6 +123,33 @@ def resolve_url_env(name: str, default: str) -> str:
         )
         return default
     return value
+
+
+def check_pipeline_secret():
+    """
+    Shared-secret header check for the four endpoints only ever called by
+    Make.com directly (curate-shelves, generate-content-drafts,
+    grade-official-picks, grade-bookmarks) — deliberately NOT full HMAC
+    signing like content-drafts-write/official-pick-results-write/etc use.
+    Those sign a real, variable, attacker-shaped BODY going out TO Lovable;
+    these four instead receive a small, fixed, Make.com-only trigger with
+    no meaningful body to forge — a constant-time shared-secret comparison
+    is the right amount of protection for "only Make.com should be able to
+    kick this off", not a mismatched upgrade to signature verification.
+
+    Returns a (401, jsonify(...)) Flask response tuple if the request
+    should be rejected, or None if it's authorized to proceed. Constant-
+    time comparison (hmac.compare_digest) avoids a timing side-channel on
+    the secret, same reasoning as every other secret comparison in this
+    codebase (see lovable_forward.py / the TS routes' verifySignature).
+    """
+    expected = os.environ.get("PIPELINE_INCOMING_SECRET")
+    if not expected:
+        return jsonify({"error": "PIPELINE_INCOMING_SECRET is not configured"}), 500
+    provided = request.headers.get("X-Pipeline-Secret")
+    if not provided or not hmac.compare_digest(provided, expected):
+        return jsonify({"error": "Missing or invalid X-Pipeline-Secret header"}), 401
+    return None
 
 
 def _parse_events(data, diagnostics=None):
@@ -446,6 +474,10 @@ def curate_shelves_endpoint():
     never needed by Make.com's real read->curate->write flow, which
     already gets the thin rows via the write forward, not this response.
     """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
     data = request.get_json(force=True, silent=True) or {}
     date = data.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     shelf_size = data.get("shelf_size", DEFAULT_SHELF_SIZE)
@@ -535,6 +567,10 @@ def grade_official_picks_endpoint():
     POST body (all optional): {"lookback_days": 3}. A batch of 0 graded
     picks is a normal result, not an error — see the module docstring.
     """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
     data = request.get_json(force=True, silent=True) or {}
     lookback_days = data.get("lookback_days")
 
@@ -612,6 +648,10 @@ def grade_bookmarks_endpoint():
     POST body: none required. A batch of 0 graded picks is a normal
     result, not an error — same reasoning as official-picks grading.
     """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
     secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
     if not secret:
         return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
@@ -693,6 +733,10 @@ def generate_content_drafts_endpoint():
     needing content is a normal result, not an error — the same slate can
     legitimately be fully covered already.
     """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
     data = request.get_json(force=True, silent=True) or {}
     slate = data.get("slate")
 
