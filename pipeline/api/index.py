@@ -82,6 +82,43 @@ DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/a
 DEFAULT_BOOKMARK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/bookmark-results-write"
 
 
+def resolve_url_env(name: str, default: str) -> str:
+    """
+    Same fallback intent as os.environ.get(name, default), but treats a
+    PRESENT-but-blank value the same as an absent one, logging loudly when
+    that happens.
+
+    REAL BUG THIS CLOSES: os.environ.get(name, default) only substitutes
+    `default` when `name` is entirely absent from the environment. A
+    variable that exists but was saved empty (confirmed real cause: Vercel
+    "Sensitive" env vars are write-only after creation — their value can
+    never be read back via the CLI or dashboard to double-check what was
+    actually saved) silently passes an empty string all the way down into
+    forward_to_lovable() -> requests.post(), which fails deep inside
+    urllib3 with a confusing `MissingSchema: Invalid URL ''` — nothing
+    about that error points back at the real cause (a blank env var), and
+    it only surfaces once something downstream actually tries to use the
+    value, not at the point where it was read. Catching it right here,
+    at read time, turns a confusing multi-layer-deep failure into an
+    immediate, specific, greppable log line.
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    if value.strip() == "":
+        print(
+            f"[env-config] WARNING: {name} is set but blank/whitespace-only — "
+            f"falling back to default {default!r}. This variable cannot be "
+            f"read back to confirm its real stored value once marked "
+            f"Sensitive in Vercel; the only fix is to remove and re-add it: "
+            f"vercel env rm {name} <env> && "
+            f"printf '%s' '<value>' | vercel env add {name} <env>.",
+            flush=True,
+        )
+        return default
+    return value
+
+
 def _parse_events(data, diagnostics=None):
     """Thin wrapper — the actual shape-detection logic now lives in
     flatten_hr_props.flatten_any() so scored_picks.py's orchestrator can
@@ -144,7 +181,7 @@ def flatten_and_forward_endpoint():
         # than silently sending an unsigned request if it's ever missing.
         return jsonify({"success": False, "error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
 
-    url = os.environ.get("LOVABLE_WEBHOOK_URL", DEFAULT_LOVABLE_URL)
+    url = resolve_url_env("LOVABLE_WEBHOOK_URL", DEFAULT_LOVABLE_URL)
     result = forward_to_lovable(rows, secret, url)
 
     # The gap that made the last real incident harder to diagnose than it
@@ -256,7 +293,7 @@ def _score_and_forward(game_pk, data, raw_body, log_label):
         if not secret:
             forward_result = {"success": False, "status_code": None, "error": "LOVABLE_WEBHOOK_SECRET is not configured"}
         else:
-            url = os.environ.get("LOVABLE_SCORED_PICKS_WEBHOOK_URL", DEFAULT_SCORED_PICKS_URL)
+            url = resolve_url_env("LOVABLE_SCORED_PICKS_WEBHOOK_URL", DEFAULT_SCORED_PICKS_URL)
             forward_result = forward_to_lovable(scored_picks, secret, url)
 
     print(
@@ -413,8 +450,8 @@ def curate_shelves_endpoint():
     if not secret:
         return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
 
-    read_url = os.environ.get("LOVABLE_SCORED_PICKS_READ_URL", DEFAULT_SCORED_PICKS_READ_URL)
-    write_url = os.environ.get("LOVABLE_SHELF_ASSIGNMENTS_WRITE_URL", DEFAULT_SHELF_ASSIGNMENTS_WRITE_URL)
+    read_url = resolve_url_env("LOVABLE_SCORED_PICKS_READ_URL", DEFAULT_SCORED_PICKS_READ_URL)
+    write_url = resolve_url_env("LOVABLE_SHELF_ASSIGNMENTS_WRITE_URL", DEFAULT_SHELF_ASSIGNMENTS_WRITE_URL)
 
     try:
         result = curate_shelves_for_date(date, secret, read_url, shelf_size=shelf_size)
@@ -500,8 +537,8 @@ def grade_official_picks_endpoint():
     if not secret:
         return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
 
-    read_url = os.environ.get("LOVABLE_PICKS_NEEDING_GRADING_READ_URL", DEFAULT_PICKS_NEEDING_GRADING_READ_URL)
-    write_url = os.environ.get("LOVABLE_OFFICIAL_PICK_RESULTS_WRITE_URL", DEFAULT_OFFICIAL_PICK_RESULTS_WRITE_URL)
+    read_url = resolve_url_env("LOVABLE_PICKS_NEEDING_GRADING_READ_URL", DEFAULT_PICKS_NEEDING_GRADING_READ_URL)
+    write_url = resolve_url_env("LOVABLE_OFFICIAL_PICK_RESULTS_WRITE_URL", DEFAULT_OFFICIAL_PICK_RESULTS_WRITE_URL)
 
     try:
         result = grade_official_picks_for_pending(secret, read_url, write_url, lookback_days=lookback_days)
@@ -574,8 +611,8 @@ def grade_bookmarks_endpoint():
     if not secret:
         return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
 
-    read_url = os.environ.get("LOVABLE_BOOKMARKS_NEEDING_GRADING_READ_URL", DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL)
-    write_url = os.environ.get("LOVABLE_BOOKMARK_RESULTS_WRITE_URL", DEFAULT_BOOKMARK_RESULTS_WRITE_URL)
+    read_url = resolve_url_env("LOVABLE_BOOKMARKS_NEEDING_GRADING_READ_URL", DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL)
+    write_url = resolve_url_env("LOVABLE_BOOKMARK_RESULTS_WRITE_URL", DEFAULT_BOOKMARK_RESULTS_WRITE_URL)
 
     try:
         result = grade_bookmarks_for_pending(secret, read_url, write_url)
@@ -671,7 +708,7 @@ def generate_tasty_six_endpoint():
         return jsonify({"error": "Network error reaching the Claude API.", "detail": str(e)}), 502
 
     secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
-    write_url = os.environ.get("LOVABLE_CONTENT_DRAFTS_WRITE_URL", DEFAULT_CONTENT_DRAFTS_WRITE_URL)
+    write_url = resolve_url_env("LOVABLE_CONTENT_DRAFTS_WRITE_URL", DEFAULT_CONTENT_DRAFTS_WRITE_URL)
     forward_result = {"success": None, "status_code": None, "error": None}
     if secret:
         forward_result = forward_to_lovable([draft_for_write(draft)], secret, write_url)
@@ -744,7 +781,7 @@ def generate_shelf_card_endpoint():
         return jsonify({"error": "Network error reaching the Claude API.", "detail": str(e)}), 502
 
     secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
-    write_url = os.environ.get("LOVABLE_CONTENT_DRAFTS_WRITE_URL", DEFAULT_CONTENT_DRAFTS_WRITE_URL)
+    write_url = resolve_url_env("LOVABLE_CONTENT_DRAFTS_WRITE_URL", DEFAULT_CONTENT_DRAFTS_WRITE_URL)
     forward_result = {"success": None, "status_code": None, "error": None}
     if secret:
         forward_result = forward_to_lovable([shelf_card_draft_for_write(draft)], secret, write_url)
