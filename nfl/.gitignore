@@ -1,5 +1,6 @@
 # Pulled/derived data — regenerate with scripts/, don't commit
 *.csv
+data/
 
 .venv/
 __pycache__/
