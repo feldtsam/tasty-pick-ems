@@ -39,7 +39,7 @@ from redzone import (
     aggregate_redzone_game,
     build_id_crosswalk,
 )
-from scoring import score_role_momentum, score_situation, score_td_opportunity
+from scoring import score_evidence_quality, score_role_momentum, score_situation, score_td_opportunity
 
 SEASONS = [2022, 2024, 2025]
 
@@ -102,6 +102,7 @@ def spot_check(weekly: pd.DataFrame, season: int, player_name_contains: str) -> 
         "rz_touch_share", "offense_snaps", "team_offense_snaps", "snap_share",
         "depth_rank", "ahead_injury_statuses",
         "defteam", "position_group", "defensive_matchup_vulnerability", "environment_score", "situation",
+        "evidence_completeness", "evidence_convergence", "evidence_quality",
     ]
     print(sub[cols].to_string(index=False))
 
@@ -185,6 +186,12 @@ if __name__ == "__main__":
 
     print("Scoring Situation ...")
     weekly = score_situation(weekly, allowed_weekly)
+
+    # Must run last — a pure meta-layer over the other three pillars'
+    # own outputs (completeness columns + final scores), nothing here is
+    # computable any earlier in the pipeline.
+    print("Scoring Evidence Quality & Convergence ...")
+    weekly = score_evidence_quality(weekly)
 
     out_path = "player_redzone_weekly.csv"
     weekly.to_csv(out_path, index=False)

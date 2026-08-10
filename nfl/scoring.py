@@ -90,6 +90,31 @@ oversight: game script / team totals (belongs with Market Value once odds
 are wired in) and offensive line / QB-connection / coaching-tendency
 signals (no clean nfl_data_py source - flagged as a known gap, no proxy
 built).
+
+Evidence Quality & Convergence (10% weight) - unlike every pillar above,
+needs no new data at all: a pure meta-layer over TD Opportunity's, Role &
+Momentum's, and Situation's own outputs, so it must run after all three
+(see score_evidence_quality). Two axes, combined as a genuine AND
+relationship (geometric mean, not max/bonus or weighted average - a new
+combination shape in this module, deliberately, because neither axis
+alone is sufficient the way the sub-components of the other pillars are):
+  Completeness  - what fraction of the three pillars' percentile inputs
+                   were real values vs neutral-50 fallback, exposed by
+                   each pillar via _percentile_fn's optional
+                   track_fallback accumulator rather than re-derived from
+                   raw columns.
+  Convergence   - do the signal FAMILIES agree with each other, direction-
+                   agnostic (100 - range of the family scores) -
+                   deliberately NOT "how many score above a bullish
+                   threshold," which would conflate agreement with
+                   directionality that the other four pillars already
+                   own. Four unanimously bearish families are in just as
+                   much agreement as four unanimously bullish ones.
+
+Market Value doesn't have a comparable 0-100 score yet (snapshot-only,
+see market_value.py) and isn't backfilled into historical rows at all -
+convergence runs over however many of the four families are actually
+present on a row (currently 3, typically), not a hardcoded 4.
 """
 import numpy as np
 import pandas as pd
@@ -175,6 +200,20 @@ CONFIG = {
         "defensive_matchup_weight": 0.7,
         "environment_weight": 0.3,
     },
+    "evidence_quality": {
+        # The four signal-family scores convergence checks agreement
+        # across, and the per-family completeness columns averaged for
+        # the completeness sub-score. market_value_score doesn't exist
+        # yet (Market Value is snapshot-only so far, no comparable 0-100
+        # score) -- listed here anyway so it's picked up automatically,
+        # for whichever rows it's actually present on, once it exists.
+        # Both lists are read via column-existence checks, not asserted
+        # to all be present -- convergence and completeness both operate
+        # over however many of these are actually on a given row (2-4),
+        # not a hardcoded 4. See score_evidence_quality.
+        "family_score_columns": ["td_opportunity", "role_momentum", "situation", "market_value_score"],
+        "completeness_columns": ["td_opportunity_completeness", "role_momentum_completeness", "situation_completeness"],
+    },
 }
 
 
@@ -189,14 +228,29 @@ def _qualified_mask(weekly: pd.DataFrame, config: dict) -> pd.Series:
     return season_total_rz_touches >= config["min_rz_touches_for_qualification"]
 
 
-def _percentile_fn(weekly: pd.DataFrame, config: dict):
-    """Returns a pct(values) closure bound to this weekly table's qualified
-    reference population."""
+def _percentile_fn(weekly: pd.DataFrame, config: dict, track_fallback: list = None):
+    """
+    Returns a pct(values) closure bound to this weekly table's qualified
+    reference population. Behavior (the actual returned percentiles) is
+    completely unchanged from before track_fallback existed — passing it
+    is purely additive instrumentation, not a scoring change.
+
+    track_fallback: an optional list. If provided, pct() appends a
+    boolean Series to it on every call — True where that call's result
+    was a neutral-50 fallback (the raw percentile was NaN before
+    fill_neutral), False where it was a real value. Lets a scoring
+    function expose "what fraction of my inputs were real" (see
+    score_evidence_quality) just by passing the same list through every
+    pct() call it already makes, without re-deriving anything from raw
+    columns after the fact.
+    """
     qualified = _qualified_mask(weekly, config)
 
     def pct(values: pd.Series) -> pd.Series:
-        scale = build_reference_scale(values, qualified)
-        return fill_neutral(percentile_lookup(values, scale))
+        raw = percentile_lookup(values, build_reference_scale(values, qualified))
+        if track_fallback is not None:
+            track_fallback.append(raw.isna())
+        return fill_neutral(raw)
 
     return pct
 
@@ -236,13 +290,19 @@ def score_td_opportunity(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Data
     """
     Score every row of the red-zone weekly table (post add_snap_shares +
     add_rolling_windows) for TD Opportunity. Returns `weekly` with
-    proven_heat, emerging_heat, td_opportunity, and the intermediate
-    percentile components appended, for inspectability.
+    proven_heat, emerging_heat, td_opportunity, td_opportunity_completeness,
+    and the intermediate percentile components appended, for inspectability.
 
     Only ever uses shift(1)'d / cumulative-through-the-prior-game inputs -
     never a row's own current-game rz_touches/rz_tds/snap_share - so the
     score always reflects what was knowable heading into that game, never
     the game's own outcome.
+
+    td_opportunity_completeness (0-100) is the fraction of this pillar's
+    10 percentile-normalized inputs (4 recent-production + 3 conversion-
+    rate + 3 trend) that were real values rather than neutral-50 fallback,
+    via _percentile_fn's track_fallback — see score_evidence_quality,
+    which consumes this.
     """
     weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
     ph_cfg = config["proven_heat"]
@@ -250,7 +310,8 @@ def score_td_opportunity(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Data
     combo_cfg = config["combination"]
     k = config["shrinkage_k"]
 
-    pct = _percentile_fn(weekly, config)
+    fallback_flags = []
+    pct = _percentile_fn(weekly, config, track_fallback=fallback_flags)
 
     # --- Proven Heat: recent TD production ---
     w = ph_cfg["recent_td_production"]
@@ -310,6 +371,9 @@ def score_td_opportunity(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Data
     weekly["touch_volume_trend_pct"] = touch_volume_trend_pct.round(1)
     weekly["emerging_heat"] = emerging_heat.round(1)
     weekly["td_opportunity"] = td_opportunity.round(1)
+    weekly["td_opportunity_completeness"] = (
+        (1 - pd.concat(fallback_flags, axis=1).mean(axis=1)) * 100
+    ).round(1)
 
     return weekly
 
@@ -321,18 +385,30 @@ def score_role_momentum(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataF
     (redzone.add_depth_chart_rank) and ahead_injury_statuses
     (redzone.add_injury_context) columns, in addition to add_rolling_windows'
     output. Returns weekly with role_trend, external_opportunity,
-    role_momentum, and the intermediate percentile components appended.
+    role_momentum, role_momentum_completeness, and the intermediate
+    percentile components appended.
 
     See module docstring for the depth-chart 2025-schema gap: depth_rank is
     NaN for every 2025 row, so depth_chart_movement_pct falls back to
     neutral there, not a real reading.
+
+    DOCUMENTED SIMPLIFICATION: role_momentum_completeness (see
+    score_evidence_quality) can't distinguish "no depth-chart data at all"
+    from "depth-chart delta was deliberately routed to neutral because it
+    was exactly 0" (see the tie-mass comment below) — both hit the same
+    NaN-before-fill_neutral path _percentile_fn's track_fallback observes,
+    even though a real 0 is informative (no rank change) and true
+    missingness isn't. Treating them the same is a deliberate simplification,
+    not an oversight — a two-tier distinction was considered and explicitly
+    deferred rather than built.
     """
     weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
     rt_cfg = config["role_trend"]
     combo_cfg = config["combination"]
     severity_map = config["injury_severity"]
 
-    pct = _percentile_fn(weekly, config)
+    fallback_flags = []
+    pct = _percentile_fn(weekly, config, track_fallback=fallback_flags)
 
     # --- Role Trend: touch-share / snap-share trend, last3+last5 blended.
     # Reuses _trend_delta -- the exact same helper TD Opportunity's
@@ -393,11 +469,14 @@ def score_role_momentum(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataF
     weekly["role_trend"] = role_trend.round(1)
     weekly["external_opportunity"] = external_opportunity.round(1)
     weekly["role_momentum"] = role_momentum.round(1)
+    weekly["role_momentum_completeness"] = (
+        (1 - pd.concat(fallback_flags, axis=1).mean(axis=1)) * 100
+    ).round(1)
 
     return weekly
 
 
-def _environment_score(weekly: pd.DataFrame, env_cfg: dict) -> pd.Series:
+def _environment_score(weekly: pd.DataFrame, env_cfg: dict, track_fallback: list = None) -> pd.Series:
     """
     dome/closed roof -> 100 (fully controlled, no weather risk).
     outdoors/open -> a blend of wind_score and temp_score using the
@@ -408,7 +487,11 @@ def _environment_score(weekly: pd.DataFrame, env_cfg: dict) -> pd.Series:
     Missing temp/wind among outdoor games (~17% of them, per the checked
     null rate) -> neutral 50, same missing-data philosophy as everywhere
     else - not the same as a dome (which is a real, known "no weather
-    risk" fact, not an absence of data).
+    risk" fact, not an absence of data). track_fallback, if provided,
+    records exactly that distinction: False (real) for every dome/closed
+    row and every outdoor row with actual temp/wind data, True only for
+    outdoor rows missing it — same completeness-tracking contract as
+    _percentile_fn's track_fallback (see score_evidence_quality).
     """
     indoor = weekly["roof"].isin(["dome", "closed"])
 
@@ -416,8 +499,12 @@ def _environment_score(weekly: pd.DataFrame, env_cfg: dict) -> pd.Series:
         weekly["wind"].clip(lower=0, upper=env_cfg["wind_ceiling_mph"]) / env_cfg["wind_ceiling_mph"] * 100.0
     )
     temp_score = (weekly["temp"].clip(lower=0) / env_cfg["temp_comfort_f"] * 100.0).clip(upper=100.0)
-    outdoor_score = fill_neutral(env_cfg["wind_weight"] * wind_score + env_cfg["temp_weight"] * temp_score)
+    outdoor_raw = env_cfg["wind_weight"] * wind_score + env_cfg["temp_weight"] * temp_score
 
+    if track_fallback is not None:
+        track_fallback.append(~indoor & outdoor_raw.isna())
+
+    outdoor_score = fill_neutral(outdoor_raw)
     return pd.Series(np.where(indoor, 100.0, outdoor_score), index=weekly.index)
 
 
@@ -441,6 +528,12 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
     defensive matchup and weather aren't that, so averaging them is the
     honest combination here, not a workaround.
 
+    Also returns situation_completeness (0-100) — the fraction of this
+    pillar's 8 inputs (7 percentile-normalized defensive-matchup inputs +
+    1 environment reading) that were real rather than neutral-50 fallback
+    — see score_evidence_quality, which consumes this alongside TD
+    Opportunity's and Role & Momentum's own completeness columns.
+
     Explicitly out of scope, per instruction: game script / team totals
     (Market Value pillar, once odds are wired in) and offensive line / QB-
     connection / coaching-tendency signals (no clean nfl_data_py source,
@@ -454,9 +547,12 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
 
     qualified_allowed = weekly["allowed_season_total_rz_touches_allowed"] >= config["min_touches_allowed_for_qualification"]
 
+    fallback_flags = []
+
     def pct_allowed(values: pd.Series) -> pd.Series:
-        scale = build_reference_scale(values, qualified_allowed)
-        return fill_neutral(percentile_lookup(values, scale))
+        raw = percentile_lookup(values, build_reference_scale(values, qualified_allowed))
+        fallback_flags.append(raw.isna())
+        return fill_neutral(raw)
 
     # --- Defensive Matchup Vulnerability: mirrors Proven Heat's structure
     # exactly, measuring what the opponent defense ALLOWS to this player's
@@ -493,7 +589,7 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
     )
 
     # --- Environment ---
-    environment_score = _environment_score(weekly, env_cfg)
+    environment_score = _environment_score(weekly, env_cfg, track_fallback=fallback_flags)
 
     # --- Combine: plain weighted average, see docstring for why. ---
     situation = (
@@ -506,5 +602,89 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
     weekly["defensive_matchup_vulnerability"] = defensive_matchup_vulnerability.round(1)
     weekly["environment_score"] = environment_score.round(1)
     weekly["situation"] = situation.round(1)
+    weekly["situation_completeness"] = (
+        (1 - pd.concat(fallback_flags, axis=1).mean(axis=1)) * 100
+    ).round(1)
+
+    return weekly
+
+
+def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row for Evidence Quality & Convergence (10% weight in the
+    Universal TPE Score). Unlike every other pillar, this needs no new
+    data at all — it's a pure meta-layer over the outputs TD Opportunity,
+    Role & Momentum, and Situation already produced. It MUST run after
+    all three (score_evidence_quality reads their *_completeness columns
+    and final scores directly; there's nothing to re-derive from raw
+    play-by-play/roster/schedule data, and nothing here would be
+    computable any earlier in the pipeline).
+
+    Two independent axes, each real on their own but neither sufficient
+    alone — combined as a genuine AND relationship, not the max/bonus or
+    plain-weighted-average shapes used elsewhere in this module:
+
+      Completeness  - what fraction of the three pillars' percentile-
+                       normalized inputs were real values, not neutral-50
+                       fallback. Mean of td_opportunity_completeness /
+                       role_momentum_completeness / situation_completeness
+                       (config["evidence_quality"]["completeness_columns"]).
+
+      Convergence   - do the signal FAMILIES agree with each other,
+                       direction-agnostic. Deliberately NOT "how many
+                       score above a bullish threshold" — that conflates
+                       agreement with directionality, which the other
+                       four pillars (90% of the weight) already fully
+                       own. A player where all four families unanimously
+                       read bearish is in strong agreement and should
+                       score high on convergence, same as a unanimous
+                       bullish read; a player where TD Opportunity loves
+                       him and Situation hates him is in poor agreement
+                       regardless of which direction the overall pick
+                       leans. Measured as 100 - range(family scores) —
+                       bounded [0,100] by construction (family scores are
+                       already 0-100, so the range between them can't
+                       exceed 100), no extra scaling constant needed.
+                       Operates over however many of
+                       config["evidence_quality"]["family_score_columns"]
+                       are actually present on a given row (2-4) — Market
+                       Value doesn't have a comparable 0-100 score yet
+                       (snapshot-only, no market_value_score column), and
+                       isn't backfilled into historical rows at all, so
+                       this will typically run over 3 families for now,
+                       not 4. Building market_value_score is a real
+                       follow-on, deliberately not folded into this task.
+
+    evidence_quality = sqrt(completeness * convergence) — a geometric
+    mean, not an average. Either axis near zero craters the combined
+    score: high completeness with contradictory signals isn't
+    trustworthy (plenty of real data that disagrees with itself is a
+    genuine red flag), and high convergence built on mostly-fallback data
+    isn't trustworthy either (agreement between one or two real signals
+    is easy to get by chance). A weighted average would hide exactly that
+    failure mode by letting one strong axis paper over a weak one.
+
+    Rows with fewer than 2 family scores present get neutral 50 for
+    convergence (a "range" of one value is meaningless, not informative)
+    — same missing-data philosophy as every fallback elsewhere in this
+    module.
+    """
+    weekly = weekly.copy()
+    eq_cfg = config["evidence_quality"]
+
+    completeness_cols = [c for c in eq_cfg["completeness_columns"] if c in weekly.columns]
+    completeness = weekly[completeness_cols].mean(axis=1)
+
+    family_cols = [c for c in eq_cfg["family_score_columns"] if c in weekly.columns]
+    family_scores = weekly[family_cols]
+    n_present = family_scores.notna().sum(axis=1)
+    score_range = family_scores.max(axis=1) - family_scores.min(axis=1)
+    convergence = fill_neutral(pd.Series(np.where(n_present >= 2, 100.0 - score_range, np.nan), index=weekly.index))
+
+    evidence_quality = np.sqrt(completeness * convergence)
+
+    weekly["evidence_completeness"] = completeness.round(1)
+    weekly["evidence_convergence"] = convergence.round(1)
+    weekly["evidence_quality"] = evidence_quality.round(1)
 
     return weekly
