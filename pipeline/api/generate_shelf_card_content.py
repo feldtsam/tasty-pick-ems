@@ -81,7 +81,10 @@ def run_all_validators(output: dict, source_facts: dict, candidate: dict) -> lis
     return issues
 
 
-def generate_shelf_card_draft(candidate: dict, anthropic_api_key: str, debug_inject_violation_instruction: str = None) -> dict:
+def generate_shelf_card_draft(
+    candidate: dict, anthropic_api_key: str, debug_inject_violation_instruction: str = None,
+    avoid_headlines: list[str] | None = None,
+) -> dict:
     """
     The full pipeline for one real candidate -- same shape as
     generate_tasty_six_draft(), minus editorial_sentence.
@@ -89,6 +92,11 @@ def generate_shelf_card_draft(candidate: dict, anthropic_api_key: str, debug_inj
     `candidate` is one entry from /api/curate-shelves's
     shelf_candidates_detailed (or the same shape built by hand for
     testing) -- must have "candidate" (the real scored-pick dict), "shelf".
+
+    `avoid_headlines`: real titles already generated elsewhere in the same
+    batch -- see shelf_card_prompt.build_system_prompt's docstring for the
+    real production repetition problem this closes. Only
+    content_draft_generation_live.py's batch orchestrator populates this.
 
     `debug_inject_violation_instruction` is TESTING ONLY -- never set by
     real content generation.
@@ -116,7 +124,7 @@ def generate_shelf_card_draft(candidate: dict, anthropic_api_key: str, debug_inj
         )
 
     source_facts = flatten_source_facts(candidate)
-    system_prompt = build_system_prompt(shelf, confidence_band)
+    system_prompt = build_system_prompt(shelf, confidence_band, avoid_headlines=avoid_headlines)
     user_prompt = build_user_prompt(source_facts)
 
     if debug_inject_violation_instruction:

@@ -21,13 +21,32 @@ from emotional_intensity import intensity_for_band
 from shelf_personalities import personality_for_shelf
 
 
-def build_system_prompt(shelf: str, confidence_band: str) -> str:
+def build_system_prompt(shelf: str, confidence_band: str, avoid_headlines: list[str] | None = None) -> str:
     """Raises KeyError for an unrecognized shelf or band -- same fail-loud
     reasoning as personality_for_shelf()/intensity_for_band() themselves;
-    a typo here should never silently fall back to a generic voice."""
+    a typo here should never silently fall back to a generic voice.
+
+    `avoid_headlines`: real titles (and editorial sentences) already
+    generated elsewhere in the SAME batch -- see shelf_card_prompt.py's
+    build_system_prompt for the real production repetition case that
+    motivated this (Hot Hitters, Cold Pitchers to Attack) and
+    content_draft_generation_live.py, the only real caller that populates
+    it. Same mechanism here: a Tasty Six card and its own source shelf
+    card can independently converge on near-identical language for the
+    same real candidate/stats if nothing says otherwise.
+    """
     personality = personality_for_shelf(shelf)
     intensity = intensity_for_band(confidence_band)
     banned_phrases = ", ".join(GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG)
+
+    variety_block = ""
+    if avoid_headlines:
+        used = "\n".join(f'- "{h}"' for h in avoid_headlines)
+        variety_block = f"""
+
+REAL VARIETY REQUIRED -- these exact headlines/lines have ALREADY been used elsewhere in today's batch:
+{used}
+Do not reuse any of them, and do not reuse their underlying SENTENCE STRUCTURE with just the player's name swapped in -- e.g. if "X's swing is humming right now" is above, "Y's bat is heating up right now" for a different player is still a structural repeat, not real variety. Find a genuinely different angle, sentence shape, or image for THIS card, even when the underlying stats look similar to a card you've already seen."""
 
     return f"""You are the Tasty Six card writer for Tasty Pick Ems, an MLB home-run-prop pick'em app whose whole differentiator is an honest voice in a space built on overselling "locks" to keep engagement up. Being willing to say "this is genuinely a long shot, here's why we still like it" is a trust move, not a hedge.
 
@@ -44,7 +63,7 @@ HARD RULES -- apply regardless of shelf or confidence band:
 - Never use any of these phrases or close variants of them, in any form: {banned_phrases}.
 - Every claim in why_reasons MUST be traceable to a real key in the source facts you are given below. Cite the exact key(s) in source_fact_keys. Never invent a stat, trend, or fact not present in the source data.
 - Write 2-3 why_reasons, each tagged with which of the four real pillars (skill, matchup, environment, opportunity) it draws from, and a star rating (1-5) that genuinely reflects that pillar's real score -- not an independent creative choice.
-- editorial_sentence must be a sharper, more specific supporting line beneath the title -- grounded in a real fact, not a generic restatement of the title.
+- editorial_sentence must be a sharper, more specific supporting line beneath the title -- grounded in a real fact, not a generic restatement of the title.{variety_block}
 """
 
 

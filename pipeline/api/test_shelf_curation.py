@@ -19,7 +19,7 @@ Run: python3 pipeline/api/test_shelf_curation.py
 import json
 from pathlib import Path
 
-from shelf_curation import DEFAULT_SHELF_SIZE, ODDS_TIERS, assign_shelves, compute_tasty_six
+from shelf_curation import DEFAULT_MAX_PER_GAME, DEFAULT_SHELF_SIZE, ODDS_TIERS, assign_shelves, compute_tasty_six
 
 POOL_PATH = Path("/tmp/shelf_test_pool.json")
 SEASON = 2026
@@ -124,6 +124,27 @@ if __name__ == "__main__":
     multi_shelf = {k: v for k, v in membership.items() if len(v) > 1}
     print(f"\nCandidates in 2+ shelves: {len(multi_shelf)}")
     results.append(check("at least one real candidate appears in multiple shelves (expected, not a bug)", len(multi_shelf) > 0))
+
+    # --- Real production bug (2026-08-09), confirmed against live data:
+    # Cold Pitchers to Attack came back 8 of 8 picks from a single real
+    # game (every batter facing the same real cold pitcher shares that
+    # pitcher's exact recent_era as their shelf_score, so they all sort
+    # together — see _cold_pitchers_shelf). Weather Factors showed the
+    # same pattern at smaller scale (8 picks, only 2 real games) since
+    # environment_score is heavily game/park-level. Fix applies uniformly
+    # via _ranked()'s max_per_game cap — checked here across ALL shelves,
+    # not just the one that happened to fail in production. ---
+    for shelf_name, entries in shelves.items():
+        game_counts = {}
+        for e in entries:
+            gp = e["candidate"]["game_pk"]
+            game_counts[gp] = game_counts.get(gp, 0) + 1
+        max_from_one_game = max(game_counts.values()) if game_counts else 0
+        results.append(check(
+            f"{shelf_name}: no single real game supplies more than {DEFAULT_MAX_PER_GAME} of "
+            f"{len(entries)} picks (max found: {max_from_one_game})",
+            max_from_one_game <= DEFAULT_MAX_PER_GAME,
+        ))
 
     # --- No two shelves are near-identical (>=6 of 8 shared candidates) ---
     names = list(shelves.keys())
