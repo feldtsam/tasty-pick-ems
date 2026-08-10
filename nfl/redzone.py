@@ -181,6 +181,107 @@ def add_snap_shares(weekly: pd.DataFrame, snap_counts: pd.DataFrame, id_crosswal
     return weekly.merge(snaps_for_join, on=["game_id", "player_id"], how="left")
 
 
+def _skill_position_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
+    """
+    Shared prep for both depth-chart functions below: skill-position rows
+    only (RB/WR/TE), excluding special-teams/dual-role side-listings (e.g.
+    a RB also listed as a punt returner), collapsed to each player's own
+    min(depth_team) per (team, season, week, depth_position) — depth_team
+    is not a clean 1/2/3 ranking (teams routinely list multiple players at
+    the same rank for the same depth_position, e.g. a 3-WR personnel
+    package listing all three as "1"), so this only ever compares a player
+    against his own rank history over time, never against teammates at a
+    single point in time.
+
+    KNOWN GAP, bigger than a coverage footnote: nflverse changed the
+    depth-chart source schema at some point in 2025 — the new file has
+    entirely different columns (dt/team/player_name/pos_abb/pos_slot/
+    pos_rank), no gsis_id at all, and no `season` column, so
+    import_depth_charts([2022, 2024, 2025]) silently drops every 2025 row
+    rather than erroring. This function only works against the old schema
+    (2022, 2024). Every 2025 row — and critically, the live 2026 season
+    this whole pillar is meant to launch into — gets NaN depth_rank and
+    falls back to neutral through score_role_momentum's standard
+    missing-data path. That means depth-chart movement does NOT "just
+    work" once this pillar ships: the live weekly job needs a new parser
+    built against the new schema (name-based player matching, no gsis_id,
+    a raw timestamp instead of a week number) before this signal means
+    anything for the season that actually matters. This is an explicit
+    open item, not a resolved one.
+    """
+    dc = depth_charts[
+        depth_charts["position"].isin(["RB", "WR", "TE"])
+        & (depth_charts["depth_position"] == depth_charts["position"])
+    ].copy()
+    dc["depth_team"] = pd.to_numeric(dc["depth_team"], errors="coerce")
+    return (
+        dc.groupby(["gsis_id", "season", "week", "club_code", "depth_position"])["depth_team"]
+        .min()
+        .rename("depth_rank")
+        .reset_index()
+    )
+
+
+def add_depth_chart_rank(weekly: pd.DataFrame, depth_charts: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join each player's own skill-position depth-chart rank onto the weekly
+    table by (player_id, season, week). See _skill_position_depth_chart for
+    the tie-handling and 2025-schema-gap caveats — both apply here.
+    """
+    dc = _skill_position_depth_chart(depth_charts)[
+        ["gsis_id", "season", "week", "depth_rank"]
+    ].rename(columns={"gsis_id": "player_id"})
+    return weekly.merge(dc, on=["player_id", "season", "week"], how="left")
+
+
+def add_injury_context(weekly: pd.DataFrame, depth_charts: pd.DataFrame, injuries: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each player/week, attach the set of report_status values (Out/
+    Doubtful/Questionable) among teammates at the same skill-position depth
+    chart with a strictly lower (better) depth_rank that week — i.e.
+    players this player is currently behind. Mapping a status to a
+    severity score is a scoring decision (see scoring.CONFIG), not made
+    here — this only attaches the raw statuses found, as
+    ahead_injury_statuses (a list per row, possibly empty). An empty list
+    means either no one is ranked ahead, or no one ranked ahead has an
+    injury designation — those are collapsed together deliberately, since
+    both cases mean the same thing for this signal: no vacated opportunity
+    this week.
+
+    Same 2025 depth-chart schema gap as add_depth_chart_rank applies —
+    this needs depth_rank to determine who's "ahead," so 2025 rows get an
+    empty list here regardless of injuries' own data (which does have
+    clean gsis_id coverage across all three seasons — the gap is entirely
+    on the depth-chart side).
+    """
+    dc = _skill_position_depth_chart(depth_charts)
+
+    inj = injuries[["gsis_id", "season", "week", "report_status"]].drop_duplicates(
+        subset=["gsis_id", "season", "week"], keep="last"
+    )
+    dc = dc.merge(inj, on=["gsis_id", "season", "week"], how="left")
+
+    ahead = dc.merge(
+        dc, on=["season", "week", "club_code", "depth_position"], suffixes=("", "_teammate")
+    )
+    ahead = ahead[ahead["depth_rank_teammate"] < ahead["depth_rank"]]
+    ahead = ahead[ahead["report_status_teammate"].notna()]
+
+    ahead_statuses = (
+        ahead.groupby(["gsis_id", "season", "week"])["report_status_teammate"]
+        .apply(list)
+        .rename("ahead_injury_statuses")
+        .reset_index()
+        .rename(columns={"gsis_id": "player_id"})
+    )
+
+    weekly = weekly.merge(ahead_statuses, on=["player_id", "season", "week"], how="left")
+    weekly["ahead_injury_statuses"] = weekly["ahead_injury_statuses"].apply(
+        lambda v: v if isinstance(v, list) else []
+    )
+    return weekly
+
+
 def add_rolling_windows(weekly: pd.DataFrame, metrics: list[str] = None) -> pd.DataFrame:
     """
     Add last-1 (most recent game), last-3, last-5, and season-to-date

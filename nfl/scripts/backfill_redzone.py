@@ -26,8 +26,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import nfl_data_py as nfl
 import pandas as pd
 
-from redzone import add_rolling_windows, add_snap_shares, aggregate_redzone_game, build_id_crosswalk
-from scoring import score_td_opportunity
+from redzone import (
+    add_depth_chart_rank,
+    add_injury_context,
+    add_rolling_windows,
+    add_snap_shares,
+    aggregate_redzone_game,
+    build_id_crosswalk,
+)
+from scoring import score_role_momentum, score_td_opportunity
 
 SEASONS = [2022, 2024, 2025]
 
@@ -51,6 +58,20 @@ def load_id_crosswalk(seasons: list[int]) -> pd.DataFrame:
     return build_id_crosswalk(id_table, seasonal_rosters)
 
 
+def load_depth_charts(seasons: list[int]) -> pd.DataFrame:
+    """Load raw depth charts for the given seasons. nflverse's 2025 schema
+    change means 2025 rows come back empty (see
+    redzone._skill_position_depth_chart's docstring) — not a bug in this
+    call, a known upstream gap."""
+    return nfl.import_depth_charts(seasons)
+
+
+def load_injuries(seasons: list[int]) -> pd.DataFrame:
+    """Load raw injury reports for the given seasons. Unlike depth charts,
+    this has clean gsis_id coverage across all three backfilled seasons."""
+    return nfl.import_injuries(seasons)
+
+
 def spot_check(weekly: pd.DataFrame, season: int, player_name_contains: str) -> None:
     """Print a player's game log for manual cross-check against a public
     red-zone stats source (e.g. a known bellcow RB's inside-5 carries)."""
@@ -61,6 +82,7 @@ def spot_check(weekly: pd.DataFrame, season: int, player_name_contains: str) -> 
     cols = [
         "week", "player_name", "posteam", "rz_touches", "rz_tds", "gl_touches", "gl_tds",
         "rz_touch_share", "offense_snaps", "team_offense_snaps", "snap_share",
+        "depth_rank", "ahead_injury_statuses",
     ]
     print(sub[cols].to_string(index=False))
 
@@ -84,6 +106,24 @@ if __name__ == "__main__":
     print(f"  {unmatched} / {len(weekly)} rows had no snap-share match "
           f"({unmatched / len(weekly):.1%})")
 
+    print("Loading depth charts ...")
+    depth_charts = load_depth_charts(SEASONS)
+
+    print("Loading injury reports ...")
+    injuries = load_injuries(SEASONS)
+
+    print("Joining depth-chart rank ...")
+    weekly = add_depth_chart_rank(weekly, depth_charts)
+    no_rank = weekly["depth_rank"].isna().sum()
+    print(f"  {no_rank} / {len(weekly)} rows had no depth-chart rank "
+          f"({no_rank / len(weekly):.1%}) — includes ALL 2025 rows (known schema gap, see redzone.py)")
+
+    print("Joining injury context ...")
+    weekly = add_injury_context(weekly, depth_charts, injuries)
+    has_injury_ahead = weekly["ahead_injury_statuses"].apply(len).gt(0).sum()
+    print(f"  {has_injury_ahead} / {len(weekly)} rows have >=1 teammate ahead with an injury designation "
+          f"({has_injury_ahead / len(weekly):.1%})")
+
     # Must run after add_snap_shares — snap_share has to exist as a column
     # before it can be rolled into snap_share_last1/last3/last5/season_avg.
     print("Adding rolling trend windows ...")
@@ -91,6 +131,9 @@ if __name__ == "__main__":
 
     print("Scoring TD Opportunity ...")
     weekly = score_td_opportunity(weekly)
+
+    print("Scoring Role & Momentum ...")
+    weekly = score_role_momentum(weekly)
 
     out_path = "player_redzone_weekly.csv"
     weekly.to_csv(out_path, index=False)
