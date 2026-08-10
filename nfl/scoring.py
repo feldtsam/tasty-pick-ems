@@ -62,6 +62,34 @@ The live weekly job launching into the 2026 season needs a parser built
 against the new schema (dt/team/player_name/pos_abb/pos_slot/pos_rank, no
 gsis_id) before depth-chart movement means anything live - deferred, not
 solved, and should not be assumed working once this pillar ships.
+
+Situation (20% weight) - two independent contextual modifiers, combined
+as a plain weighted average, NOT the max/bonus mechanic used above. That
+mechanic exists for two readings of the same underlying thing where one
+might be a stale echo of the other (Proven vs Emerging, Role Trend vs
+injury lag). Defensive matchup and weather don't have that relationship
+to each other - they're genuinely independent, so averaging them is the
+honest combination, not a workaround:
+  Defensive Matchup     - mirrors Proven Heat's structure exactly
+  Vulnerability            (recency-weighted TDs allowed + shrinkage-
+                            adjusted conversion rate allowed), just
+                            measuring what a defense ALLOWS to a player's
+                            position group instead of what the player
+                            PRODUCES. Recency-weighted per the blueprint's
+                            "developing weakness, not just a bad defense"
+                            framing.
+  Environment            - dome/closed roof -> fully controlled (100).
+                            Outdoors -> a simple wind/temp blend, fixed
+                            formula (not a percentile - see
+                            score_situation). Deliberately simple, per the
+                            blueprint's own "lightly weighted" framing for
+                            this component.
+
+Explicitly out of scope for Situation, per instruction rather than
+oversight: game script / team totals (belongs with Market Value once odds
+are wired in) and offensive line / QB-connection / coaching-tendency
+signals (no clean nfl_data_py source - flagged as a known gap, no proxy
+built).
 """
 import numpy as np
 import pandas as pd
@@ -115,6 +143,38 @@ CONFIG = {
     # this only controls who defines the scale, matching
     # normalize.py / backtest/scoring/normalize.py's documented philosophy.
     "min_rz_touches_for_qualification": 15,
+    "defensive_matchup": {
+        # Mirrors proven_heat's split and internal recency weights exactly
+        # - same conceptual shape (recency-weighted production +
+        # shrinkage-adjusted rate), just measuring what's allowed instead
+        # of what's produced.
+        "recent_tds_allowed_weight": 0.6,
+        "conversion_rate_allowed_weight": 0.4,
+        "recent_tds_allowed": {
+            "last1": 0.35,
+            "last3": 0.30,
+            "last5": 0.20,
+            "season_avg": 0.15,
+        },
+    },
+    # Season-total touches allowed a (defteam, position_group, season)
+    # combo needs to help define the defensive reference scale. Same
+    # "define the scale honestly, still score everyone against it"
+    # philosophy as min_rz_touches_for_qualification, just a higher number
+    # since it's a whole defense's exposure rather than one player's usage.
+    "min_touches_allowed_for_qualification": 20,
+    "environment": {
+        # Rough starting constants, not researched - same "hypothesis to
+        # calibrate later" treatment as every other weight in this module.
+        "wind_ceiling_mph": 20.0,
+        "temp_comfort_f": 50.0,
+        "wind_weight": 0.5,
+        "temp_weight": 0.5,
+    },
+    "situation": {
+        "defensive_matchup_weight": 0.7,
+        "environment_weight": 0.3,
+    },
 }
 
 
@@ -333,5 +393,118 @@ def score_role_momentum(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataF
     weekly["role_trend"] = role_trend.round(1)
     weekly["external_opportunity"] = external_opportunity.round(1)
     weekly["role_momentum"] = role_momentum.round(1)
+
+    return weekly
+
+
+def _environment_score(weekly: pd.DataFrame, env_cfg: dict) -> pd.Series:
+    """
+    dome/closed roof -> 100 (fully controlled, no weather risk).
+    outdoors/open -> a blend of wind_score and temp_score using the
+    wind_ceiling_mph / temp_comfort_f constants in CONFIG["environment"] -
+    rough starting points, not researched, same "hypothesis to calibrate
+    later" treatment as every other weight in this module.
+
+    Missing temp/wind among outdoor games (~17% of them, per the checked
+    null rate) -> neutral 50, same missing-data philosophy as everywhere
+    else - not the same as a dome (which is a real, known "no weather
+    risk" fact, not an absence of data).
+    """
+    indoor = weekly["roof"].isin(["dome", "closed"])
+
+    wind_score = 100.0 - (
+        weekly["wind"].clip(lower=0, upper=env_cfg["wind_ceiling_mph"]) / env_cfg["wind_ceiling_mph"] * 100.0
+    )
+    temp_score = (weekly["temp"].clip(lower=0) / env_cfg["temp_comfort_f"] * 100.0).clip(upper=100.0)
+    outdoor_score = fill_neutral(env_cfg["wind_weight"] * wind_score + env_cfg["temp_weight"] * temp_score)
+
+    return pd.Series(np.where(indoor, 100.0, outdoor_score), index=weekly.index)
+
+
+def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row for Situation (20% weight in the Universal TPE Score).
+    Requires weekly to already have the allowed_*-prefixed columns
+    (redzone.add_defensive_matchup_context) and roof/temp/wind
+    (redzone.add_environment_data). Also takes allowed_weekly (the
+    un-fanned defense-allowed table, one row per (defteam, position_group,
+    week) — aggregate_redzone_allowed's output before it gets joined onto
+    the many-offensive-players-per-defense-week weekly table) — needed to
+    compute league-average conversion rates correctly; summing from the
+    already-joined weekly table would over-count every defense-week by
+    however many offensive players faced them that week.
+
+    Combines two independent contextual modifiers as a plain weighted
+    average — deliberately NOT the max/bonus mechanic TD Opportunity and
+    Role & Momentum use. That mechanic exists for two readings of the same
+    underlying thing where one might be a stale echo of the other;
+    defensive matchup and weather aren't that, so averaging them is the
+    honest combination here, not a workaround.
+
+    Explicitly out of scope, per instruction: game script / team totals
+    (Market Value pillar, once odds are wired in) and offensive line / QB-
+    connection / coaching-tendency signals (no clean nfl_data_py source,
+    flagged as a known gap rather than proxied).
+    """
+    weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
+    dm_cfg = config["defensive_matchup"]
+    env_cfg = config["environment"]
+    sit_cfg = config["situation"]
+    k = config["shrinkage_k"]
+
+    qualified_allowed = weekly["allowed_season_total_rz_touches_allowed"] >= config["min_touches_allowed_for_qualification"]
+
+    def pct_allowed(values: pd.Series) -> pd.Series:
+        scale = build_reference_scale(values, qualified_allowed)
+        return fill_neutral(percentile_lookup(values, scale))
+
+    # --- Defensive Matchup Vulnerability: mirrors Proven Heat's structure
+    # exactly, measuring what the opponent defense ALLOWS to this player's
+    # position group instead of what the player PRODUCES.
+    w = dm_cfg["recent_tds_allowed"]
+    recent_tds_allowed_pct = (
+        w["last1"] * pct_allowed(weekly["allowed_rz_tds_last1"])
+        + w["last3"] * pct_allowed(weekly["allowed_rz_tds_last3"])
+        + w["last5"] * pct_allowed(weekly["allowed_rz_tds_last5"])
+        + w["season_avg"] * pct_allowed(weekly["allowed_rz_tds_season_avg"])
+    )
+
+    league_avg_gl_rate_allowed = allowed_weekly["gl_tds"].sum() / allowed_weekly["gl_touches"].sum()
+    league_avg_i10_rate_allowed = allowed_weekly["i10_tds"].sum() / allowed_weekly["i10_touches"].sum()
+    league_avg_rz_rate_allowed = allowed_weekly["rz_tds"].sum() / allowed_weekly["rz_touches"].sum()
+
+    gl_rate_allowed = _shrink_rate(
+        weekly["allowed_cum_gl_tds"], weekly["allowed_cum_gl_touches"], league_avg_gl_rate_allowed, k
+    )
+    i10_rate_allowed = _shrink_rate(
+        weekly["allowed_cum_i10_tds"], weekly["allowed_cum_i10_touches"], league_avg_i10_rate_allowed, k
+    )
+    rz_rate_allowed = _shrink_rate(
+        weekly["allowed_cum_rz_tds"], weekly["allowed_cum_rz_touches"], league_avg_rz_rate_allowed, k
+    )
+
+    conversion_rate_allowed_pct = pd.concat(
+        [pct_allowed(gl_rate_allowed), pct_allowed(i10_rate_allowed), pct_allowed(rz_rate_allowed)], axis=1
+    ).mean(axis=1)
+
+    defensive_matchup_vulnerability = (
+        dm_cfg["recent_tds_allowed_weight"] * recent_tds_allowed_pct
+        + dm_cfg["conversion_rate_allowed_weight"] * conversion_rate_allowed_pct
+    )
+
+    # --- Environment ---
+    environment_score = _environment_score(weekly, env_cfg)
+
+    # --- Combine: plain weighted average, see docstring for why. ---
+    situation = (
+        sit_cfg["defensive_matchup_weight"] * defensive_matchup_vulnerability
+        + sit_cfg["environment_weight"] * environment_score
+    )
+
+    weekly["recent_tds_allowed_pct"] = recent_tds_allowed_pct.round(1)
+    weekly["conversion_rate_allowed_pct"] = conversion_rate_allowed_pct.round(1)
+    weekly["defensive_matchup_vulnerability"] = defensive_matchup_vulnerability.round(1)
+    weekly["environment_score"] = environment_score.round(1)
+    weekly["situation"] = situation.round(1)
 
     return weekly

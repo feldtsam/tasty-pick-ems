@@ -7,6 +7,7 @@ scripts/backfill_redzone.py (batch backfill) and the live weekly job, so
 there is exactly one implementation of this logic to keep in sync.
 """
 
+import numpy as np
 import pandas as pd
 
 # yardline_100 is distance from the opponent's end zone, so smaller = closer
@@ -47,6 +48,29 @@ def _touches(df: pd.DataFrame) -> pd.DataFrame:
     return touches
 
 
+def _band_agg(touches: pd.DataFrame, label: str, group_keys: list[str], zone_max: int) -> pd.DataFrame:
+    """
+    Shared touch/TD counting for a single yardline band (red zone /
+    inside-10 / goal-line), grouped by group_keys. Used both by
+    aggregate_redzone_game (grouped by offensive player) and
+    aggregate_redzone_allowed (grouped by defending team + position group)
+    — the same band-counting logic, just a different grouping axis.
+    """
+    min_df = touches[touches["yardline_100"] <= zone_max]
+    return (
+        min_df.groupby(group_keys)
+        .agg(
+            **{
+                f"{label}_touches": ("touch_type", "count"),
+                f"{label}_rush_touches": ("touch_type", lambda s: (s == "rush").sum()),
+                f"{label}_target_touches": ("touch_type", lambda s: (s == "target").sum()),
+                f"{label}_tds": ("own_touchdown", "sum"),
+            }
+        )
+        .reset_index()
+    )
+
+
 def aggregate_redzone_game(pbp: pd.DataFrame) -> pd.DataFrame:
     """
     Produce one row per player per game with red zone / inside-10 /
@@ -58,24 +82,9 @@ def aggregate_redzone_game(pbp: pd.DataFrame) -> pd.DataFrame:
 
     keys = ["game_id", "season", "week", "posteam", "player_id", "player_name"]
 
-    def band_agg(min_df: pd.DataFrame, label: str) -> pd.DataFrame:
-        g = (
-            min_df.groupby(keys)
-            .agg(
-                **{
-                    f"{label}_touches": ("touch_type", "count"),
-                    f"{label}_rush_touches": ("touch_type", lambda s: (s == "rush").sum()),
-                    f"{label}_target_touches": ("touch_type", lambda s: (s == "target").sum()),
-                    f"{label}_tds": ("own_touchdown", "sum"),
-                }
-            )
-            .reset_index()
-        )
-        return g
-
-    rz = band_agg(touches[touches["yardline_100"] <= RED_ZONE], "rz")
-    i10 = band_agg(touches[touches["yardline_100"] <= INSIDE_10], "i10")
-    gl = band_agg(touches[touches["yardline_100"] <= GOAL_LINE], "gl")
+    rz = _band_agg(touches, "rz", keys, RED_ZONE)
+    i10 = _band_agg(touches, "i10", keys, INSIDE_10)
+    gl = _band_agg(touches, "gl", keys, GOAL_LINE)
 
     out = rz.merge(i10, on=keys, how="left").merge(gl, on=keys, how="left")
     for c in out.columns:
@@ -93,6 +102,154 @@ def aggregate_redzone_game(pbp: pd.DataFrame) -> pd.DataFrame:
     out["rz_touch_share"] = (out["rz_touches"] / out["team_rz_touches"]).round(3)
 
     return out.sort_values(["season", "week", "game_id", "rz_touches"], ascending=[True, True, True, False])
+
+
+def _position_lookup(seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
+    """
+    (player_id, season) -> position_group (RB/WR/TE) from
+    import_seasonal_rosters(), which has clean per-player position labels
+    keyed on the same gsis-style player_id play-by-play uses. NOT sourced
+    from play-by-play's own offense_positions/defense_positions columns —
+    spot-checked those and they're noisy 11-player personnel-package
+    strings (e.g. one sample row lists "RB"/"K" among *defensive*
+    positions, clearly a tracking artifact), not reliable per-play tags.
+
+    Positions outside RB/WR/TE (QB, OL, DL, LB, DB, K, P, LS) are dropped —
+    not meaningful for a receiving/rushing position-group aggregation.
+    """
+    ros = seasonal_rosters[seasonal_rosters["position"].isin(["RB", "WR", "TE"])]
+    return (
+        ros[["player_id", "season", "position"]]
+        .drop_duplicates(subset=["player_id", "season"])
+        .rename(columns={"position": "position_group"})
+    )
+
+
+def add_player_position(weekly: pd.DataFrame, seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attach each player's own position group (RB/WR/TE) for that season —
+    needed to know which position group's defensive-vulnerability numbers
+    apply to a given player's matchup (see add_defensive_matchup_context).
+    Players outside RB/WR/TE (mostly QBs picking up a rush attempt) get
+    NaN position_group and fall back to neutral through
+    scoring.score_situation's standard missing-data path.
+    """
+    return weekly.merge(_position_lookup(seasonal_rosters), on=["player_id", "season"], how="left")
+
+
+def aggregate_redzone_allowed(pbp: pd.DataFrame, seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
+    """
+    Same red zone / inside-10 / goal-line touch and TD counting as
+    aggregate_redzone_game, but grouped by the DEFENDING team and the
+    toucher's position group instead of the offensive player — one row
+    per (defteam, season, week, position_group) with touches/TDs allowed.
+    Reuses _touches and _band_agg directly rather than reimplementing the
+    counting logic.
+
+    Touches with no resolvable RB/WR/TE position (mostly QB scrambles) are
+    dropped via the inner join against _position_lookup — a defense's
+    QB-scramble-allowed rate isn't a receiving/rushing "position group
+    vulnerability" in the sense this table measures.
+    """
+    touches = _touches(pbp)
+    touches = touches.merge(_position_lookup(seasonal_rosters), on=["player_id", "season"], how="inner")
+
+    keys = ["defteam", "season", "week", "position_group"]
+    rz = _band_agg(touches, "rz", keys, RED_ZONE)
+    i10 = _band_agg(touches, "i10", keys, INSIDE_10)
+    gl = _band_agg(touches, "gl", keys, GOAL_LINE)
+
+    out = rz.merge(i10, on=keys, how="left").merge(gl, on=keys, how="left")
+    for c in out.columns:
+        if c.endswith(("_touches", "_tds")):
+            out[c] = out[c].fillna(0).astype(int)
+
+    return out.sort_values(["season", "week", "defteam", "position_group"])
+
+
+def _cumulative_through_prior_week(df: pd.DataFrame, col: str, group_cols: list[str]) -> pd.Series:
+    """
+    Season-to-date cumulative total of col through the prior week only
+    (cumsum then shift(1)) within each group_cols group. Same cumsum+shift
+    pattern as scoring.py's _season_cumulative — duplicated here rather
+    than imported, since this needs to run on the un-fanned defense-allowed
+    table before add_defensive_matchup_context's join (which happens in
+    this module), and nfl/'s modules don't cross-import each other's
+    private helpers.
+    """
+    g = df.groupby(group_cols)[col]
+    return g.transform(lambda s: s.cumsum().shift(1)).fillna(0)
+
+
+def add_opponent(weekly: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attach each row's opponent (defteam — the team on defense that game)
+    via import_schedules()'s home_team/away_team, keyed by game_id. Needed
+    to look up the right defense's numbers in add_defensive_matchup_context.
+    """
+    sched = schedules[["game_id", "home_team", "away_team"]].drop_duplicates()
+    weekly = weekly.merge(sched, on="game_id", how="left")
+    weekly["defteam"] = np.where(weekly["posteam"] == weekly["home_team"], weekly["away_team"], weekly["home_team"])
+    return weekly.drop(columns=["home_team", "away_team"])
+
+
+def add_environment_data(weekly: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attach roof/temp/wind onto weekly by game_id — a plain data join, no
+    scoring math (see scoring.score_situation for the environment
+    formula). import_schedules() already has this; checked null rates
+    before building anything new: temp/wind are populated for ~83% of
+    outdoor games and correctly NaN for dome/closed games.
+    """
+    sched = schedules[["game_id", "roof", "temp", "wind"]].drop_duplicates()
+    return weekly.merge(sched, on="game_id", how="left")
+
+
+def add_defensive_matchup_context(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join the defense-allowed rolling/trend columns (aggregate_redzone_allowed
+    + add_rolling_windows with group_cols=["defteam","position_group","season"])
+    onto each offensive player's row, keyed by (this row's own opponent
+    defteam, season, week, this player's own position_group). Requires
+    weekly to already have defteam (add_opponent) and position_group
+    (add_player_position).
+
+    Only the already-lagged _last1/_last3/_last5/_season_avg columns are
+    brought over — never allowed_weekly's raw per-week touches/TDs, which
+    would leak that week's own outcome into the defense that same
+    offensive players are being scored against that week. Also computes
+    and brings over season-to-date cumulative touches/TDs allowed per band
+    (for scoring.score_situation's shrinkage-adjusted conversion rate,
+    same reasoning as Proven Heat's — a per-game rate mean isn't the right
+    denominator for TDs-per-touch) and each defense-position_group's full
+    season-total touches allowed (for reference-population qualification —
+    a stable, season-long measure, not lagged, matching how offensive
+    qualification uses a player's full season total too).
+
+    Columns are prefixed allowed_ to avoid colliding with the offensive
+    player's own identically-named rz_touches_last1-style columns.
+    """
+    allowed_weekly = allowed_weekly.copy()
+    group_keys = ["defteam", "position_group", "season"]
+
+    allowed_weekly["season_total_rz_touches_allowed"] = (
+        allowed_weekly.groupby(group_keys)["rz_touches"].transform("sum")
+    )
+    cum_cols = []
+    for band in ("gl", "i10", "rz"):
+        for stat in ("touches", "tds"):
+            col = f"{band}_{stat}"
+            cum_col = f"cum_{col}"
+            allowed_weekly[cum_col] = _cumulative_through_prior_week(allowed_weekly, col, group_keys)
+            cum_cols.append(cum_col)
+
+    keep = [c for c in allowed_weekly.columns if c.endswith(("_last1", "_last3", "_last5", "_season_avg"))]
+    keep += cum_cols + ["season_total_rz_touches_allowed"]
+
+    renamed = allowed_weekly[["defteam", "season", "week", "position_group"] + keep].rename(
+        columns={c: f"allowed_{c}" for c in keep}
+    )
+    return weekly.merge(renamed, on=["defteam", "season", "week", "position_group"], how="left")
 
 
 def build_id_crosswalk(id_table: pd.DataFrame, seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
@@ -282,42 +439,52 @@ def add_injury_context(weekly: pd.DataFrame, depth_charts: pd.DataFrame, injurie
     return weekly
 
 
-def add_rolling_windows(weekly: pd.DataFrame, metrics: list[str] = None) -> pd.DataFrame:
+def add_rolling_windows(weekly: pd.DataFrame, metrics: list[str] = None, group_cols: list[str] = None) -> pd.DataFrame:
     """
     Add last-1 (most recent game), last-3, last-5, and season-to-date
-    rolling means per player-season — the trend-detection inputs the
-    blueprint calls for (Last Game / Last 3 / Last 5 / Season).
+    rolling means within each group_cols group — the trend-detection
+    inputs the blueprint calls for (Last Game / Last 3 / Last 5 / Season).
+
+    group_cols defaults to ["player_id", "season"] (the offensive-side
+    grouping). Pass group_cols=["defteam", "position_group", "season"] to
+    roll the defense-allowed table (aggregate_redzone_allowed's output)
+    the same way — same function, same shift(1) discipline, just a
+    different grouping axis, so the defense side reuses this rather than
+    duplicating its own rolling-window logic.
 
     Defaults to rz_touches, rz_touch_share, rz_tds, and snap_share — call
     add_snap_shares before this so snap_share exists to roll (order matters:
     reversing it silently drops snap_share from this function's default
-    metrics list since the column wouldn't exist yet).
+    metrics list since the column wouldn't exist yet). Pass an explicit
+    metrics list for the defense-allowed table, e.g.
+    ["rz_touches", "rz_tds", "i10_touches", "i10_tds", "gl_touches", "gl_tds"]
+    — it has no touch_share/snap_share concept.
 
     Every window is shift(1)'d, including last1 (a plain shift with no
     window at all): the value landing on a given row is always what was
     true heading INTO that game, never anything from the game itself. This
-    applies uniformly across all four metrics, snap_share included — a
-    player's own current-game snap_share must never leak into that same
-    row's pre-game score.
+    applies uniformly across every metric — a row's own current-game value
+    must never leak into that same row's pre-game score.
 
-    Grouped by (player_id, season), not just player_id: a player's week-1
-    row in a new season gets NaN across every _last*/_season_avg column
-    (no prior-season carryover), which score_td_opportunity already routes
-    through its standard missing-data -> neutral-50 path — matches
-    scoring.py's _season_cumulative, which was written season-scoped from
-    the start. Previously this grouped by player_id alone, so a player's
-    first game of a new season (or a new team, with an unbacked season gap
-    in between) would silently pull rolling values from wherever their
-    history last left off — e.g. a player's week 1 with a new team showing
-    a "recent" TD rate that was actually from a different team two
-    real-world seasons earlier.
+    Grouped by (..., season), not just the entity id: a player's (or
+    defense's) week-1 row in a new season gets NaN across every
+    _last*/_season_avg column (no prior-season carryover), which the
+    scoring functions already route through their standard missing-data ->
+    neutral-50 path. Previously this grouped by player_id alone, so a
+    player's first game of a new season (or a new team, with an unbacked
+    season gap in between) would silently pull rolling values from
+    wherever their history last left off — e.g. a player's week 1 with a
+    new team showing a "recent" TD rate that was actually from a different
+    team two real-world seasons earlier.
     """
-    weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
+    if group_cols is None:
+        group_cols = ["player_id", "season"]
+    weekly = weekly.sort_values(group_cols + ["week"]).copy()
     if metrics is None:
         metrics = ["rz_touches", "rz_touch_share", "rz_tds", "snap_share"]
 
     for m in metrics:
-        g = weekly.groupby(["player_id", "season"])[m]
+        g = weekly.groupby(group_cols)[m]
         weekly[f"{m}_last1"] = g.transform(lambda s: s.shift(1))
         weekly[f"{m}_last3"] = g.transform(lambda s: s.rolling(3, min_periods=1).mean().shift(1))
         weekly[f"{m}_last5"] = g.transform(lambda s: s.rolling(5, min_periods=1).mean().shift(1))

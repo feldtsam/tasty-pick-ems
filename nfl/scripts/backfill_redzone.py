@@ -27,14 +27,19 @@ import nfl_data_py as nfl
 import pandas as pd
 
 from redzone import (
+    add_defensive_matchup_context,
     add_depth_chart_rank,
+    add_environment_data,
     add_injury_context,
+    add_opponent,
+    add_player_position,
     add_rolling_windows,
     add_snap_shares,
+    aggregate_redzone_allowed,
     aggregate_redzone_game,
     build_id_crosswalk,
 )
-from scoring import score_role_momentum, score_td_opportunity
+from scoring import score_role_momentum, score_situation, score_td_opportunity
 
 SEASONS = [2022, 2024, 2025]
 
@@ -72,6 +77,19 @@ def load_injuries(seasons: list[int]) -> pd.DataFrame:
     return nfl.import_injuries(seasons)
 
 
+def load_seasonal_rosters(seasons: list[int]) -> pd.DataFrame:
+    """Load seasonal rosters for the given seasons — the source of clean
+    per-player RB/WR/TE position labels used for the defensive-matchup
+    aggregation (see redzone._position_lookup)."""
+    return nfl.import_seasonal_rosters(seasons)
+
+
+def load_schedules(seasons: list[int]) -> pd.DataFrame:
+    """Load schedule data for the given seasons — provides opponent
+    (home_team/away_team) and environment (roof/temp/wind) data."""
+    return nfl.import_schedules(seasons)
+
+
 def spot_check(weekly: pd.DataFrame, season: int, player_name_contains: str) -> None:
     """Print a player's game log for manual cross-check against a public
     red-zone stats source (e.g. a known bellcow RB's inside-5 carries)."""
@@ -83,6 +101,7 @@ def spot_check(weekly: pd.DataFrame, season: int, player_name_contains: str) -> 
         "week", "player_name", "posteam", "rz_touches", "rz_tds", "gl_touches", "gl_tds",
         "rz_touch_share", "offense_snaps", "team_offense_snaps", "snap_share",
         "depth_rank", "ahead_injury_statuses",
+        "defteam", "position_group", "defensive_matchup_vulnerability", "environment_score", "situation",
     ]
     print(sub[cols].to_string(index=False))
 
@@ -124,6 +143,35 @@ if __name__ == "__main__":
     print(f"  {has_injury_ahead} / {len(weekly)} rows have >=1 teammate ahead with an injury designation "
           f"({has_injury_ahead / len(weekly):.1%})")
 
+    print("Loading seasonal rosters ...")
+    seasonal_rosters = load_seasonal_rosters(SEASONS)
+
+    print("Loading schedules ...")
+    schedules = load_schedules(SEASONS)
+
+    print("Joining player position ...")
+    weekly = add_player_position(weekly, seasonal_rosters)
+
+    print("Joining opponent ...")
+    weekly = add_opponent(weekly, schedules)
+
+    print("Joining environment data ...")
+    weekly = add_environment_data(weekly, schedules)
+
+    print("Aggregating red zone usage allowed by defense/position group ...")
+    allowed_weekly = aggregate_redzone_allowed(pbp, seasonal_rosters)
+    allowed_weekly = add_rolling_windows(
+        allowed_weekly,
+        metrics=["rz_touches", "rz_tds", "i10_touches", "i10_tds", "gl_touches", "gl_tds"],
+        group_cols=["defteam", "position_group", "season"],
+    )
+
+    print("Joining defensive matchup context ...")
+    weekly = add_defensive_matchup_context(weekly, allowed_weekly)
+    no_matchup = weekly["allowed_rz_tds_season_avg"].isna().sum()
+    print(f"  {no_matchup} / {len(weekly)} rows had no defensive matchup context "
+          f"({no_matchup / len(weekly):.1%}) — includes rows with no position_group (mostly QB scrambles)")
+
     # Must run after add_snap_shares — snap_share has to exist as a column
     # before it can be rolled into snap_share_last1/last3/last5/season_avg.
     print("Adding rolling trend windows ...")
@@ -134,6 +182,9 @@ if __name__ == "__main__":
 
     print("Scoring Role & Momentum ...")
     weekly = score_role_momentum(weekly)
+
+    print("Scoring Situation ...")
+    weekly = score_situation(weekly, allowed_weekly)
 
     out_path = "player_redzone_weekly.csv"
     weekly.to_csv(out_path, index=False)
