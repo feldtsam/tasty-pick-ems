@@ -1,0 +1,18 @@
+# Tasty Pick Ems — NFL red zone dependencies
+#
+# nfl_data_py==0.3.3 pins pandas<2.0, which has no prebuilt wheel for
+# Python 3.12+ and fails to build from source under modern setuptools
+# (missing pkg_resources in the build-isolation env). pandas 2.x works
+# fine with nfl_data_py in practice, so install pandas normally first,
+# then install nfl_data_py with --no-deps so pip doesn't enforce its
+# stale pin:
+#
+#   pip install -r requirements.txt
+#   pip install --no-deps nfl_data_py==0.3.3
+
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==17.0.0     # parquet engine nfl_data_py uses to pull play-by-play
+appdirs==1.4.4       # nfl_data_py's cache-dir dependency, not pulled in by --no-deps
+requests==2.31.0
+certifi==2024.8.30
