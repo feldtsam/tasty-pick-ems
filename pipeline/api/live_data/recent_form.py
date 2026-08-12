@@ -87,9 +87,10 @@ def _fetch_gamelog(mlbam_id: int, group: str, season: int) -> list:
 def _batter_recent_form_from_splits(splits: list, num_games: int) -> dict:
     recent = splits[-num_games:] if num_games else []
     if not recent:
-        return {"recent_games_sampled": 0, "recent_ops": None, "recent_hr_per_pa": None, "recent_home_runs": 0}
+        return {"recent_games_sampled": 0, "recent_ops": None, "recent_hr_per_pa": None,
+                 "recent_home_runs": 0, "recent_hits": 0, "recent_xbh": 0}
 
-    ab = h = bb = hbp = sf = tb = hr = pa = 0
+    ab = h = bb = hbp = sf = tb = hr = pa = doubles = triples = 0
     for s in recent:
         st = s["stat"]
         ab += st.get("atBats") or 0
@@ -100,6 +101,8 @@ def _batter_recent_form_from_splits(splits: list, num_games: int) -> dict:
         tb += st.get("totalBases") or 0
         hr += st.get("homeRuns") or 0
         pa += st.get("plateAppearances") or 0
+        doubles += st.get("doubles") or 0
+        triples += st.get("triples") or 0
 
     obp_denom = ab + bb + hbp + sf
     obp = (h + bb + hbp) / obp_denom if obp_denom else None
@@ -112,6 +115,11 @@ def _batter_recent_form_from_splits(splits: list, num_games: int) -> dict:
         "recent_ops": ops,
         "recent_hr_per_pa": (hr / pa) if pa else None,
         "recent_home_runs": hr,
+        # Real box-score counting stats — needed alongside recent_ops/
+        # recent_home_runs so a caller displaying "Last N Games: HR / Hits /
+        # XBH" (see StoryDetail's stat card) isn't left fabricating them.
+        "recent_hits": h,
+        "recent_xbh": doubles + triples + hr,
         "recent_window_dates": {"first": recent[0].get("date"), "last": recent[-1].get("date")},
     }
 
@@ -131,11 +139,12 @@ def _pitcher_recent_form_from_splits(splits: list, num_starts: int) -> dict:
     starts_only = [s for s in splits if s["stat"].get("gamesStarted") == 1]
     recent = starts_only[-num_starts:] if num_starts else []
     empty = {"recent_starts_sampled": 0, "recent_innings_pitched": 0.0, "recent_era": None,
-              "recent_hr_per_9": None, "recent_k_per_9": None, "recent_bb_per_9": None}
+              "recent_hr_per_9": None, "recent_k_per_9": None, "recent_bb_per_9": None,
+              "recent_home_runs": 0, "recent_hits": 0}
     if not recent:
         return empty
 
-    ip_total = er = hr = k = bb = 0.0
+    ip_total = er = hr = k = bb = hits = 0.0
     for s in recent:
         st = s["stat"]
         ip_total += parse_innings_pitched(st.get("inningsPitched")) or 0.0
@@ -143,9 +152,10 @@ def _pitcher_recent_form_from_splits(splits: list, num_starts: int) -> dict:
         hr += st.get("homeRuns") or 0
         k += st.get("strikeOuts") or 0
         bb += st.get("baseOnBalls") or 0
+        hits += st.get("hits") or 0
 
     if ip_total <= 0:
-        return {**empty, "recent_starts_sampled": len(recent)}
+        return {**empty, "recent_starts_sampled": len(recent), "recent_home_runs": int(hr), "recent_hits": int(hits)}
 
     return {
         "recent_starts_sampled": len(recent),
@@ -154,6 +164,9 @@ def _pitcher_recent_form_from_splits(splits: list, num_starts: int) -> dict:
         "recent_hr_per_9": hr * 9 / ip_total,
         "recent_k_per_9": k * 9 / ip_total,
         "recent_bb_per_9": bb * 9 / ip_total,
+        # Raw counting stats — same rationale as the batter function above.
+        "recent_home_runs": int(hr),
+        "recent_hits": int(hits),
         "recent_window_dates": {"first": recent[0].get("date"), "last": recent[-1].get("date")},
     }
 

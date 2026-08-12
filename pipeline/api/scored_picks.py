@@ -55,7 +55,17 @@ sys.path.insert(0, str(_API_DIR / "live_scoring"))
 
 from build_game_candidates import build_candidates_for_game, clean_for_score_candidate  # noqa: E402
 from flatten_hr_props import flatten_any  # noqa: E402
+from recent_form import fetch_batters_recent_form, fetch_pitchers_recent_form  # noqa: E402
 from score_candidate import MIN_ODDS_FOR_FILTER, score_candidate  # noqa: E402
+
+# Empty-shaped fallbacks so a player with no window sample (or no opposing
+# pitcher on record yet) still gets real, honest zero/None values on the
+# scored_picks row rather than a missing key downstream.
+_EMPTY_BATTER_FORM = {"recent_games_sampled": 0, "recent_ops": None, "recent_hr_per_pa": None,
+                       "recent_home_runs": 0, "recent_hits": 0, "recent_xbh": 0}
+_EMPTY_PITCHER_FORM = {"recent_starts_sampled": 0, "recent_innings_pitched": 0.0, "recent_era": None,
+                        "recent_hr_per_9": None, "recent_k_per_9": None, "recent_bb_per_9": None,
+                        "recent_home_runs": 0, "recent_hits": 0}
 
 # Suffixes stripped from both sides before comparing. Real bookmaker feeds
 # are inconsistent about including these — confirmed against real data:
@@ -208,13 +218,24 @@ def match_players(odds_rows: list, candidates: list) -> dict:
     return {"matched": matched, "unmatched_odds": unmatched_odds, "unmatched_candidates": unmatched_candidates}
 
 
-def _build_scored_pick(match: dict, game: dict, score_result: dict) -> dict:
+def _build_scored_pick(match: dict, game: dict, score_result: dict,
+                        batter_form: dict, pitcher_form: dict) -> dict:
     """One row for the scored_picks table/webhook — see README for the
     full schema this is meant to match. Flat, queryable columns for
     everything a caller would filter/sort on, plus one nested
-    `pillar_detail` blob (components + notes) for drill-down/debugging."""
+    `pillar_detail` blob (components + notes) for drill-down/debugging.
+
+    batter_form/pitcher_form are the {mlbam_id: {...}} dicts from
+    recent_form.py, fetched once per game for every eligible candidate (see
+    build_scored_picks_for_game) — NOT re-fetched per-shelf. This is what
+    replaces StoryDetail.tsx's previous seeded-random placeholder numbers
+    with the candidate's own real last-15-games form and the real recent
+    form of the specific opposing pitcher they're facing."""
     c = match["candidate"]
     pillars = score_result["pillars"]
+    own_form = batter_form.get(c["mlbam_id"], _EMPTY_BATTER_FORM)
+    opp_id = c.get("opp_pitcher_mlbam_id")
+    opp_form = pitcher_form.get(opp_id, _EMPTY_PITCHER_FORM) if opp_id else _EMPTY_PITCHER_FORM
     return {
         "player_name": c["player_name"],
         "mlbam_id": c["mlbam_id"],
@@ -252,6 +273,21 @@ def _build_scored_pick(match: dict, game: dict, score_result: dict) -> dict:
         "wind_speed_mph": c.get("wind_speed_mph"),
         "wind_description": c.get("wind_description"),
         "roof_status": c.get("roof_status"),
+        # The candidate's OWN real recent form (last 15 games played).
+        "recent_games_sampled": own_form.get("recent_games_sampled"),
+        "recent_ops": own_form.get("recent_ops"),
+        "recent_home_runs": own_form.get("recent_home_runs"),
+        "recent_hits": own_form.get("recent_hits"),
+        "recent_xbh": own_form.get("recent_xbh"),
+        # The OPPOSING PITCHER's real recent form (last 5 real starts) —
+        # what "Cold Pitchers to Attack" cards actually mean by "recent
+        # form": how the pitcher this batter is facing has looked lately,
+        # not the batter's own numbers a second time.
+        "opp_pitcher_recent_starts_sampled": opp_form.get("recent_starts_sampled"),
+        "opp_pitcher_recent_era": opp_form.get("recent_era"),
+        "opp_pitcher_recent_hr_per_9": opp_form.get("recent_hr_per_9"),
+        "opp_pitcher_recent_home_runs": opp_form.get("recent_home_runs"),
+        "opp_pitcher_recent_hits": opp_form.get("recent_hits"),
         "notes": score_result["notes"],
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -325,6 +361,21 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
     below_odds_filter = [m for m in match_result["matched"] if m["best_odds"] < MIN_ODDS_FOR_FILTER]
     eligible_matches = [m for m in match_result["matched"] if m["best_odds"] >= MIN_ODDS_FOR_FILTER]
 
+    # Recent-form fetched ONCE per game, for every odds-eligible candidate
+    # (and every distinct opposing pitcher they face) — not per-shelf. This
+    # is what gives every published shelf (not just Hot Hitters/Cold
+    # Pitchers, which previously called recent_form.py themselves) real
+    # last-N-games data on the scored_picks row, with a single batch of API
+    # calls shared across shelves instead of duplicated per shelf.
+    current_season = game_result.get("current_season") or int(game["game_date_utc"][:4])
+    batter_ids = [m["candidate"]["mlbam_id"] for m in eligible_matches]
+    opp_pitcher_ids = list({
+        m["candidate"]["opp_pitcher_mlbam_id"] for m in eligible_matches
+        if m["candidate"].get("opp_pitcher_mlbam_id")
+    })
+    batter_form = fetch_batters_recent_form(batter_ids, current_season) if batter_ids else {}
+    pitcher_form = fetch_pitchers_recent_form(opp_pitcher_ids, current_season) if opp_pitcher_ids else {}
+
     scored_picks = []
     errors = []
     for match in eligible_matches:
@@ -335,7 +386,7 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
         except Exception as e:  # noqa: BLE001 — one bad candidate must not sink the whole game's batch
             errors.append({"player_name": match["candidate"]["player_name"], "error": f"{type(e).__name__}: {e}"})
             continue
-        scored_picks.append(_build_scored_pick(match, game, score_result))
+        scored_picks.append(_build_scored_pick(match, game, score_result, batter_form, pitcher_form))
 
     return {
         "game_pk": game_pk,
