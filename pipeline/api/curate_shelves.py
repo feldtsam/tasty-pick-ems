@@ -52,11 +52,7 @@ from shelf_curation import DEFAULT_SHELF_SIZE, assign_shelves, compute_tasty_six
 
 REQUEST_TIMEOUT_SECONDS = 20
 
-# A real full MLB day is typically 10-15 games. Fewer than this many
-# DISTINCT game_pks in the read response is treated as a suspiciously
-# incomplete slate — flagged, never silently curated. A configurable
-# constant, not a number buried inline.
-MIN_EXPECTED_GAMES = 5
+MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
 
 # Which raw field each shelf's `shelf_score` actually represents — mirrors
 # the mapping already documented in pipeline/README.md. shelf_curation.py's
@@ -92,25 +88,81 @@ def fetch_todays_scored_picks(date: str, secret: str, read_url: str) -> dict:
     return response.json()
 
 
-def sanity_check_slate(read_result: dict, min_expected_games: int = MIN_EXPECTED_GAMES) -> dict:
+def fetch_games_already_started(date: str) -> int:
+    """
+    Real count of `date`'s real scheduled MLB games that have actually
+    started — abstractGameState "Live" or "Final" — via MLB's real public
+    schedule endpoint, the SAME free API every other real-time piece of
+    this pipeline already uses. This is the dynamic replacement for the
+    old flat MIN_EXPECTED_GAMES=5 floor (see sanity_check_slate()'s
+    docstring for the real gap that motivated it).
+
+    Deliberately reads current STATUS, not just a scheduled gameDate
+    compared against now — a delayed or postponed game hasn't actually
+    started even once its scheduled first pitch time has passed, and this
+    comes from the exact same schedule call rather than assuming the
+    clock alone tells the real story.
+
+    An already-started game is a safe, non-racy lower bound for "should
+    already be represented in scored_picks": a game can't start without
+    its lineup having posted first (typically 3-4 real hours ahead, per
+    this project's own lineup-timing investigation), and lineup posting
+    is what unblocks this pipeline's own scoring step for that game — so
+    by the time a game goes Live, scoring it should already have happened
+    earlier in the same pipeline run, not raced against it.
+    """
+    response = requests.get(
+        MLB_SCHEDULE_URL,
+        params={"sportId": 1, "date": date},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    started = 0
+    for day in data.get("dates", []):
+        for game in day.get("games", []):
+            if game.get("status", {}).get("abstractGameState") in ("Live", "Final"):
+                started += 1
+    return started
+
+
+def sanity_check_slate(read_result: dict, games_already_started: int) -> dict:
     """
     The real reliability guard this module exists for. Returns
-    `{"suspicious": bool, "distinct_game_pk_count": int, "row_count": int,
-    "reason": str|None}`. `suspicious=True` means "do not curate from
-    this" — the caller is expected to stop, not proceed with a best-effort
-    partial result.
+    `{"suspicious": bool, "distinct_game_pk_count": int,
+    "games_already_started": int, "row_count": int, "reason": str|None}`.
+    `suspicious=True` means "do not curate from this" — the caller is
+    expected to stop, not proceed with a best-effort partial result.
+
+    `games_already_started`: the real number of today's scheduled games
+    that have actually started (see fetch_games_already_started()) — NOT
+    a flat floor. REAL GAP THIS CLOSES, confirmed 2026-08-10: the old flat
+    MIN_EXPECTED_GAMES=5 floor couldn't distinguish a genuinely broken run
+    from a day simply having a wide spread of start times — a slate with
+    3 early-afternoon games + 6 evening games would fail this check
+    entirely and publish NOTHING even when 3 real, valid games' worth of
+    picks existed and were ready, purely because 3 < 5. Comparing against
+    games actually already started fixes this precisely: a not-yet-started
+    game is never expected to be represented yet (so an early, genuinely
+    partial run is no longer flagged), while a STARTED game still missing
+    from scored_picks remains a real, correctly-caught signal that
+    something in this run actually broke — a game can't start without its
+    lineup already having posted.
     """
     game_count = read_result.get("distinct_game_pk_count", 0)
     row_count = read_result.get("row_count", 0)
-    suspicious = game_count < min_expected_games
+    suspicious = game_count < games_already_started
     return {
         "suspicious": suspicious,
         "distinct_game_pk_count": game_count,
+        "games_already_started": games_already_started,
         "row_count": row_count,
         "reason": (
-            f"only {game_count} distinct game(s) in today's scored_picks — expected at least "
-            f"{min_expected_games} for a real MLB day. Curating shelves from this would likely "
-            f"produce broken or misleading results; treat this as a failed/incomplete run, not a quiet slow day."
+            f"only {game_count} distinct game(s) in today's scored_picks, but {games_already_started} "
+            f"real game(s) have already started today — a started game can't be missing its lineup, so "
+            f"it should already be scored. Treat this as a failed/incomplete run, not a legitimately "
+            f"early partial slate."
         ) if suspicious else None,
     }
 
@@ -211,7 +263,8 @@ def curate_shelves_for_date(date: str, secret: str, read_url: str, shelf_size: i
             "shelf_sizes": {},
         }
 
-    sanity = sanity_check_slate(read_result)
+    games_already_started = fetch_games_already_started(date)
+    sanity = sanity_check_slate(read_result, games_already_started)
     if sanity["suspicious"]:
         return {
             "date": date,

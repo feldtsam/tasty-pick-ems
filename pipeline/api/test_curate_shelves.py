@@ -30,7 +30,6 @@ import requests
 from flask import Flask, jsonify, request
 
 from curate_shelves import (
-    MIN_EXPECTED_GAMES,
     curate_shelves_for_date,
     sanity_check_slate,
 )
@@ -188,9 +187,51 @@ def _detailed_view_checks() -> list:
     return results
 
 
+def _sanity_check_boundary_checks() -> list:
+    """
+    Real GAP THIS TESTS (confirmed live, 2026-08-10): sanity_check_slate()
+    used to compare against a flat MIN_EXPECTED_GAMES=5 floor, which
+    couldn't tell a genuinely broken run apart from a real day with a wide
+    spread of start times (e.g. 3 early games ready, 6 evening games not
+    yet) — 3 < 5 would fail the whole run even though 3 real games' worth
+    of picks genuinely existed. Now compares against
+    games_already_started, a real dynamic count (see
+    fetch_games_already_started()) instead of a fixed number — pure logic,
+    no network/pool dependency, so this runs unconditionally.
+    """
+    results = []
+    results.append(check(
+        "sanity_check_slate: distinct_game_pk_count equal to games_already_started is NOT suspicious",
+        sanity_check_slate({"distinct_game_pk_count": 3, "row_count": 1}, games_already_started=3)["suspicious"] is False,
+    ))
+    results.append(check(
+        "sanity_check_slate: distinct_game_pk_count one below games_already_started IS suspicious",
+        sanity_check_slate({"distinct_game_pk_count": 2, "row_count": 1}, games_already_started=3)["suspicious"] is True,
+    ))
+    results.append(check(
+        "sanity_check_slate: real early-slate scenario — 3 real games ready, only 3 have started — "
+        "is correctly NOT flagged (the exact real gap the old flat floor had)",
+        sanity_check_slate({"distinct_game_pk_count": 3, "row_count": 24}, games_already_started=3)["suspicious"] is False,
+    ))
+    results.append(check(
+        "sanity_check_slate: zero games started and zero real rows is correctly NOT suspicious "
+        "(legitimately nothing to expect yet, not a failure)",
+        sanity_check_slate({"distinct_game_pk_count": 0, "row_count": 0}, games_already_started=0)["suspicious"] is False,
+    ))
+    results.append(check(
+        "sanity_check_slate: a started game missing from scored_picks (0 real rows, 1 real game already "
+        "live) IS correctly flagged — a started game can't be missing its lineup",
+        sanity_check_slate({"distinct_game_pk_count": 0, "row_count": 0}, games_already_started=1)["suspicious"] is True,
+    ))
+    return results
+
+
 if __name__ == "__main__":
     detailed_view_results = _detailed_view_checks()
     print(f"{sum(detailed_view_results)}/{len(detailed_view_results)} detailed-view checks passed\n")
+
+    boundary_results = _sanity_check_boundary_checks()
+    print(f"{sum(boundary_results)}/{len(boundary_results)} sanity-check boundary checks passed\n")
 
     if not POOL_PATH.exists():
         print(f"SKIPPED — {POOL_PATH} not present in this environment. Regenerate with:\n"
