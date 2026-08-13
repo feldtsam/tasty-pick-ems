@@ -20,11 +20,12 @@ Run: python3 pipeline/api/test_lovable_forward.py
 import hashlib
 import hmac
 import json
+import os
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from lovable_forward import compute_signature, forward_to_lovable, serialize_payload
+from lovable_forward import compute_signature, forward_to_lovable, resolve_url_env, serialize_payload
 
 TEST_SECRET = "test-secret-do-not-use-in-real-deployment"
 
@@ -162,6 +163,41 @@ if __name__ == "__main__":
     ))
 
     server.shutdown()
+
+    # --- Part 6: resolve_url_env — real, direct coverage for a bug class
+    # that has now hit TWICE in two different real environments (Vercel
+    # "Sensitive" env vars, and GitHub Actions' `${{ secrets.X }}`
+    # evaluating to '' for a repo secret that doesn't exist). Manipulates
+    # real os.environ, not a mock, then restores it. ---
+    _PROBE = "_TEST_RESOLVE_URL_ENV_PROBE"
+    _DEFAULT = "https://example.com/default"
+    os.environ.pop(_PROBE, None)  # start from a guaranteed-clean state
+
+    results.append(check(
+        "resolve_url_env: name entirely absent from the environment falls back to default",
+        resolve_url_env(_PROBE, _DEFAULT) == _DEFAULT,
+    ))
+
+    os.environ[_PROBE] = ""
+    results.append(check(
+        "resolve_url_env: THE REAL BUG — present but empty string ALSO falls back to default "
+        "(a raw os.environ.get(name, default) would wrongly return '' here)",
+        resolve_url_env(_PROBE, _DEFAULT) == _DEFAULT,
+    ))
+
+    os.environ[_PROBE] = "   "
+    results.append(check(
+        "resolve_url_env: present but whitespace-only also falls back to default",
+        resolve_url_env(_PROBE, _DEFAULT) == _DEFAULT,
+    ))
+
+    os.environ[_PROBE] = "https://real.example.com/override"
+    results.append(check(
+        "resolve_url_env: a real, non-blank value is used as-is, not overridden by the default",
+        resolve_url_env(_PROBE, _DEFAULT) == "https://real.example.com/override",
+    ))
+
+    del os.environ[_PROBE]  # leave the real environment exactly as found
 
     print()
     if all(results):

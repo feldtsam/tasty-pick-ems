@@ -64,7 +64,7 @@ from pybaseball import statcast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
 
-from lovable_forward import compute_signature, serialize_payload  # noqa: E402
+from lovable_forward import compute_signature, resolve_url_env, serialize_payload  # noqa: E402
 
 WINDOW_DAYS = 21
 MIN_BATTED_BALL_EVENTS = 15
@@ -185,7 +185,15 @@ if __name__ == "__main__":
     if not secret:
         print("PIPELINE_WEBHOOK_SECRET is not set in the environment — cannot sign the write request. Aborting.")
         sys.exit(1)
-    write_url = os.environ.get("RECENT_STATCAST_FORM_WRITE_URL", DEFAULT_WRITE_URL)
+    # REAL BUG FIX (confirmed live, real GitHub Actions run): a raw
+    # os.environ.get(name, default) does NOT fall back correctly here —
+    # GitHub Actions' `${{ secrets.X }}` evaluates to an empty string,
+    # not "unset", when the referenced repo secret doesn't exist at all,
+    # so the env var is always present, just blank. resolve_url_env()
+    # treats present-but-blank the same as absent — see its own docstring
+    # in lovable_forward.py for the full real-world story (this is the
+    # second real environment this exact bug class has been found in).
+    write_url = resolve_url_env("RECENT_STATCAST_FORM_WRITE_URL", DEFAULT_WRITE_URL)
 
     print(f"Pulling real Statcast pitch data for the trailing {WINDOW_DAYS}-day window...")
     pitches, window_start, window_end = fetch_recent_pitches()

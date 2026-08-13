@@ -29,11 +29,60 @@ once the same secret is configured on both sides.
 import hashlib
 import hmac
 import json
+import os
 
 import requests
 
 SIGNATURE_PREFIX = "sha256="
 REQUEST_TIMEOUT_SECONDS = 10
+
+
+def resolve_url_env(name: str, default: str) -> str:
+    """
+    Same fallback intent as os.environ.get(name, default), but treats a
+    PRESENT-but-blank value the same as an absent one, logging loudly when
+    that happens. Lives here (not in index.py, where it originated) so
+    every caller that talks to Lovable shares ONE implementation —
+    including standalone scripts like recent_statcast_form.py, which
+    import this module already but don't (and shouldn't) import index.py's
+    Flask app just to get this one function.
+
+    REAL BUG THIS CLOSES, confirmed TWICE now in two different real
+    environments: os.environ.get(name, default) only substitutes `default`
+    when `name` is entirely ABSENT — a variable that exists but resolves
+    empty silently passes '' all the way down into forward_to_lovable() ->
+    requests.post(), which fails deep inside urllib3 with a confusing
+    `MissingSchema: Invalid URL ''` that points nowhere near the real
+    cause. Two real, distinct ways this happens, not one:
+      1. Vercel "Sensitive" env vars are write-only after creation — their
+         value can never be read back to confirm what was actually saved,
+         so a blank save goes undetected (the original real case this was
+         built for).
+      2. GitHub Actions' `${{ secrets.X }}` evaluates to an EMPTY STRING,
+         not "unset", when the referenced secret doesn't exist at all —
+         confirmed by recent_statcast_form.py's real workflow run failing
+         this exact way when RECENT_STATCAST_FORM_WRITE_URL was never
+         added as a repo secret. There is no way to distinguish "secret
+         doesn't exist" from "secret is empty" from inside a workflow's
+         `env:` block — the env var is always present either way.
+    Catching it right here, at read time, turns a confusing multi-layer-
+    deep failure into an immediate, specific, greppable log line — and
+    means "forgot to add a repo secret" degrades to the real default URL
+    instead of crashing.
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    if value.strip() == "":
+        print(
+            f"[env-config] WARNING: {name} is set but blank — falling back to "
+            f"default {default!r}. Either the referenced secret/env var was "
+            f"never actually created (GitHub Actions: {name!r} isn't a real "
+            f"repo secret yet), or it was saved with an empty value.",
+            flush=True,
+        )
+        return default
+    return value
 
 
 def serialize_payload(rows: list) -> str:

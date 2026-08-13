@@ -30,7 +30,7 @@ from flask import Flask, jsonify, request
 import requests
 
 from flatten_hr_props import flatten_any, flatten_hr_props, flatten_hr_props_batch
-from lovable_forward import forward_to_lovable
+from lovable_forward import forward_to_lovable, resolve_url_env
 from build_game_candidates import build_candidates_for_game
 from game_lookup import resolve_game_pk
 from scored_picks import build_scored_picks_for_game, fetch_recent_statcast_form
@@ -87,43 +87,6 @@ DEFAULT_BOOKMARK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/publi
 # Same status as the URLs above — drafted, staged for review, not yet
 # applied to the live Lovable app at the time this was written.
 DEFAULT_CONTENT_DRAFTS_NEEDING_GENERATION_READ_URL = "https://tastypickems.lovable.app/api/public/content-drafts-needing-generation-read"
-
-
-def resolve_url_env(name: str, default: str) -> str:
-    """
-    Same fallback intent as os.environ.get(name, default), but treats a
-    PRESENT-but-blank value the same as an absent one, logging loudly when
-    that happens.
-
-    REAL BUG THIS CLOSES: os.environ.get(name, default) only substitutes
-    `default` when `name` is entirely absent from the environment. A
-    variable that exists but was saved empty (confirmed real cause: Vercel
-    "Sensitive" env vars are write-only after creation — their value can
-    never be read back via the CLI or dashboard to double-check what was
-    actually saved) silently passes an empty string all the way down into
-    forward_to_lovable() -> requests.post(), which fails deep inside
-    urllib3 with a confusing `MissingSchema: Invalid URL ''` — nothing
-    about that error points back at the real cause (a blank env var), and
-    it only surfaces once something downstream actually tries to use the
-    value, not at the point where it was read. Catching it right here,
-    at read time, turns a confusing multi-layer-deep failure into an
-    immediate, specific, greppable log line.
-    """
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    if value.strip() == "":
-        print(
-            f"[env-config] WARNING: {name} is set but blank/whitespace-only — "
-            f"falling back to default {default!r}. This variable cannot be "
-            f"read back to confirm its real stored value once marked "
-            f"Sensitive in Vercel; the only fix is to remove and re-add it: "
-            f"vercel env rm {name} <env> && "
-            f"printf '%s' '<value>' | vercel env add {name} <env>.",
-            flush=True,
-        )
-        return default
-    return value
 
 
 def check_pipeline_secret():
