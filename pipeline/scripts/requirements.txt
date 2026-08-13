@@ -1,0 +1,11 @@
+# pipeline/scripts/recent_statcast_form.py dependencies — deliberately
+# separate from pipeline/requirements.txt (Vercel's deployment, which
+# stays flask+requests only; pandas/pybaseball have no business in that
+# serverless bundle). This script runs standalone via GitHub Actions.
+# Install with: pip install -r requirements.txt
+#
+# Versions pinned to match backtest/requirements.txt, the only other place
+# in this project that already depends on these.
+pybaseball==2.2.7
+pandas==2.2.3
+requests==2.32.3

@@ -53,10 +53,15 @@ _API_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_API_DIR / "live_data"))
 sys.path.insert(0, str(_API_DIR / "live_scoring"))
 
+import requests
+
 from build_game_candidates import build_candidates_for_game, clean_for_score_candidate  # noqa: E402
 from flatten_hr_props import flatten_any  # noqa: E402
+from lovable_forward import compute_signature, serialize_payload  # noqa: E402
 from recent_form import fetch_batters_recent_form, fetch_pitchers_recent_form  # noqa: E402
 from score_candidate import MIN_ODDS_FOR_FILTER, score_candidate  # noqa: E402
+
+RECENT_STATCAST_FORM_REQUEST_TIMEOUT_SECONDS = 20
 
 # Empty-shaped fallbacks so a player with no window sample (or no opposing
 # pitcher on record yet) still gets real, honest zero/None values on the
@@ -66,6 +71,39 @@ _EMPTY_BATTER_FORM = {"recent_games_sampled": 0, "recent_ops": None, "recent_hr_
 _EMPTY_PITCHER_FORM = {"recent_starts_sampled": 0, "recent_innings_pitched": 0.0, "recent_era": None,
                         "recent_hr_per_9": None, "recent_k_per_9": None, "recent_bb_per_9": None,
                         "recent_home_runs": 0, "recent_hits": 0}
+
+# A batter with no row in recent_statcast_form yet (the daily batch job
+# hasn't run, or genuinely has zero real batted-ball events in its
+# trailing window) gets real, honest nulls here rather than a missing key
+# downstream — same "empty-shaped fallback" treatment as the two above.
+_EMPTY_STATCAST_FORM = {"recent_barrel_pct": None, "recent_fb_pct": None,
+                         "recent_avg_launch_angle": None, "recent_batted_ball_events": None}
+
+
+def fetch_recent_statcast_form(secret: str, read_url: str) -> dict:
+    """
+    Calls Lovable's signed recent-statcast-form-read endpoint — the daily-
+    refreshed table pipeline/scripts/recent_statcast_form.py populates
+    (real Barrel %/Fly-Ball %/avg Launch Angle over a trailing calendar-
+    day window, bulk-pulled once a day; see that script's own docstring
+    for why this can't be a live per-request Statcast call). Returns
+    {mlbam_id (int): {...row...}}, one entry per real batter with at
+    least one batted-ball event in the window. Same signed-POST pattern
+    as curate_shelves.py's fetch_todays_scored_picks, reusing
+    compute_signature()/serialize_payload() directly rather than
+    reimplementing the signing.
+    """
+    payload_str = serialize_payload({})
+    signature = compute_signature(secret, payload_str)
+    response = requests.post(
+        read_url,
+        data=payload_str.encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Signature": signature},
+        timeout=RECENT_STATCAST_FORM_REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    rows = response.json().get("recent_statcast_form", [])
+    return {int(r["mlbam_id"]): r for r in rows}
 
 # Suffixes stripped from both sides before comparing. Real bookmaker feeds
 # are inconsistent about including these — confirmed against real data:
@@ -219,7 +257,7 @@ def match_players(odds_rows: list, candidates: list) -> dict:
 
 
 def _build_scored_pick(match: dict, game: dict, score_result: dict,
-                        batter_form: dict, pitcher_form: dict) -> dict:
+                        batter_form: dict, pitcher_form: dict, statcast_form: dict) -> dict:
     """One row for the scored_picks table/webhook — see README for the
     full schema this is meant to match. Flat, queryable columns for
     everything a caller would filter/sort on, plus one nested
@@ -230,12 +268,19 @@ def _build_scored_pick(match: dict, game: dict, score_result: dict,
     build_scored_picks_for_game) — NOT re-fetched per-shelf. This is what
     replaces StoryDetail.tsx's previous seeded-random placeholder numbers
     with the candidate's own real last-15-games form and the real recent
-    form of the specific opposing pitcher they're facing."""
+    form of the specific opposing pitcher they're facing.
+
+    statcast_form is the {mlbam_id: {...}} dict from
+    recent_statcast_form.py's daily batch job (see fetch_recent_
+    statcast_form) — HITTERS ONLY, keyed on the candidate's OWN mlbam_id,
+    never the opposing pitcher's. Pitcher-allowed Statcast metrics
+    (Hard-Hit % Allowed, Exit Velo, xERA) are out of scope for this."""
     c = match["candidate"]
     pillars = score_result["pillars"]
     own_form = batter_form.get(c["mlbam_id"], _EMPTY_BATTER_FORM)
     opp_id = c.get("opp_pitcher_mlbam_id")
     opp_form = pitcher_form.get(opp_id, _EMPTY_PITCHER_FORM) if opp_id else _EMPTY_PITCHER_FORM
+    own_statcast_form = statcast_form.get(c["mlbam_id"], _EMPTY_STATCAST_FORM)
     return {
         "player_name": c["player_name"],
         "mlbam_id": c["mlbam_id"],
@@ -288,12 +333,21 @@ def _build_scored_pick(match: dict, game: dict, score_result: dict,
         "opp_pitcher_recent_hr_per_9": opp_form.get("recent_hr_per_9"),
         "opp_pitcher_recent_home_runs": opp_form.get("recent_home_runs"),
         "opp_pitcher_recent_hits": opp_form.get("recent_hits"),
+        # Real recent-window Statcast metrics (trailing calendar-day
+        # window, a separate daily batch job — see recent_statcast_form.py)
+        # for the candidate's OWN hitting only. Null when the daily job
+        # hasn't run yet, or the player has too few real batted-ball
+        # events to clear its sample-size gate — never fabricated.
+        "recent_barrel_pct": own_statcast_form.get("recent_barrel_pct"),
+        "recent_fb_pct": own_statcast_form.get("recent_fb_pct"),
+        "recent_avg_launch_angle": own_statcast_form.get("recent_avg_launch_angle"),
+        "recent_batted_ball_events": own_statcast_form.get("recent_batted_ball_events"),
         "notes": score_result["notes"],
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
-def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
+def build_scored_picks_for_game(game_pk: int, raw_odds_event, recent_statcast_form: dict | None = None) -> dict:
     """
     The orchestrator. `raw_odds_event` accepts the exact same shapes
     flatten_any() does (single event object, list of events, or
@@ -301,6 +355,17 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
     that's the Flask route's job (see index.py), matching the existing
     separation between flatten_hr_props.py (pure) and lovable_forward.py
     (network) so this stays fully testable offline.
+
+    `recent_statcast_form` is the pre-fetched {mlbam_id: {...}} lookup
+    from fetch_recent_statcast_form() — deliberately a PARAMETER here, not
+    fetched internally the way batter_form/pitcher_form are below (those
+    call the free MLB Stats API directly; this one is a signed call to
+    Lovable, and keeping any Lovable network call out of this function is
+    the one invariant this docstring has always promised). The Flask
+    route fetches it once and passes it in; omitted (None) by any other
+    real or test caller, in which case every candidate gets the real,
+    honest empty-shaped Statcast form (see _EMPTY_STATCAST_FORM) rather
+    than an error.
 
     Returns:
       {
@@ -375,6 +440,7 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
     })
     batter_form = fetch_batters_recent_form(batter_ids, current_season) if batter_ids else {}
     pitcher_form = fetch_pitchers_recent_form(opp_pitcher_ids, current_season) if opp_pitcher_ids else {}
+    statcast_form = recent_statcast_form if recent_statcast_form is not None else {}
 
     scored_picks = []
     errors = []
@@ -386,7 +452,7 @@ def build_scored_picks_for_game(game_pk: int, raw_odds_event) -> dict:
         except Exception as e:  # noqa: BLE001 — one bad candidate must not sink the whole game's batch
             errors.append({"player_name": match["candidate"]["player_name"], "error": f"{type(e).__name__}: {e}"})
             continue
-        scored_picks.append(_build_scored_pick(match, game, score_result, batter_form, pitcher_form))
+        scored_picks.append(_build_scored_pick(match, game, score_result, batter_form, pitcher_form, statcast_form))
 
     return {
         "game_pk": game_pk,

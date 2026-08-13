@@ -33,7 +33,7 @@ from flatten_hr_props import flatten_any, flatten_hr_props, flatten_hr_props_bat
 from lovable_forward import forward_to_lovable
 from build_game_candidates import build_candidates_for_game
 from game_lookup import resolve_game_pk
-from scored_picks import build_scored_picks_for_game
+from scored_picks import build_scored_picks_for_game, fetch_recent_statcast_form
 from curate_shelves import curate_shelves_for_date
 from shelf_curation import DEFAULT_SHELF_SIZE
 from grade_official_picks_live import grade_official_picks_for_pending
@@ -68,6 +68,7 @@ DEFAULT_SCORED_PICKS_URL = "https://tastypickems.lovable.app/api/public/scored-p
 # truth once the routes exist.
 DEFAULT_SCORED_PICKS_READ_URL = "https://tastypickems.lovable.app/api/public/scored-picks-read"
 DEFAULT_SHELF_ASSIGNMENTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/shelf-assignments-write"
+DEFAULT_RECENT_STATCAST_FORM_READ_URL = "https://tastypickems.lovable.app/api/public/recent-statcast-form-read"
 
 # Same status as the two URLs above — drafted, staged for review, not yet
 # applied to the live Lovable app at the time this was written.
@@ -305,8 +306,33 @@ def _score_and_forward(game_pk, data, raw_body, log_label):
     other resolves it first — everything downstream of that is identical,
     so it lives in one place rather than two.
     """
+    # Fetched here, not inside build_scored_picks_for_game(), which stays
+    # PURE/network-free to Lovable by design (see its own docstring) —
+    # every OTHER signed Lovable call in this pipeline's orchestrator
+    # functions is likewise made by the Flask route, not the pure function
+    # underneath it.
+    #
+    # DELIBERATELY DEGRADES GRACEFULLY on failure here, unlike
+    # batter_form/pitcher_form (an MLB Stats API failure inside
+    # build_scored_picks_for_game DOES fail this whole request, via the
+    # except block below) — those are core, load-bearing data every real
+    # scored pick needs; recent_statcast_form is a daily BATCH job that
+    # can legitimately not have run yet on any given real day without that
+    # being a genuine emergency. A read failure here logs a warning and
+    # proceeds with an empty lookup (every candidate gets the real, honest
+    # null-shaped Statcast form — see scored_picks.py's
+    # _EMPTY_STATCAST_FORM), not a 502 for the whole game.
+    recent_statcast_form = {}
+    secret_for_read = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    if secret_for_read:
+        statcast_read_url = resolve_url_env("LOVABLE_RECENT_STATCAST_FORM_READ_URL", DEFAULT_RECENT_STATCAST_FORM_READ_URL)
+        try:
+            recent_statcast_form = fetch_recent_statcast_form(secret_for_read, statcast_read_url)
+        except requests.exceptions.RequestException as e:
+            print(f"[{log_label}] game_pk={game_pk} recent_statcast_form_fetch_failed={e} — proceeding without it", flush=True)
+
     try:
-        result = build_scored_picks_for_game(game_pk, data)
+        result = build_scored_picks_for_game(game_pk, data, recent_statcast_form=recent_statcast_form)
     except requests.exceptions.RequestException as e:
         print(f"[{log_label}] game_pk={game_pk} network_error={e}", flush=True)
         return jsonify({"error": "Network error reaching an upstream API.", "detail": str(e)}), 502

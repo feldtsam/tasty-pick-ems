@@ -1,0 +1,36 @@
+name: Recent Statcast Form (Barrel% / FB% / Launch Angle)
+
+# 10:00 UTC = 6:00 AM ET during EDT (UTC-4), which covers essentially the
+# entire real MLB season (late March - early November overlaps US DST
+# almost exactly) — comfortably ahead of the main pipeline's first ~12pm
+# ET run, so today's game-scoring runs can read a freshly-updated
+# recent_statcast_form table. GitHub Actions cron doesn't itself shift for
+# DST, so during EST (the real offseason, no games being scored anyway)
+# this effectively runs at 5:00 AM ET instead of 6:00 AM — still well
+# ahead of the pipeline, and pybaseball.statcast() over an off-season
+# window just returns zero real pitches, which the script exits on
+# cleanly (see recent_statcast_form.py), not as an error.
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  refresh-recent-statcast-form:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r pipeline/scripts/requirements.txt
+
+      - name: Run recent_statcast_form.py
+        env:
+          PIPELINE_WEBHOOK_SECRET: ${{ secrets.PIPELINE_WEBHOOK_SECRET }}
+          RECENT_STATCAST_FORM_WRITE_URL: ${{ secrets.RECENT_STATCAST_FORM_WRITE_URL }}
+        run: python pipeline/scripts/recent_statcast_form.py
