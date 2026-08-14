@@ -115,6 +115,50 @@ Market Value doesn't have a comparable 0-100 score yet (snapshot-only,
 see market_value.py) and isn't backfilled into historical rows at all -
 convergence runs over however many of the four families are actually
 present on a row (currently 3, typically), not a hardcoded 4.
+
+Universal TPE Score - score_universal_tpe combines all five pillars, but
+NOT as a literal five-way additive weighted sum, despite the blueprint
+stating Evidence Quality & Convergence as a flat "10% weight." That's a
+deliberate, documented deviation, not an oversight:
+
+  core_score = weighted sum of TD Opportunity (30) / Role & Momentum (20)
+               / Situation (20) / Market Value (20), present-pillars-only
+               with renormalization (Market Value is absent for every
+               historical row - see market_value.py - so core_score
+               renormalizes over the remaining 70 for those rows, same
+               "score what's there" philosophy as everywhere else).
+
+  confidence_multiplier = 0.5 + 0.5 * (evidence_quality / 100)
+
+  tpe_score = core_score * confidence_multiplier
+
+Evidence Quality & Convergence is structurally a META-score - a
+statement about how much to trust the other four numbers, not a fifth
+independent opinion on the opportunity itself the way they are. Folding
+it into the same additive weighted sum as a flat 10% slice caps its
+influence at +-10 points regardless of how contradictory or thin the
+underlying evidence is: a player with wildly conflicting pillar reads
+(e.g. TD Opportunity loves him, Role & Momentum hates him) would still
+net a TPE score dominated by the raw blend of those conflicting numbers,
+reading like a solid pick despite the evidence not actually supporting
+that read. Acting as a confidence multiplier on the combined core_score
+instead lets it meaningfully discount (or, near evidence_quality=100,
+barely touch) the final score in proportion to how much the evidence
+actually supports it - the whole reason this pillar exists.
+
+The 0.5 floor exists because evidence_quality=50 is this system's
+convention for "unremarkable" (neutral fallback, or genuinely average
+completeness/convergence), not "bad" - the same convention every other
+neutral-50 fallback in this module already uses. A naive
+core_score * (evidence_quality/100) would halve an entirely ordinary
+row's score just for being average, which the floor prevents: at
+evidence_quality=50 the multiplier is 0.75 (a mild, not punitive,
+discount); at 100 it's 1.0 (full credit, score untouched); at 0 it's 0.5
+(the most a genuinely contradictory/unsupported read can be discounted -
+not zeroed out entirely, since the underlying opportunity may still be
+real even when the evidence for it is shaky). Floor value is a starting
+point ("hypothesis to tune"), same as every other constant in this
+module.
 """
 import numpy as np
 import pandas as pd
@@ -213,6 +257,27 @@ CONFIG = {
         # not a hardcoded 4. See score_evidence_quality.
         "family_score_columns": ["td_opportunity", "role_momentum", "situation", "market_value_score"],
         "completeness_columns": ["td_opportunity_completeness", "role_momentum_completeness", "situation_completeness"],
+    },
+    "universal_tpe": {
+        # The blueprint's stated pillar weights, applied to everything
+        # EXCEPT evidence_quality -- see module docstring for why that
+        # one acts as a confidence multiplier instead of a fifth additive
+        # term. Read via column-existence + per-row notna checks (not
+        # asserted present), so market_value_score's absence on every
+        # historical row renormalizes these three to sum to 100 rather
+        # than silently scoring against a 70-point ceiling.
+        "core_weights": {
+            "td_opportunity": 30,
+            "role_momentum": 20,
+            "situation": 20,
+            "market_value_score": 20,
+        },
+        # tpe_score = core_score * (confidence_floor + (1 - confidence_floor) * evidence_quality / 100).
+        # At evidence_quality=50 (this system's "unremarkable," not
+        # "bad," convention) the multiplier is 0.75, a mild discount, not
+        # a halving. Starting point, not researched -- same "hypothesis
+        # to tune later" treatment as every other constant here.
+        "confidence_floor": 0.5,
     },
 }
 
@@ -686,5 +751,58 @@ def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Da
     weekly["evidence_completeness"] = completeness.round(1)
     weekly["evidence_convergence"] = convergence.round(1)
     weekly["evidence_quality"] = evidence_quality.round(1)
+
+    return weekly
+
+
+def score_universal_tpe(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row for the final Universal TPE Score. Must run after
+    score_td_opportunity, score_role_momentum, score_situation, and
+    score_evidence_quality (reads all four's outputs directly) — the
+    last step in the pipeline, not a fifth independent pillar computation.
+
+    DELIBERATE DEVIATION FROM THE BLUEPRINT'S LITERAL "10% ADDITIVE
+    WEIGHT" FOR EVIDENCE QUALITY & CONVERGENCE — see module docstring for
+    the full reasoning. Short version: Evidence Quality is structurally a
+    meta-score (how much to trust the other four pillars), not an
+    independent opinion on the opportunity like they are, so it acts as a
+    confidence multiplier on their combined read instead of a fifth
+    additive slice:
+
+      core_score = weighted sum of td_opportunity/role_momentum/situation/
+                   market_value_score, present-columns-only with weights
+                   renormalized to sum to 100 over whichever are present
+                   (market_value_score is absent for every historical
+                   row — see market_value.py — so core_score renormalizes
+                   over the remaining 70 there, not scored against a
+                   70-point ceiling).
+      confidence_multiplier = confidence_floor + (1 - confidence_floor)
+                               * (evidence_quality / 100)
+      tpe_score = core_score * confidence_multiplier
+
+    Returns weekly with core_score, confidence_multiplier, and tpe_score
+    appended.
+    """
+    weekly = weekly.copy()
+    tpe_cfg = config["universal_tpe"]
+    weights = tpe_cfg["core_weights"]
+
+    present_cols = [c for c in weights if c in weekly.columns]
+    scores = weekly[present_cols]
+    weight_vec = pd.Series({c: weights[c] for c in present_cols})
+
+    valid = scores.notna()
+    weighted_sum = (scores.fillna(0) * weight_vec).sum(axis=1)
+    weight_totals = (valid * weight_vec).sum(axis=1)
+    core_score = weighted_sum / weight_totals
+
+    floor = tpe_cfg["confidence_floor"]
+    confidence_multiplier = floor + (1 - floor) * (weekly["evidence_quality"] / 100)
+    tpe_score = core_score * confidence_multiplier
+
+    weekly["core_score"] = core_score.round(1)
+    weekly["confidence_multiplier"] = confidence_multiplier.round(3)
+    weekly["tpe_score"] = tpe_score.round(1)
 
     return weekly

@@ -39,7 +39,13 @@ from redzone import (
     aggregate_redzone_game,
     build_id_crosswalk,
 )
-from scoring import score_evidence_quality, score_role_momentum, score_situation, score_td_opportunity
+from scoring import (
+    score_evidence_quality,
+    score_role_momentum,
+    score_situation,
+    score_td_opportunity,
+    score_universal_tpe,
+)
 
 SEASONS = [2022, 2024, 2025]
 
@@ -103,6 +109,7 @@ def spot_check(weekly: pd.DataFrame, season: int, player_name_contains: str) -> 
         "depth_rank", "ahead_injury_statuses",
         "defteam", "position_group", "defensive_matchup_vulnerability", "environment_score", "situation",
         "evidence_completeness", "evidence_convergence", "evidence_quality",
+        "core_score", "confidence_multiplier", "tpe_score",
     ]
     print(sub[cols].to_string(index=False))
 
@@ -192,6 +199,9 @@ if __name__ == "__main__":
     # computable any earlier in the pipeline.
     print("Scoring Evidence Quality & Convergence ...")
     weekly = score_evidence_quality(weekly)
+
+    print("Scoring Universal TPE Score ...")
+    weekly = score_universal_tpe(weekly)
 
     out_path = "player_redzone_weekly.csv"
     weekly.to_csv(out_path, index=False)

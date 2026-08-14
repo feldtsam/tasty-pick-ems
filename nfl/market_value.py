@@ -28,9 +28,31 @@ This module is pure parsing/scoring logic — it never calls The Odds API
 itself. A caller (a future polling script, not built this round) fetches
 the raw event JSON and passes it in, matching the same "script layer does
 I/O, module layer does pure transforms" split as redzone.py/scoring.py.
+
+score_market_value() percentile-ranks consensus_implied_probability using
+the same normalize.py primitives (build_reference_scale, percentile_lookup,
+fill_neutral) every other pillar's pct() closures are built from — not a
+literal call to scoring._percentile_fn, which is hardcoded to the redzone
+weekly table's own qualified-population logic (season-total rz_touches),
+a concept that doesn't exist here.
+
+STRUCTURALLY CANNOT BE BACKFILLED — not a temporary gap, a permanent
+fact for the 2022/2024/2025 rows in player_redzone_weekly.csv. Two
+independent reasons, both already established: there is no historical
+odds data at all (the free-plan historical endpoint doesn't support
+player-prop markets, confirmed directly), and even the CURRENT live
+snapshot is never joined onto the historical weekly table (Market Value
+was deliberately kept snapshot-only, with its own separate table shape).
+market_value_score only ever exists for a live poll's own player pool —
+historical rows will never have one, and no future backfill run changes
+that unless historical odds data is purchased separately. The final TPE
+score formula has to treat this as a standing gap for historical rows,
+not a bug to fix.
 """
 import numpy as np
 import pandas as pd
+
+from normalize import build_reference_scale, fill_neutral, percentile_lookup
 
 ATTD_MARKET = "player_anytime_td"
 
@@ -344,3 +366,39 @@ def new_price_history_rows(
             combined[col] = None
 
     return combined[PRICE_HISTORY_COLUMNS]
+
+
+def score_market_value(snapshot: pd.DataFrame) -> pd.DataFrame:
+    """
+    Percentile-ranks consensus_implied_probability (snapshot_scoring_
+    inputs' output) into market_value_score, 0-100, same direction
+    convention as every other pillar: higher = more opportunity. No
+    inversion needed — percentile_lookup already ranks "% of the
+    population at or below this value," so a player the market rates as
+    MORE likely to score anytime (a higher implied probability) lands at
+    a HIGHER percentile automatically.
+
+    Missing values (there aren't any by construction here — every row in
+    `snapshot` came from a real quote — but kept for the same missing-
+    data philosophy as everywhere else in this project, in case a caller
+    passes a partially-null frame) fall back to neutral 50 via
+    fill_neutral, not silently dropped or zeroed.
+
+    REAL METHODOLOGICAL CAVEAT, not just a technical footnote: every
+    other pillar's reference population is thousands of rows across three
+    backfilled seasons. This one's reference population is whatever
+    players happen to have a live quote in THIS poll — right now, a
+    single game (~20 players). A percentile computed against 20 players
+    in one game is a much noisier, more easily-skewed number than a
+    percentile computed against a multi-season population, even though
+    it's produced by the exact same mechanism. This isn't a bug to fix
+    here; it's an inherent property of a live-snapshot-only pillar with
+    no cross-game population to rank against yet, and will only really
+    stabilize once several games' worth of live polls exist to pool
+    together (still not "seasons" of data, just "more than one game").
+    """
+    out = snapshot.copy()
+    scale = build_reference_scale(out["consensus_implied_probability"])
+    raw_pct = percentile_lookup(out["consensus_implied_probability"], scale)
+    out["market_value_score"] = fill_neutral(raw_pct).round(1)
+    return out
