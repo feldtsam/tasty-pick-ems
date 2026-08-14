@@ -10,6 +10,8 @@ there is exactly one implementation of this logic to keep in sync.
 import numpy as np
 import pandas as pd
 
+from roster_match import match_player_names
+
 # yardline_100 is distance from the opponent's end zone, so smaller = closer
 # to scoring.
 RED_ZONE = 20
@@ -340,31 +342,27 @@ def add_snap_shares(weekly: pd.DataFrame, snap_counts: pd.DataFrame, id_crosswal
 
 def _skill_position_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
     """
-    Shared prep for both depth-chart functions below: skill-position rows
-    only (RB/WR/TE), excluding special-teams/dual-role side-listings (e.g.
-    a RB also listed as a punt returner), collapsed to each player's own
-    min(depth_team) per (team, season, week, depth_position) — depth_team
-    is not a clean 1/2/3 ranking (teams routinely list multiple players at
-    the same rank for the same depth_position, e.g. a 3-WR personnel
-    package listing all three as "1"), so this only ever compares a player
-    against his own rank history over time, never against teammates at a
-    single point in time.
+    Parses the PRE-2025 depth-chart schema only (season/week/gsis_id/
+    depth_team/depth_position/club_code columns) — see
+    _new_schema_depth_chart for 2025+, which nflverse changed to a
+    different schema entirely. Both are combined in add_depth_chart_rank.
 
-    KNOWN GAP, bigger than a coverage footnote: nflverse changed the
-    depth-chart source schema at some point in 2025 — the new file has
-    entirely different columns (dt/team/player_name/pos_abb/pos_slot/
-    pos_rank), no gsis_id at all, and no `season` column, so
-    import_depth_charts([2022, 2024, 2025]) silently drops every 2025 row
-    rather than erroring. This function only works against the old schema
-    (2022, 2024). Every 2025 row — and critically, the live 2026 season
-    this whole pillar is meant to launch into — gets NaN depth_rank and
-    falls back to neutral through score_role_momentum's standard
-    missing-data path. That means depth-chart movement does NOT "just
-    work" once this pillar ships: the live weekly job needs a new parser
-    built against the new schema (name-based player matching, no gsis_id,
-    a raw timestamp instead of a week number) before this signal means
-    anything for the season that actually matters. This is an explicit
-    open item, not a resolved one.
+    CORRECTION to a claim made earlier in this file's history: the new
+    schema does NOT lack a gsis_id — it has one, populated for ~99% of
+    rows. That was wrong, based on a truncated column preview rather than
+    a full schema inspection; verified directly before building
+    _new_schema_depth_chart. gsis_id is the primary join key there too,
+    same as here — name-matching is only a fallback for the small slice
+    missing it.
+
+    Skill-position rows only (RB/WR/TE), excluding special-teams/dual-role
+    side-listings (e.g. a RB also listed as a punt returner), collapsed to
+    each player's own min(depth_team) per (team, season, week,
+    depth_position) — depth_team is not a clean 1/2/3 ranking (teams
+    routinely list multiple players at the same rank for the same
+    depth_position, e.g. a 3-WR personnel package listing all three as
+    "1"), so this only ever compares a player against his own rank
+    history over time, never against teammates at a single point in time.
     """
     dc = depth_charts[
         depth_charts["position"].isin(["RB", "WR", "TE"])
@@ -379,19 +377,192 @@ def _skill_position_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def add_depth_chart_rank(weekly: pd.DataFrame, depth_charts: pd.DataFrame) -> pd.DataFrame:
+def _new_schema_depth_chart(
+    depth_charts: pd.DataFrame, schedules: pd.DataFrame, seasonal_rosters: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Parses the 2025+ depth-chart schema (dt/team/player_name/gsis_id/
+    pos_abb/pos_rank — no season/week columns at all) into
+    (player_id, season, week, team, position_group, depth_rank) — the
+    same shape _skill_position_depth_chart produces for the old schema
+    (club_code/depth_position renamed to team/position_group at the
+    combination step), so _combined_depth_chart can concatenate both
+    transparently for its two callers, add_depth_chart_rank and
+    add_injury_context.
+
+    MATCHING: gsis_id is present and correct for ~99% of rows here too —
+    used directly, same as the old schema, no name-matching needed for
+    the vast majority. For the small slice missing it, falls back to
+    roster_match.match_player_names — the same 3-way-classified matcher
+    (rookie_or_new / position_out_of_scope / team_mismatch)
+    market_value.py's match_attd_players uses — with the row's own `team`
+    column (already an abbreviation) as its single candidate team. Unlike
+    the old schema, pos_rank has NO tie-mass problem: spot-checked WR/RB/TE
+    across the full 2025 pull and found zero ties (every player at a
+    given team/snapshot/position has a distinct pos_rank), so there's no
+    equivalent of the old schema's "compare only against own history"
+    workaround needed here — this still does it anyway for consistency
+    with the old schema's output shape, not because it's required.
+
+    WEEK/SEASON DERIVATION — the part most likely to have a real edge
+    case, read carefully: this schema has no week or season column at
+    all, only a raw `dt` timestamp (roughly one snapshot per team per
+    day). Both are derived via a per-team "next upcoming game" as-of join
+    (pd.merge_asof, direction="forward") against schedules, using each
+    game's PRECISE kickoff timestamp — gameday + gametime, localized as
+    America/New_York and converted to UTC — not gameday alone. This
+    matters: gameday is a bare calendar date (defaults to midnight UTC),
+    and verified concretely (Kansas City's 2025 schedule) that using it
+    alone silently misclassifies any snapshot taken on gameday itself,
+    before kickoff, as belonging to the FOLLOWING week — because a
+    same-day snapshot's timestamp (e.g. 7am UTC) is already "after"
+    midnight UTC of gameday, so a forward as-of join skips past that
+    week's game to the next one. Switching to the real kickoff timestamp
+    (e.g. 8pm ET Thursday -> 00:20 UTC Friday) fixed it: a 7am UTC
+    Friday-morning snapshot now correctly stays mapped to that week
+    (still hours before kickoff), and only rolls over to the next week
+    once the actual kickoff has passed.
+
+    Bye weeks are handled correctly for free — the as-of join simply
+    skips a team's bye and lands on their next real game, no special
+    casing needed. A dt with no future scheduled game in the schedules
+    passed in (true off-season activity, or a season/week not covered by
+    the schedules argument) gets no season/week match and is dropped —
+    not guessed at.
+
+    RESIDUAL AMBIGUITY, not fully resolved: multiple daily snapshots land
+    in the same (team, season, week) bucket (roughly one per day across
+    a ~7-day window) — the LATEST snapshot before that week's kickoff is
+    kept as authoritative (freshest depth chart heading into the game),
+    matching the old schema's one-row-per-team-per-week grain. This is a
+    deliberate choice, not a resolved non-issue: a genuinely meaningful
+    in-week promotion (e.g. an injury elevates a backup mid-week) is
+    captured correctly by using the latest snapshot, but it also means
+    any earlier-in-the-week depth chart state for that game is discarded
+    entirely, not retained anywhere.
+    """
+    dc = depth_charts[depth_charts["dt"].notna() & depth_charts["pos_abb"].isin(["RB", "WR", "TE"])].copy()
+    dc["dt"] = pd.to_datetime(dc["dt"])
+    # depth_charts is the combined old+new-schema pull — old-schema's own
+    # season/week columns exist on this frame too (all-NaN for the
+    # dt-having subset filtered above), which would collide with
+    # team_games' season/week below. Drop them; they're about to be
+    # derived fresh from the schedule join instead.
+    dc = dc.drop(columns=["season", "week"], errors="ignore")
+
+    sched = schedules.copy()
+    kickoff_et = pd.to_datetime(sched["gameday"] + " " + sched["gametime"]).dt.tz_localize("America/New_York")
+    sched["kickoff_utc"] = kickoff_et.dt.tz_convert("UTC")
+    team_games = pd.concat(
+        [
+            sched[["season", "week", "kickoff_utc", "home_team"]].rename(columns={"home_team": "team"}),
+            sched[["season", "week", "kickoff_utc", "away_team"]].rename(columns={"away_team": "team"}),
+        ]
+    ).sort_values("kickoff_utc")
+
+    dc = dc.sort_values("dt")
+    dc = pd.merge_asof(dc, team_games, left_on="dt", right_on="kickoff_utc", by="team", direction="forward")
+    dc = dc.dropna(subset=["season", "week"])
+    dc["season"] = dc["season"].astype(int)
+    dc["week"] = dc["week"].astype(int)
+
+    # Keep only the latest snapshot per (team, season, week, player) — see
+    # RESIDUAL AMBIGUITY above.
+    dc = dc.sort_values("dt").drop_duplicates(subset=["team", "season", "week", "player_name", "pos_abb"], keep="last")
+
+    has_gsis = dc[dc["gsis_id"].notna()].copy()
+    has_gsis["player_id"] = has_gsis["gsis_id"]
+
+    no_gsis = dc[dc["gsis_id"].isna()].copy()
+    matched_by_name = pd.DataFrame(columns=["player_id", "season", "week", "pos_rank"])
+    if len(no_gsis):
+        no_gsis["_candidate_teams"] = no_gsis["team"].apply(lambda t: {t})
+        matched_parts = []
+        for season, grp in no_gsis.groupby("season"):
+            m, _unmatched = match_player_names(
+                grp, seasonal_rosters, season, name_col="player_name", candidate_teams_col="_candidate_teams"
+            )
+            if len(m):
+                matched_parts.append(m)
+        if matched_parts:
+            matched_by_name = pd.concat(matched_parts, ignore_index=True)
+
+    combined = pd.concat([has_gsis, matched_by_name], ignore_index=True)
+    return (
+        combined.groupby(["player_id", "season", "week", "team", "pos_abb"])["pos_rank"]
+        .min()
+        .rename("depth_rank")
+        .reset_index()
+        .rename(columns={"pos_abb": "position_group"})
+    )
+
+
+def _combined_depth_chart(
+    depth_charts: pd.DataFrame, schedules: pd.DataFrame = None, seasonal_rosters: pd.DataFrame = None
+) -> pd.DataFrame:
+    """
+    Shared unified depth-chart lookup: (player_id, season, week, team,
+    position_group, depth_rank), combining the pre-2025 schema (via
+    _skill_position_depth_chart) and the 2025+ schema (via
+    _new_schema_depth_chart) into one consistent table — parsed once,
+    used by both add_depth_chart_rank (just the depth_rank column) and
+    add_injury_context (also needs team/position_group, for the "who's
+    ahead on the same depth chart" self-join). Neither caller re-parses
+    the new schema separately.
+
+    schedules and seasonal_rosters are required only to resolve 2025+
+    rows (week/season derivation and the gsis_id-fallback name match —
+    see _new_schema_depth_chart). Pass neither to fall back to
+    old-schema-only behavior.
+    """
+    old = _skill_position_depth_chart(depth_charts).rename(
+        columns={"gsis_id": "player_id", "club_code": "team", "depth_position": "position_group"}
+    )
+    parts = [old]
+    if schedules is not None and seasonal_rosters is not None:
+        parts.append(_new_schema_depth_chart(depth_charts, schedules, seasonal_rosters))
+    return pd.concat(parts, ignore_index=True)
+
+
+def add_depth_chart_rank(
+    weekly: pd.DataFrame, depth_charts: pd.DataFrame, schedules: pd.DataFrame = None,
+    seasonal_rosters: pd.DataFrame = None,
+) -> pd.DataFrame:
     """
     Join each player's own skill-position depth-chart rank onto the weekly
-    table by (player_id, season, week). See _skill_position_depth_chart for
-    the tie-handling and 2025-schema-gap caveats — both apply here.
+    table by (player_id, season, week, team). Drop-in replacement
+    regardless of which schema a given season's rows use — see
+    _combined_depth_chart, which both this function and add_injury_context
+    share. Callers (score_role_momentum included) see no difference.
+
+    Matches on team (weekly's own posteam — ground truth from play-by-play)
+    as well as player_id/season/week, not just the latter — caught via a
+    real case during validation: a player traded mid-season (Adam Thielen,
+    CAR -> MIN -> PIT in 2025) can have depth-chart entries on TWO teams
+    that each independently resolve to the same (season, week) — his early
+    CAR snapshots and his later MIN snapshots both landed on "week 1"
+    because each team's own week-1 kickoff hadn't happened yet as of those
+    respective snapshots. Dropping team before merging silently fanned
+    weekly's join out to 2 rows for those players. Matching on posteam
+    picks the entry for whichever team he actually played for that week,
+    the same ground truth the rest of this table already uses.
+
+    schedules and seasonal_rosters are required only to resolve 2025+
+    rows — pass neither to fall back to old-schema-only behavior.
     """
-    dc = _skill_position_depth_chart(depth_charts)[
-        ["gsis_id", "season", "week", "depth_rank"]
-    ].rename(columns={"gsis_id": "player_id"})
-    return weekly.merge(dc, on=["player_id", "season", "week"], how="left")
+    dc = _combined_depth_chart(depth_charts, schedules, seasonal_rosters)[
+        ["player_id", "season", "week", "team", "depth_rank"]
+    ]
+    return weekly.merge(
+        dc, left_on=["player_id", "season", "week", "posteam"],
+        right_on=["player_id", "season", "week", "team"], how="left",
+    ).drop(columns=["team"])
 
 
-def add_injury_context(weekly: pd.DataFrame, depth_charts: pd.DataFrame, injuries: pd.DataFrame) -> pd.DataFrame:
+def add_injury_context(
+    weekly: pd.DataFrame, depth_charts: pd.DataFrame, injuries: pd.DataFrame, schedules: pd.DataFrame = None,
+    seasonal_rosters: pd.DataFrame = None,
+) -> pd.DataFrame:
     """
     For each player/week, attach the set of report_status values (Out/
     Doubtful/Questionable) among teammates at the same skill-position depth
@@ -405,34 +576,43 @@ def add_injury_context(weekly: pd.DataFrame, depth_charts: pd.DataFrame, injurie
     both cases mean the same thing for this signal: no vacated opportunity
     this week.
 
-    Same 2025 depth-chart schema gap as add_depth_chart_rank applies —
-    this needs depth_rank to determine who's "ahead," so 2025 rows get an
-    empty list here regardless of injuries' own data (which does have
-    clean gsis_id coverage across all three seasons — the gap is entirely
-    on the depth-chart side).
+    Now handles both schemas, same as add_depth_chart_rank — via the same
+    _combined_depth_chart lookup (not re-parsed a second time here).
+    schedules and seasonal_rosters are required only to resolve 2025+ rows;
+    pass neither to fall back to old-schema-only behavior (2025+ rows get
+    an empty ahead_injury_statuses list, same as before this fix).
+
+    Same team-matching fix as add_depth_chart_rank, same reason: a player
+    traded mid-season can have depth-chart entries on two teams that both
+    resolve to the same (season, week), so the final merge onto weekly
+    matches on team (weekly's own posteam) too, not just player_id/season/
+    week — otherwise a traded player's ahead_injury_statuses could mix in
+    a "teammate" from the team he'd already left.
     """
-    dc = _skill_position_depth_chart(depth_charts)
+    dc = _combined_depth_chart(depth_charts, schedules, seasonal_rosters)
 
-    inj = injuries[["gsis_id", "season", "week", "report_status"]].drop_duplicates(
-        subset=["gsis_id", "season", "week"], keep="last"
+    inj = (
+        injuries[["gsis_id", "season", "week", "report_status"]]
+        .drop_duplicates(subset=["gsis_id", "season", "week"], keep="last")
+        .rename(columns={"gsis_id": "player_id"})
     )
-    dc = dc.merge(inj, on=["gsis_id", "season", "week"], how="left")
+    dc = dc.merge(inj, on=["player_id", "season", "week"], how="left")
 
-    ahead = dc.merge(
-        dc, on=["season", "week", "club_code", "depth_position"], suffixes=("", "_teammate")
-    )
+    ahead = dc.merge(dc, on=["season", "week", "team", "position_group"], suffixes=("", "_teammate"))
     ahead = ahead[ahead["depth_rank_teammate"] < ahead["depth_rank"]]
     ahead = ahead[ahead["report_status_teammate"].notna()]
 
     ahead_statuses = (
-        ahead.groupby(["gsis_id", "season", "week"])["report_status_teammate"]
+        ahead.groupby(["player_id", "season", "week", "team"])["report_status_teammate"]
         .apply(list)
         .rename("ahead_injury_statuses")
         .reset_index()
-        .rename(columns={"gsis_id": "player_id"})
     )
 
-    weekly = weekly.merge(ahead_statuses, on=["player_id", "season", "week"], how="left")
+    weekly = weekly.merge(
+        ahead_statuses, left_on=["player_id", "season", "week", "posteam"],
+        right_on=["player_id", "season", "week", "team"], how="left",
+    ).drop(columns=["team"])
     weekly["ahead_injury_statuses"] = weekly["ahead_injury_statuses"].apply(
         lambda v: v if isinstance(v, list) else []
     )

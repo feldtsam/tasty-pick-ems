@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 from normalize import build_reference_scale, fill_neutral, percentile_lookup
+from roster_match import match_player_names
 
 ATTD_MARKET = "player_anytime_td"
 
@@ -107,8 +108,8 @@ def match_attd_players(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Match each non-D/ST row's player_name_raw to a (player_id,
-    position_group, team) via seasonal_rosters — the same source
-    redzone._position_lookup already uses for clean RB/WR/TE labels —
+    position_group, team) via roster_match.match_player_names — the same
+    3-way-classified matcher redzone.py's 2025+ depth-chart parser uses —
     constrained to the two teams actually playing in that event. The
     outcome itself carries no team field, so the event's home_team/
     away_team (full names, e.g. "Seattle Seahawks") are resolved to
@@ -117,90 +118,22 @@ def match_attd_players(
     collisions (e.g. two different real "Josh Allen"s in the league) that
     a global name match wouldn't.
 
-    Uses a plain per-row loop rather than a vectorized merge, unlike the
-    rest of this codebase — deliberately: this only ever processes tens
-    of rows per event (one game's ATTD market has ~20-30 outcomes), so
-    the performance cost is zero, and the row-wise team-constrained
-    matching logic here is meaningfully easier to verify correct than the
-    equivalent merge-and-filter would be.
-
-    RB/WR/TE only, matching redzone._position_lookup's own restriction —
-    Market Value's position_group has to share that vocabulary with TD
-    Opportunity/Role & Momentum/Situation, all scoped to RB/WR/TE.
-
-    Returns (matched, unmatched) — unmatched rows are never dropped
-    silently. Each unmatched row gets a heuristic match_issue_type:
-      "rookie_or_new"        - no exact name match anywhere in
-                                seasonal_rosters (any position, any team,
-                                any season) — most likely a player with no
-                                backfilled season history yet (e.g. a
-                                rookie who hasn't played a tracked
-                                season). Can't be proven without external
-                                data; this is the best available
-                                heuristic, not a certainty.
-      "position_out_of_scope" - a real, matchable player (QB, OL, etc.),
-                                correctly excluded for being outside
-                                RB/WR/TE — not a bug, the same scope every
-                                other pillar in this module already has.
-      "team_mismatch"         - a real RB/WR/TE, just not on either team
-                                playing in this game (traded, a team-
-                                abbreviation resolution issue, or a
-                                genuine name collision) — worth a human
-                                look, more likely a real issue than
-                                expected coverage noise.
-    D/ST rows are excluded from both outputs entirely (see
+    D/ST rows are excluded before matching even starts (see
     _is_dst_outcome) — they're a known, explicitly-handled category, not
     a matching failure of any kind.
     """
     parsed = parsed[~parsed["is_dst"]].copy()
 
     name_to_abbr = dict(zip(team_desc["team_name"], team_desc["team_abbr"]))
-    parsed["home_abbr"] = parsed["home_team"].map(name_to_abbr)
-    parsed["away_abbr"] = parsed["away_team"].map(name_to_abbr)
-
-    season_rosters = seasonal_rosters[seasonal_rosters["season"] == season]
-    # RB/WR/TE only, same restriction as redzone._position_lookup — this
-    # module's position_group has to share that vocabulary, since Market
-    # Value's output is meant to sit alongside TD Opportunity/Role &
-    # Momentum/Situation, all of which are scoped to RB/WR/TE.
-    skill_position_rosters = season_rosters[season_rosters["position"].isin(["RB", "WR", "TE"])]
-    roster_lookup = skill_position_rosters[["player_id", "player_name", "position", "team"]]
-
-    all_names_ever = set(seasonal_rosters["player_name"].dropna())
-    skill_position_names_ever = set(
-        seasonal_rosters.loc[seasonal_rosters["position"].isin(["RB", "WR", "TE"]), "player_name"].dropna()
+    parsed["_candidate_teams"] = parsed.apply(
+        lambda r: {name_to_abbr.get(r["home_team"]), name_to_abbr.get(r["away_team"])}, axis=1
     )
 
-    matched_rows = []
-    unmatched_rows = []
-    for row in parsed.to_dict("records"):
-        candidates = roster_lookup[roster_lookup["player_name"] == row["player_name_raw"]]
-        in_game = candidates[candidates["team"].isin([row["home_abbr"], row["away_abbr"]])]
-
-        if len(in_game) >= 1:
-            m = in_game.iloc[0]
-            matched_rows.append(
-                {**row, "player_id": m["player_id"], "team": m["team"], "position_group": m["position"]}
-            )
-        elif row["player_name_raw"] in skill_position_names_ever:
-            # A real RB/WR/TE, just not exact-matchable to a team playing
-            # in this game (traded, an abbreviation resolution issue, or
-            # a genuine name collision) — a real issue worth a look, not
-            # expected coverage noise.
-            unmatched_rows.append({**row, "match_issue_type": "team_mismatch"})
-        elif row["player_name_raw"] in all_names_ever:
-            # A real player (QB, OL, etc.) correctly out of scope for a
-            # system built around RB/WR/TE red-zone touches — not a bug,
-            # matches the scope every other pillar in this module already
-            # has (e.g. QBs are excluded from redzone._position_lookup
-            # the same way).
-            unmatched_rows.append({**row, "match_issue_type": "position_out_of_scope"})
-        else:
-            unmatched_rows.append({**row, "match_issue_type": "rookie_or_new"})
-
-    drop_cols = ["home_abbr", "away_abbr"]
-    matched = pd.DataFrame(matched_rows).drop(columns=drop_cols, errors="ignore")
-    unmatched = pd.DataFrame(unmatched_rows).drop(columns=drop_cols, errors="ignore")
+    matched, unmatched = match_player_names(
+        parsed, seasonal_rosters, season, name_col="player_name_raw", candidate_teams_col="_candidate_teams"
+    )
+    matched = matched.drop(columns=["_candidate_teams"], errors="ignore")
+    unmatched = unmatched.drop(columns=["_candidate_teams"], errors="ignore")
     return matched, unmatched
 
 

@@ -70,10 +70,10 @@ def load_id_crosswalk(seasons: list[int]) -> pd.DataFrame:
 
 
 def load_depth_charts(seasons: list[int]) -> pd.DataFrame:
-    """Load raw depth charts for the given seasons. nflverse's 2025 schema
-    change means 2025 rows come back empty (see
-    redzone._skill_position_depth_chart's docstring) — not a bug in this
-    call, a known upstream gap."""
+    """Load raw depth charts for the given seasons. nflverse changed the
+    schema for 2025+ (see redzone._new_schema_depth_chart) — both old- and
+    new-schema rows come back mixed together in one frame from this single
+    call, and redzone.add_depth_chart_rank parses both transparently."""
     return nfl.import_depth_charts(seasons)
 
 
@@ -139,23 +139,23 @@ if __name__ == "__main__":
     print("Loading injury reports ...")
     injuries = load_injuries(SEASONS)
 
-    print("Joining depth-chart rank ...")
-    weekly = add_depth_chart_rank(weekly, depth_charts)
-    no_rank = weekly["depth_rank"].isna().sum()
-    print(f"  {no_rank} / {len(weekly)} rows had no depth-chart rank "
-          f"({no_rank / len(weekly):.1%}) — includes ALL 2025 rows (known schema gap, see redzone.py)")
-
-    print("Joining injury context ...")
-    weekly = add_injury_context(weekly, depth_charts, injuries)
-    has_injury_ahead = weekly["ahead_injury_statuses"].apply(len).gt(0).sum()
-    print(f"  {has_injury_ahead} / {len(weekly)} rows have >=1 teammate ahead with an injury designation "
-          f"({has_injury_ahead / len(weekly):.1%})")
-
     print("Loading seasonal rosters ...")
     seasonal_rosters = load_seasonal_rosters(SEASONS)
 
     print("Loading schedules ...")
     schedules = load_schedules(SEASONS)
+
+    print("Joining depth-chart rank ...")
+    weekly = add_depth_chart_rank(weekly, depth_charts, schedules, seasonal_rosters)
+    no_rank = weekly["depth_rank"].isna().sum()
+    print(f"  {no_rank} / {len(weekly)} rows had no depth-chart rank "
+          f"({no_rank / len(weekly):.1%})")
+
+    print("Joining injury context ...")
+    weekly = add_injury_context(weekly, depth_charts, injuries, schedules, seasonal_rosters)
+    has_injury_ahead = weekly["ahead_injury_statuses"].apply(len).gt(0).sum()
+    print(f"  {has_injury_ahead} / {len(weekly)} rows have >=1 teammate ahead with an injury designation "
+          f"({has_injury_ahead / len(weekly):.1%})")
 
     print("Joining player position ...")
     weekly = add_player_position(weekly, seasonal_rosters)

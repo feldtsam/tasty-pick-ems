@@ -52,16 +52,16 @@ backtest/scoring/model.py's calibration comments). There's no NFL backtest
 script yet, so nothing is at risk today; a real train/validate season
 split is needed before any calibration phase begins.
 
-DEPTH-CHART GAP, OPEN ITEM FOR LAUNCH: nflverse changed the depth-chart
-source schema at some point in 2025 (see redzone._skill_position_depth_
-chart's docstring) - depth_rank is NaN for every 2025 row, so
-depth_chart_movement_pct falls back to neutral for all of 2025 through
-Role Trend. This is not a minor coverage footnote like the snap-count
-crosswalk misses: it's the entire current season's depth-chart signal.
-The live weekly job launching into the 2026 season needs a parser built
-against the new schema (dt/team/player_name/pos_abb/pos_slot/pos_rank, no
-gsis_id) before depth-chart movement means anything live - deferred, not
-solved, and should not be assumed working once this pillar ships.
+DEPTH-CHART GAP, RESOLVED for depth_chart_rank (redzone.add_depth_chart_
+rank now parses both the pre-2025 and 2025+ schemas transparently, see
+redzone._new_schema_depth_chart) - depth_chart_movement_pct through Role
+Trend is real for 2025 rows now, not a neutral fallback. Two things
+worth knowing rather than assuming: (1) a factual correction to what was
+claimed here before - the new schema does have a gsis_id, populated for
+~99% of rows, it was never actually missing; (2) add_injury_context is
+STILL old-schema-only (redzone.py, not fixed here) - ahead_injury_
+statuses is still empty for every 2025+ row, a related but separate,
+explicitly out-of-scope gap for now.
 
 Situation (20% weight) - two independent contextual modifiers, combined
 as a plain weighted average, NOT the max/bonus mechanic used above. That
