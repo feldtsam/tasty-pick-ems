@@ -56,9 +56,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Vercel's Python runtime doesn't put this file's own directory (or its
-# parent) on the import path — add the parent (nfl/) explicitly so
-# `from market_value import ...` etc. resolve, same fix pipeline/api/
-# index.py applies for its own sibling directories.
+# parent) on the import path. Confirmed directly, not just by analogy:
+# the nfl_data_py vendoring fix resolved the earlier crash cleanly, and
+# the very next deploy failed at `from lovable_forward import ...` with
+# ModuleNotFoundError — lovable_forward.py sits right next to this file
+# in nfl/api/, but that directory was never added to sys.path, only its
+# parent (nfl/) below. Same root cause and same fix pipeline/api/index.py
+# already documents and applies for its own sibling imports
+# (flatten_hr_props, etc.) — add this file's own directory first.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# nfl/ itself, so `from market_value import ...` etc. resolve.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # nfl_data_py is vendored, not pip-installed — see nfl/vendor/README.md.
 # This is the actual fix for the ModuleNotFoundError this comment sits
