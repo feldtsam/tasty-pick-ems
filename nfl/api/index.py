@@ -218,9 +218,9 @@ def poll_market_value_endpoint():
     # inside forward_to_lovable's serialize_payload.
     rows = json.loads(combined.to_json(orient="records")) if len(combined) else []
 
-    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
     if not secret:
-        return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
+        return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
     write_url = resolve_url_env("LOVABLE_NFL_PRICE_HISTORY_WRITE_URL", DEFAULT_NFL_PRICE_HISTORY_WRITE_URL)
 
     forward_result = {"success": None, "status_code": None, "error": None}
