@@ -16,3 +16,4 @@ pyarrow==17.0.0     # parquet engine nfl_data_py uses to pull play-by-play
 appdirs==1.4.4       # nfl_data_py's cache-dir dependency, not pulled in by --no-deps
 requests==2.31.0
 certifi==2024.8.30
+flask==3.0.3         # nfl/api/index.py — the Market Value polling endpoint, same version pipeline/ pins
