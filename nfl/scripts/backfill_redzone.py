@@ -22,6 +22,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# nfl_data_py is vendored, not pip-installed — see nfl/vendor/README.md
+# for why (0.3.3's own PyPI metadata pins pandas<2.0, incompatible with
+# this project's pandas 2.x requirement; the real code works fine with
+# pandas 2.x, only the declared constraint is stale).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
 
 import nfl_data_py as nfl
 import pandas as pd

@@ -60,6 +60,16 @@ from pathlib import Path
 # `from market_value import ...` etc. resolve, same fix pipeline/api/
 # index.py applies for its own sibling directories.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# nfl_data_py is vendored, not pip-installed — see nfl/vendor/README.md.
+# This is the actual fix for the ModuleNotFoundError this comment sits
+# next to: nfl_data_py was never really installable via a plain
+# `pip install -r requirements.txt` in the first place (0.3.3's own PyPI
+# metadata pins pandas<2.0, which conflicts outright with this project's
+# pandas 2.x requirement — confirmed directly, pip refuses the combination
+# with ResolutionImpossible, not a --no-deps-able situation), so it was
+# never really being installed by Vercel's build even before this file
+# started importing it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
 
 from flask import Flask, jsonify, request
 import nfl_data_py as nfl
