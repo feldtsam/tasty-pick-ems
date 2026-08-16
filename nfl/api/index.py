@@ -238,19 +238,41 @@ def poll_market_value_endpoint():
     secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
     if not secret:
         return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+    # `if not secret` above only catches missing/empty — a value saved with
+    # a stray leading/trailing space (easy to introduce copy-pasting into
+    # Vercel's env var UI) is still truthy and would silently produce a
+    # signature Lovable's side never matches. Logs length and a whitespace
+    # flag only, never the value itself, so that failure mode is
+    # diagnosable from Vercel logs without ever exposing the secret.
+    if secret != secret.strip():
+        print(
+            f"[env-config] WARNING: NFL_PIPELINE_WEBHOOK_SECRET has leading/trailing "
+            f"whitespace (len={len(secret)}, stripped_len={len(secret.strip())}) — "
+            f"this will produce a signature Lovable's side won't match.",
+            flush=True,
+        )
     write_url = resolve_url_env("LOVABLE_NFL_PRICE_HISTORY_WRITE_URL", DEFAULT_NFL_PRICE_HISTORY_WRITE_URL)
 
     forward_result = {"success": None, "status_code": None, "error": None}
     if rows:
         forward_result = forward_to_lovable(rows, secret, write_url)
 
+    # forward_result['error']/['response_body'] are logged here (truncated
+    # the same as they are in forward_to_lovable's return value, and never
+    # containing the secret or signature) because until now they only ever
+    # reached the caller (Make.com) inside the HTTP JSON response — Vercel's
+    # own function logs showed just the status code, not Lovable's actual
+    # response text, which made this print statement useless for debugging
+    # a forwarding failure without also having Make.com's run history open.
     print(
         f"[poll-market-value] events_received={len(events)} "
         f"events_with_no_market={len(events_with_no_market)} "
         f"matched={match_summary['matched']} unmatched={match_summary['unmatched']} "
         f"by_issue_type={match_summary['by_issue_type']} "
         f"rows_written={len(rows)} "
-        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']}",
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
+        f"forward_error={forward_result['error']!r} "
+        f"forward_response_body={forward_result.get('response_body')!r}",
         flush=True,
     )
 
