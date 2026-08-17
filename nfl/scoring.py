@@ -674,6 +674,80 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
     return weekly
 
 
+def score_market_value(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row for Market Value (20% weight in the Universal TPE
+    Score's core_weights — see score_universal_tpe). Requires weekly to
+    already have season, week, and consensus_implied_probability columns
+    — nfl/market_value.py's snapshot_scoring_inputs output, joined onto
+    a season/week grain (that join is a future step, not built this
+    round; see market_value.py's module docstring for why Market Value
+    stays snapshot-only and isn't backfilled into the historical weekly
+    table at all). Returns weekly with market_value_score and
+    market_value_completeness appended. Deliberately NOT wired into
+    score_universal_tpe yet — that's the next step, after this is
+    reviewed.
+
+    Single component: consensus_implied_probability (the market's own
+    median-of-books read on how likely this player is to score anytime)
+    percentile-ranked against that week's eligible RB/WR/TE pool. Reuses
+    the same population-relative pattern _percentile_fn wraps elsewhere
+    in this module — build_reference_scale -> percentile_lookup ->
+    fill_neutral, the same three normalize.py primitives, not a
+    reimplementation — but grouped by (season, week) rather than called
+    through _percentile_fn itself, since that helper's qualified-
+    population logic (season-total rz_touches) is a red-zone-usage
+    concept with no equivalent here.
+
+    The (season, week) grouping is a deliberate difference from every
+    other pillar's pooled multi-season reference population, not an
+    oversight: red-zone usage and opponent context are stable enough
+    season to season that pooling 2022+2024+2025 to compare a Week 1
+    read against a Week 17 one is reasonable (see module docstring's
+    NORMALIZATION CAVEAT). A player's market price isn't — it's only
+    meaningful relative to that SAME week's board (that week's slate,
+    injury news, and game context all move together), so this week's own
+    pool is the correct reference population, not a cross-season blend.
+
+    best_price is intentionally NOT part of the score — left untouched
+    as a pass-through display field only (e.g. a future "best odds:
+    DraftKings +450 vs consensus +380" UI), never folded into
+    market_value_score in any weighted or bonus form.
+    consensus_implied_probability is already the market's best single
+    read (median across books, see snapshot_scoring_inputs);  best_price
+    is deliberately the single most generous outlier quote by
+    construction and would just inject book-shopping noise into a score
+    meant to measure market-implied probability, not shopping upside.
+
+    market_value_completeness (0-100) is expected to read ~100 for
+    essentially every row: the +300 eligibility floor upstream already
+    requires a posted player_anytime_td market before a row exists here
+    at all, unlike the other pillars' genuinely gap-prone inputs (missing
+    injury/weather/depth-chart data). Still routed through the same
+    neutral-50 fallback as every other pillar for any unexpected missing/
+    NaN consensus_implied_probability — defensive consistency, not an
+    assumption that completeness is 100 by construction.
+
+    n_books=1 (the normal case this far from kickoff — see
+    snapshot_scoring_inputs) degenerates correctly here same as it
+    already does at the raw-input layer: consensus_implied_probability
+    is just that one book's own value, and percentile_lookup handles a
+    reference scale containing single-quote values with no special
+    casing needed.
+    """
+    weekly = weekly.copy()
+
+    def _group_percentile(s: pd.Series) -> pd.Series:
+        return pd.Series(percentile_lookup(s, build_reference_scale(s)), index=s.index)
+
+    raw_pct = weekly.groupby(["season", "week"])["consensus_implied_probability"].transform(_group_percentile)
+
+    weekly["market_value_score"] = fill_neutral(raw_pct).round(1)
+    weekly["market_value_completeness"] = ((1 - raw_pct.isna()) * 100).round(1)
+
+    return weekly
+
+
 def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
     """
     Score every row for Evidence Quality & Convergence (10% weight in the
