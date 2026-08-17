@@ -321,13 +321,48 @@ def _percentile_fn(weekly: pd.DataFrame, config: dict, track_fallback: list = No
 
 
 def _trend_delta(weekly: pd.DataFrame, col: str, window: int) -> pd.Series:
-    """Recent-window mean minus season-to-date average, e.g.
+    """
+    Recent-window mean minus season-to-date average, e.g.
     rz_touch_share_last3 - rz_touch_share_season_avg for window=3. Positive
     = trending up. Reads columns add_rolling_windows already produced -
     shared by TD Opportunity's Emerging Heat (last3 only) and Role &
     Momentum's Role Trend (last3 and last5, blended), neither of which
-    recomputes the underlying rolling means."""
-    return weekly[f"{col}_last{window}"] - weekly[f"{col}_season_avg"]
+    recomputes the underlying rolling means.
+
+    MASKED to NaN whenever the player has <= `window` prior games this
+    season (via games_played, a per-row count of real rows already
+    seen in that (player_id, season) group — bye weeks add no row at
+    all, so this counts games actually played, not calendar weeks
+    elapsed, same as add_rolling_windows' shift/rolling already does).
+
+    Confirmed directly (real 2025 Week 2 data, n=1 prior game): add_
+    rolling_windows' rolling(window, min_periods=1) and .expanding().
+    mean() both simply average over "however many prior games exist,
+    capped at window" — with <= window prior games, last{window} and
+    season_avg are computed over the EXACT SAME set of games and are
+    mathematically guaranteed identical (delta=0.0), regardless of the
+    player's real usage. That's indistinguishable from a genuinely flat
+    multi-game trend by value alone (both read exactly 0.0) — only
+    distinguishable by checking how much history actually existed,
+    which is what games_played does here. Before this mask, every
+    player with exactly one game of history read as "100% complete" on
+    this input, identical to a player with ten games — confirmed via
+    td_opportunity_completeness's real Week 2 2025 distribution, which
+    was bimodal at exactly 30.0/100.0 with nothing in between.
+
+    Once games_played > window, last{window} starts excluding older
+    games season_avg still includes, so a nonzero (or a genuinely
+    coincidental zero) delta becomes a real, unmasked observation again
+    — deliberately NOT a delta-value check (unlike depth_chart_
+    movement_pct's own "delta == 0" tie-mass fallback, the closest
+    precedent in this module): a delta-value check can't tell a forced
+    zero apart from a real one once enough history exists, and would
+    incorrectly flatten a genuine stable multi-game trend that happens
+    to land on exactly 0.0.
+    """
+    games_played = weekly.groupby(["player_id", "season"]).cumcount()
+    delta = weekly[f"{col}_last{window}"] - weekly[f"{col}_season_avg"]
+    return delta.where(games_played > window)
 
 
 def _shrink_rate(tds: pd.Series, touches: pd.Series, league_avg_rate: float, k: float) -> pd.Series:
