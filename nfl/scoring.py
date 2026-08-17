@@ -829,12 +829,34 @@ def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Da
     return weekly
 
 
-def score_universal_tpe(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+def score_universal_tpe(weekly: pd.DataFrame, market_value: pd.DataFrame = None, config: dict = CONFIG) -> pd.DataFrame:
     """
     Score every row for the final Universal TPE Score. Must run after
     score_td_opportunity, score_role_momentum, score_situation, and
     score_evidence_quality (reads all four's outputs directly) — the
     last step in the pipeline, not a fifth independent pillar computation.
+
+    market_value: optional, score_market_value()'s output (a player_id/
+    season/week-keyed frame with market_value_score and
+    market_value_completeness columns — score_market_value's own live-
+    poll snapshot table, not weekly itself, since Market Value is
+    computed on an entirely separate table with no rz_touches/defteam/
+    etc. — see market_value.py's module docstring). Left-merged onto
+    weekly here, on (player_id, season, week), the same join key every
+    other pillar's data is already keyed by — every row of weekly is
+    kept regardless of whether a live market existed for that player
+    that week; market_value_score is simply NaN where it didn't, and the
+    present-columns-only renormalization below (unchanged, and unchanged
+    in behavior even before this parameter existed) already handles that
+    per row, same as it's always handled market_value_score's total
+    absence on every historical row. Omit this argument (the default) to
+    score without attempting a merge at all — the right choice for
+    historical backfills, where a live market can never have existed
+    (see market_value.py) and merging would be pure overhead for a
+    column that's already going to be 100% NaN. Any pre-existing
+    market_value_score/market_value_completeness columns on weekly are
+    dropped before merging, so calling this twice with market_value set
+    doesn't produce _x/_y suffixed duplicates.
 
     DELIBERATE DEVIATION FROM THE BLUEPRINT'S LITERAL "10% ADDITIVE
     WEIGHT" FOR EVIDENCE QUALITY & CONVERGENCE — see module docstring for
@@ -850,7 +872,11 @@ def score_universal_tpe(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataF
                    (market_value_score is absent for every historical
                    row — see market_value.py — so core_score renormalizes
                    over the remaining 70 there, not scored against a
-                   70-point ceiling).
+                   70-point ceiling). This has always been a per-ROW
+                   renormalization, not a population filter — every row
+                   of weekly gets a core_score, with or without Market
+                   Value; nothing here (before or after this parameter
+                   existed) drops rows lacking a pillar.
       confidence_multiplier = confidence_floor + (1 - confidence_floor)
                                * (evidence_quality / 100)
       tpe_score = core_score * confidence_multiplier
@@ -859,6 +885,14 @@ def score_universal_tpe(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataF
     appended.
     """
     weekly = weekly.copy()
+    if market_value is not None:
+        weekly = weekly.drop(columns=["market_value_score", "market_value_completeness"], errors="ignore")
+        weekly = weekly.merge(
+            market_value[["player_id", "season", "week", "market_value_score", "market_value_completeness"]],
+            on=["player_id", "season", "week"],
+            how="left",
+        )
+
     tpe_cfg = config["universal_tpe"]
     weights = tpe_cfg["core_weights"]
 
