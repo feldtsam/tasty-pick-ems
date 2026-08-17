@@ -213,9 +213,18 @@ def run_pipeline(
         weekly = pd.concat([weekly, extra_offense_rows], ignore_index=True)
 
     weekly = add_snap_shares(weekly, snap_counts, id_crosswalk)
+    # Must run before add_depth_chart_rank/add_injury_context — both now
+    # join on position_group (in addition to player_id/season/week/team)
+    # to resolve a player with a genuine multi-position depth-chart
+    # listing (e.g. Jackson Meeks, TE AND WR, DET 2026 Week 1) to only
+    # the one entry matching their own canonical position, rather than
+    # fanning weekly out to one row per listing. Confirmed nothing
+    # between add_snap_shares and here reads position_group (grep
+    # confirms it's produced solely by add_player_position and consumed
+    # first by these two functions), so moving it up is safe.
+    weekly = add_player_position(weekly, seasonal_rosters)
     weekly = add_depth_chart_rank(weekly, depth_charts, schedules, seasonal_rosters)
     weekly = add_injury_context(weekly, depth_charts, injuries, schedules, seasonal_rosters)
-    weekly = add_player_position(weekly, seasonal_rosters)
     weekly = add_opponent(weekly, schedules)
     weekly = add_environment_data(weekly, schedules)
 

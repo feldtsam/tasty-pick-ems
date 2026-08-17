@@ -530,10 +530,15 @@ def add_depth_chart_rank(
 ) -> pd.DataFrame:
     """
     Join each player's own skill-position depth-chart rank onto the weekly
-    table by (player_id, season, week, team). Drop-in replacement
-    regardless of which schema a given season's rows use — see
-    _combined_depth_chart, which both this function and add_injury_context
-    share. Callers (score_role_momentum included) see no difference.
+    table by (player_id, season, week, team, position_group). Drop-in
+    replacement regardless of which schema a given season's rows use —
+    see _combined_depth_chart, which both this function and add_injury_
+    context share. Callers (score_role_momentum included) see no
+    difference.
+
+    Requires weekly to already have position_group (add_player_position)
+    — run_pipeline calls add_player_position before this for exactly that
+    reason.
 
     Matches on team (weekly's own posteam — ground truth from play-by-play)
     as well as player_id/season/week, not just the latter — caught via a
@@ -547,15 +552,27 @@ def add_depth_chart_rank(
     picks the entry for whichever team he actually played for that week,
     the same ground truth the rest of this table already uses.
 
+    ALSO matches on position_group, same reasoning, a second real case
+    caught the same way: a player genuinely listed on TWO position-
+    specific depth charts for the same team/week (Jackson Meeks, TE
+    rank 4 AND WR rank 8, DET 2026 Week 1; Eli Heidenreich, RB rank 6
+    AND WR rank 7, PIT 2026 Week 1 — 5 such cases confirmed across
+    2022-2026) fanned weekly out to 2 rows the same way the Thielen case
+    did, just along a different axis. Matching on weekly's own
+    position_group (the player's single canonical position from
+    seasonal_rosters, not the depth chart's — see add_player_position)
+    resolves to exactly the one depth-chart listing that actually applies
+    to this player, rather than merging in both.
+
     schedules and seasonal_rosters are required only to resolve 2025+
     rows — pass neither to fall back to old-schema-only behavior.
     """
     dc = _combined_depth_chart(depth_charts, schedules, seasonal_rosters)[
-        ["player_id", "season", "week", "team", "depth_rank"]
+        ["player_id", "season", "week", "team", "position_group", "depth_rank"]
     ]
     return weekly.merge(
-        dc, left_on=["player_id", "season", "week", "posteam"],
-        right_on=["player_id", "season", "week", "team"], how="left",
+        dc, left_on=["player_id", "season", "week", "posteam", "position_group"],
+        right_on=["player_id", "season", "week", "team", "position_group"], how="left",
     ).drop(columns=["team"])
 
 
@@ -582,12 +599,32 @@ def add_injury_context(
     pass neither to fall back to old-schema-only behavior (2025+ rows get
     an empty ahead_injury_statuses list, same as before this fix).
 
+    Requires weekly to already have position_group (add_player_position)
+    — run_pipeline calls add_player_position before this for exactly that
+    reason, same as add_depth_chart_rank.
+
     Same team-matching fix as add_depth_chart_rank, same reason: a player
     traded mid-season can have depth-chart entries on two teams that both
     resolve to the same (season, week), so the final merge onto weekly
     matches on team (weekly's own posteam) too, not just player_id/season/
     week — otherwise a traded player's ahead_injury_statuses could mix in
     a "teammate" from the team he'd already left.
+
+    ALSO matches on position_group in that same final merge, same
+    reasoning as add_depth_chart_rank's own position_group fix: a player
+    genuinely listed on two position-specific depth charts for the same
+    team/week (Jackson Meeks, TE and WR; Eli Heidenreich, RB and WR — see
+    add_depth_chart_rank) doesn't fan out INTO A DUPLICATE ROW here (the
+    groupby below already collapses back to one row per player/team), but
+    without position_group in that groupby, the collapse silently BLENDS
+    both listings' teammate lists together — Meeks' ahead_injury_statuses
+    would include teammates ahead of him on the TE chart (not his real
+    position) as well as the WR chart (his real one, per seasonal_
+    rosters), a wrong-teammates bug that produced no visible symptom
+    (row count looked fine) until traced directly. Grouping by position_
+    group too keeps each position's teammate list separate, and the final
+    merge onto weekly then picks only the one matching the player's own
+    canonical position.
     """
     dc = _combined_depth_chart(depth_charts, schedules, seasonal_rosters)
 
@@ -603,15 +640,15 @@ def add_injury_context(
     ahead = ahead[ahead["report_status_teammate"].notna()]
 
     ahead_statuses = (
-        ahead.groupby(["player_id", "season", "week", "team"])["report_status_teammate"]
+        ahead.groupby(["player_id", "season", "week", "team", "position_group"])["report_status_teammate"]
         .apply(list)
         .rename("ahead_injury_statuses")
         .reset_index()
     )
 
     weekly = weekly.merge(
-        ahead_statuses, left_on=["player_id", "season", "week", "posteam"],
-        right_on=["player_id", "season", "week", "team"], how="left",
+        ahead_statuses, left_on=["player_id", "season", "week", "posteam", "position_group"],
+        right_on=["player_id", "season", "week", "team", "position_group"], how="left",
     ).drop(columns=["team"])
     weekly["ahead_injury_statuses"] = weekly["ahead_injury_statuses"].apply(
         lambda v: v if isinstance(v, list) else []
