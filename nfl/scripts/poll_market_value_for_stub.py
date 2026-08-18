@@ -9,7 +9,12 @@ this is the "future polling script" market_value.py's own module
 docstring already said would eventually call it), and merges the
 result onto that week's stub file (scripts/build_stub_week.py's
 output) by player_id — WITHOUT touching td_opportunity/role_momentum/
-situation, which Phase 1 already populated.
+situation, which Phase 1 already populated. score_evidence_quality and
+score_universal_tpe ARE re-run after the merge, though — both read
+market_value_score as an input (see poll_market_value_for_stub's own
+docstring for why skipping this left every derived column stale from
+before the poll), so leaving them unrun would defeat the point of
+polling at all.
 
 Scheduling/deployment (Make.com or otherwise) is explicitly out of
 scope — this is a function you call once, ad hoc, and it's correct.
@@ -33,7 +38,7 @@ import requests
 
 import nfl_data_py as nfl
 from market_value import match_attd_players, parse_attd_event, snapshot_scoring_inputs
-from scoring import CONFIG, score_market_value
+from scoring import CONFIG, score_evidence_quality, score_market_value, score_universal_tpe
 
 EVENTS_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/"
 ODDS_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds"
@@ -190,9 +195,13 @@ def poll_market_value_for_stub(
     merging fresh — not merged on top of whatever's already there — so
     re-running with the same events/odds always overwrites to the same
     values rather than compounding. td_opportunity/role_momentum/
-    situation/evidence_quality/etc. are never touched: they're not in
-    MARKET_VALUE_COLUMNS and this function never drops or recomputes
-    them.
+    situation are never touched: they're not in MARKET_VALUE_COLUMNS and
+    this function never drops or recomputes them. evidence_quality/
+    core_score/confidence_multiplier/tpe_score ARE recomputed on every
+    call (see the re-score step below) — safely idempotent too, since
+    score_evidence_quality/score_universal_tpe both direct-assign their
+    output columns rather than merge, so a second call with the same
+    inputs always fully overwrites to the same values, never compounds.
 
     NEW PLAYERS: a live snapshot can contain a player_id the stub never
     had (a market posted for someone outside the stub's original
@@ -256,6 +265,26 @@ def poll_market_value_for_stub(
 
     merged = merged.drop(columns=["_merge"] + [c for c in NEW_ROW_IDENTITY_COLUMNS if c in merged.columns])
     merged = merged.sort_values(["player_id"]).reset_index(drop=True)
+
+    # Re-score downstream of the Market Value merge -- evidence_quality's
+    # convergence and score_universal_tpe's core_score/tpe_score both
+    # read market_value_score as an input (see scoring.py's CONFIG
+    # family_score_columns / core_weights), so merging the column in
+    # without re-running them left those derived columns stale from
+    # before this poll — confirmed directly on a real row (Mack Hollins,
+    # Week 1 2026): stored tpe_score 38.4 vs. the correct live-
+    # recomputed 29.1. Both functions read market_value_score straight
+    # off `merged` (it's already a real column from the merge above, no
+    # need to pass it as a separate argument the way reconcile_week.py
+    # does from a not-yet-merged frame). Neither function touches td_
+    # opportunity/role_momentum/situation — both only ever read those as
+    # already-present inputs, never recompute them — and both direct-
+    # assign their own output columns (weekly["evidence_quality"] = ...,
+    # etc.), not a merge, so re-running this on an already-scored stub
+    # (a second poll) always fully overwrites rather than compounding —
+    # same idempotency guarantee the Market Value columns already have.
+    merged = score_evidence_quality(merged, CONFIG)
+    merged = score_universal_tpe(merged, config=CONFIG)
 
     merged.to_csv(stub_path, index=False)
     print(f"Wrote {len(merged)} rows to {stub_path} "
