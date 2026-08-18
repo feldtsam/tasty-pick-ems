@@ -163,6 +163,39 @@ def aggregate_redzone_game(pbp: pd.DataFrame, seasonal_rosters: pd.DataFrame) ->
     return out.sort_values(["season", "week", "game_id", "rz_touches"], ascending=[True, True, True, False])
 
 
+def aggregate_whole_game_targets(pbp: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per player per game with WHOLE-FIELD target count and share of
+    team targets that game — NOT red-zone-scoped, unlike every other
+    aggregation in this file. Built specifically to support WR Trends'
+    target-share-movement signal (see shelves.py), which the Trend Shelf
+    Architecture review found needs a whole-game denominator that the
+    red-zone-scoped pillars structurally don't have (Role & Momentum's own
+    touch-share trend is deliberately red-zone-scoped — the right choice
+    for its own purpose, just not this one).
+
+    Deliberately kept OUT of the scored pipeline (run_pipeline, scoring.py)
+    — this is shelf-display-layer data, not a pillar input. Reuses _touches
+    (already validated, already the source every other aggregation in this
+    file is built from) rather than re-parsing pbp; the only new logic here
+    is restricting to touch_type == "target" (receiving only — target
+    share is a receiving-hierarchy concept, rushing touches don't belong
+    in this denominator) and NOT restricting by yardline_100 at all.
+    """
+    touches = _touches(pbp)
+    targets = touches[touches["touch_type"] == "target"]
+
+    keys = ["game_id", "season", "week", "posteam", "player_id"]
+    by_player = targets.groupby(keys).size().rename("targets").reset_index()
+
+    team_targets = (
+        targets.groupby(["game_id", "posteam"]).size().rename("team_targets").reset_index()
+    )
+    out = by_player.merge(team_targets, on=["game_id", "posteam"], how="left")
+    out["target_share"] = (out["targets"] / out["team_targets"]).round(3)
+    return out
+
+
 def _position_lookup(seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
     """
     (player_id, season) -> position_group (RB/WR/TE) from
