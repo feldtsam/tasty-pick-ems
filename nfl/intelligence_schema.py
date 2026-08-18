@@ -77,6 +77,35 @@ interpretation of each is documented in market_intelligence.py):
                          there are none.
 """
 
+import ast
+
+
+def parse_list_field(value) -> list:
+    """
+    A list-typed column (e.g. redzone.add_injury_context's
+    ahead_injury_statuses / ahead_injured_teammates) is a real Python
+    list when read straight out of run_pipeline in memory, but round-
+    trips through CSV as its str() representation (e.g.
+    "[{'status': 'Out'}]") — confirmed directly against player_redzone_
+    weekly.csv, not hypothetical. Shared here (rather than each family
+    reimplementing it, as shelves.py's own _as_list already had to)
+    since any Intelligence family reading a persisted CSV snapshot of
+    weekly can hit the same round-trip. Degrades to [] on anything
+    unparseable, never raises — a family should treat "couldn't parse"
+    the same as "genuinely nothing there," not crash a whole story batch
+    over one malformed cell.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = ast.literal_eval(value)
+            return parsed if isinstance(parsed, list) else []
+        except (ValueError, SyntaxError):
+            return []
+    return []
+
+
 STORY_FIELDS = (
     "intelligence_family",
     "entity",

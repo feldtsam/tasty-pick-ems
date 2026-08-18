@@ -715,6 +715,22 @@ def add_injury_context(
     group too keeps each position's teammate list separate, and the final
     merge onto weekly then picks only the one matching the player's own
     canonical position.
+
+    ALSO attaches ahead_injured_teammates — the same "who's ahead and
+    hurt" population as ahead_injury_statuses, but as
+    [{player_id, player_name, status}, ...] instead of just [status,
+    ...]. Added for nfl/role_changes.py: a Role Changes story about
+    externally-created opportunity needs to name the specific teammate
+    whose injury opened the door (e.g. "Bucky Irving (Out)"), not just
+    report that someone ahead was hurt. Purely additive — every existing
+    caller gets one more column it can ignore; ahead_injury_statuses
+    itself is unchanged. player_name comes from _canonical_player_names
+    (seasonal_rosters), same source aggregate_redzone_game already uses,
+    since _combined_depth_chart's own output never carries a name column
+    (both source schemas drop it during their groupby/reset_index) —
+    confirmed directly, not assumed, before adding this. Falls back to
+    None when seasonal_rosters isn't passed (old-schema-only callers),
+    same degrade-gracefully contract the rest of this function already has.
     """
     dc = _combined_depth_chart(depth_charts, schedules, seasonal_rosters)
 
@@ -724,6 +740,10 @@ def add_injury_context(
         .rename(columns={"gsis_id": "player_id"})
     )
     dc = dc.merge(inj, on=["player_id", "season", "week"], how="left")
+    if seasonal_rosters is not None:
+        dc = dc.merge(_canonical_player_names(seasonal_rosters), on=["player_id", "season"], how="left")
+    else:
+        dc["player_name"] = None
 
     ahead = dc.merge(dc, on=["season", "week", "team", "position_group"], suffixes=("", "_teammate"))
     ahead = ahead[ahead["depth_rank_teammate"] < ahead["depth_rank"]]
@@ -733,14 +753,32 @@ def add_injury_context(
         ahead.groupby(["player_id", "season", "week", "team", "position_group"])["report_status_teammate"]
         .apply(list)
         .rename("ahead_injury_statuses")
-        .reset_index()
     )
 
+    ahead_teammates = (
+        ahead.groupby(["player_id", "season", "week", "team", "position_group"], group_keys=False)
+        .apply(
+            lambda g: [
+                {"player_id": pid, "player_name": name, "status": status}
+                for pid, name, status in zip(
+                    g["player_id_teammate"], g["player_name_teammate"], g["report_status_teammate"]
+                )
+            ],
+            include_groups=False,
+        )
+        .rename("ahead_injured_teammates")
+    )
+
+    ahead_agg = pd.concat([ahead_statuses, ahead_teammates], axis=1).reset_index()
+
     weekly = weekly.merge(
-        ahead_statuses, left_on=["player_id", "season", "week", "posteam", "position_group"],
+        ahead_agg, left_on=["player_id", "season", "week", "posteam", "position_group"],
         right_on=["player_id", "season", "week", "team", "position_group"], how="left",
     ).drop(columns=["team"])
     weekly["ahead_injury_statuses"] = weekly["ahead_injury_statuses"].apply(
+        lambda v: v if isinstance(v, list) else []
+    )
+    weekly["ahead_injured_teammates"] = weekly["ahead_injured_teammates"].apply(
         lambda v: v if isinstance(v, list) else []
     )
     return weekly
