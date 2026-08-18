@@ -205,7 +205,7 @@ def run_pipeline(
     yet, etc.) — the same missing-data philosophy this file already
     relies on for real historical gaps, not a new mechanism.
     """
-    weekly = aggregate_redzone_game(pbp)
+    weekly = aggregate_redzone_game(pbp, seasonal_rosters)
     if extra_offense_rows is not None:
         stub_keys = extra_offense_rows[["season", "week"]].drop_duplicates()
         weekly = weekly.merge(stub_keys, on=["season", "week"], how="left", indicator=True)

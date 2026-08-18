@@ -73,16 +73,71 @@ def _band_agg(touches: pd.DataFrame, label: str, group_keys: list[str], zone_max
     )
 
 
-def aggregate_redzone_game(pbp: pd.DataFrame) -> pd.DataFrame:
+def _canonical_player_names(seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
+    """
+    (player_id, season) -> player_name from import_seasonal_rosters() —
+    the single canonical display name for a player that season, used to
+    attach player_name onto aggregate_redzone_game's output AFTER
+    aggregation, rather than grouping by whatever name string a given
+    play-by-play row happens to carry (see aggregate_redzone_game for
+    why that used to be unsafe).
+
+    NOT filtered to RB/WR/TE (unlike _position_lookup) — aggregate_
+    redzone_game's own population isn't position-restricted either (a
+    QB scramble into the red zone still gets a row), so this needs a
+    name for every player who might touch the ball, not just skill
+    positions.
+
+    Confirmed directly before relying on this: every (player_id,
+    season) pair that appears in real 2022/2024/2025 touch data has
+    exactly one seasonal_rosters entry (100% coverage, zero rows with
+    more than one distinct name per player per season) — no fallback
+    path needed for a missing or ambiguous name.
+    """
+    return (
+        seasonal_rosters.dropna(subset=["player_id"])
+        .drop_duplicates(subset=["player_id", "season"])[["player_id", "season", "player_name"]]
+    )
+
+
+def aggregate_redzone_game(pbp: pd.DataFrame, seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
     """
     Produce one row per player per game with red zone / inside-10 /
     goal-line touch and TD counts, plus each player's share of his team's
     total red-zone touches that game (the "opportunity concentration"
     signal from the blueprint).
+
+    Grouped by (game_id, season, week, posteam, player_id) only —
+    player_name is deliberately NOT part of the grouping/merge key.
+    REAL BUG this fixes, not a hypothetical: play-by-play's own
+    rusher_player_name/receiver_player_name can change value WITHIN a
+    single game for the same player_id — confirmed directly (Diontae
+    Johnson, 00-0035216, game 2024_03_CAR_LV: receiver_player_id
+    constant across all 14 targets, but receiver_player_name flips from
+    "Dio.Johnson" to "Di.Johnson" partway through) — an nflverse play-
+    by-play naming quirk, not a join bug on this side. With player_name
+    previously IN the grouping key, that flip silently split his real
+    red-zone touches across two output rows for the same game instead
+    of one. Scanned the full 2022/2024/2025 touches table: 15 distinct
+    player_ids carry more than one name string somewhere, but only 2
+    ever flip WITHIN a single game, and only this one lands inside the
+    red-zone band this function actually aggregates over — so this was
+    a live, if rare, correctness bug, not just a cosmetic one.
+
+    player_name is attached as a separate step after aggregation, from
+    seasonal_rosters' own canonical full name (see
+    _canonical_player_names) by (player_id, season) — never from play-
+    by-play's own name fields, which is what made the grouping key
+    unsafe in the first place. This also means every row's player_name
+    is now in the same full-name format build_stub_week.py's stub rows
+    already use (also sourced from seasonal_rosters), rather than the
+    abbreviated "F.Last" play-by-play style — a real, visible format
+    change across the whole historical table, not a side effect to
+    discover later.
     """
     touches = _touches(pbp)
 
-    keys = ["game_id", "season", "week", "posteam", "player_id", "player_name"]
+    keys = ["game_id", "season", "week", "posteam", "player_id"]
 
     rz = _band_agg(touches, "rz", keys, RED_ZONE)
     i10 = _band_agg(touches, "i10", keys, INSIDE_10)
@@ -102,6 +157,8 @@ def aggregate_redzone_game(pbp: pd.DataFrame) -> pd.DataFrame:
     )
     out = out.merge(team_rz_totals, on=["game_id", "posteam"], how="left")
     out["rz_touch_share"] = (out["rz_touches"] / out["team_rz_touches"]).round(3)
+
+    out = out.merge(_canonical_player_names(seasonal_rosters), on=["player_id", "season"], how="left")
 
     return out.sort_values(["season", "week", "game_id", "rz_touches"], ascending=[True, True, True, False])
 
