@@ -634,6 +634,20 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
     — see score_evidence_quality, which consumes this alongside TD
     Opportunity's and Role & Momentum's own completeness columns.
 
+    ALSO returns defensive_matchup_completeness (0-100) — the SAME
+    fraction, but over just the 7 defensive-matchup inputs, excluding
+    environment entirely. Added for nfl/defensive_trends.py: situation_
+    completeness blends two contextual modifiers that have nothing to do
+    with each other (a dome/wind reading has no bearing on whether a
+    defense is genuinely vulnerable at a position), so it would be a
+    misleading confidence signal for a story that's ONLY about defensive
+    matchup. Purely additive — situation_completeness's own computation
+    (and every existing caller) is unchanged; this exposes a distinction
+    already being tracked internally (fallback_flags already separates
+    cleanly into "the first 7 came from pct_allowed calls, the 8th from
+    _environment_score" — confirmed directly by reading the call
+    sequence below, not assumed) as its own column.
+
     Explicitly out of scope, per instruction: game script / team totals
     (Market Value pillar, once odds are wired in) and offensive line / QB-
     connection / coaching-tendency signals (no clean nfl_data_py source,
@@ -648,10 +662,12 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
     qualified_allowed = weekly["allowed_season_total_rz_touches_allowed"] >= config["min_touches_allowed_for_qualification"]
 
     fallback_flags = []
+    dm_fallback_flags = []
 
     def pct_allowed(values: pd.Series) -> pd.Series:
         raw = percentile_lookup(values, build_reference_scale(values, qualified_allowed))
         fallback_flags.append(raw.isna())
+        dm_fallback_flags.append(raw.isna())
         return fill_neutral(raw)
 
     # --- Defensive Matchup Vulnerability: mirrors Proven Heat's structure
@@ -704,6 +720,9 @@ def score_situation(weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: 
     weekly["situation"] = situation.round(1)
     weekly["situation_completeness"] = (
         (1 - pd.concat(fallback_flags, axis=1).mean(axis=1)) * 100
+    ).round(1)
+    weekly["defensive_matchup_completeness"] = (
+        (1 - pd.concat(dm_fallback_flags, axis=1).mean(axis=1)) * 100
     ).round(1)
 
     return weekly
