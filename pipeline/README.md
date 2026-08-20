@@ -796,23 +796,69 @@ slate, `+300-499` may show fewer than 8, which is correct (shows what's
 really there, same "don't fabricate" philosophy as the Tasty Six below),
 not a bug.
 
-**2. Can a candidate appear in multiple shelves?** Yes, confirmed
-deliberate and confirmed nothing breaks. Shelves are computed completely
-independently over the full pool — no cross-shelf dedup. On the real test
-slate, 6 of the pooled candidates appeared in 2+ shelves (e.g., a real
-elite hitter who was both a `+300-499` pick AND a Hot Hitter). Checked for
-the failure mode this could hide — near-identical shelves — and confirmed
-against real data it doesn't happen: the largest real pairwise overlap
-between any two shelves was 2 of 8 entries, not a suspicious majority.
+**2. Can a candidate appear in multiple shelves?** No, not anymore — this
+reverses an earlier decision. It used to be Yes/deliberate: shelves were
+computed completely independently over the full pool, no cross-shelf
+dedup, and on one real test slate 6 of the pooled candidates appeared in
+2+ shelves (e.g. a real elite hitter who was both a `+300-499` pick AND a
+Hot Hitter). Real production screenshots later showed this reads badly to
+users (the same player repeated across shelves on the same slate — e.g.
+Jackson Merrill twice in Sweet Spot, Joe Mack twice in Launch Conditions).
 
-Real edge case this surfaced: on one real test slate, the SAME real player
-(Riley Greene) was independently the #1 pick for both `Going Nuclear` and
-`Cold Pitchers to Attack` — meaning a naive "just take each shelf's #1"
-Tasty Six could show the same player twice. **Decision: the underlying
-shelves stay exactly as designed (a candidate can appear in as many
-shelves as it legitimately qualifies for — that's still correct and
-unchanged), but the Tasty Six specifically enforces six distinct players**
-via a deterministic fallback.
+**Current behavior: a player appears on at most ONE shelf per slate —
+whichever they SCORE HIGHEST in, not whichever shelf happens to build
+first.** This is a revision of this fix's own first version, which used
+build-order priority (first shelf built wins). `assign_shelves()` now
+runs three phases: (1) compute every shelf's FULL eligible pool and
+scores first, across all shelves, before assigning anyone; (2) for any
+player eligible for 2+ shelves, keep them only in the shelf where they
+score highest, removing them from every other eligible shelf entirely;
+(3) only then run the existing per-shelf assembly (size limit,
+`max_per_game` cap, skip-and-backfill from the next-best *remaining*
+eligible candidate) on the conflict-resolved pools.
+
+"Highest" is NOT the raw `shelf_score` compared directly — confirmed
+directly this would be meaningless, since the four shelf metrics are on
+totally different scales (real 2026-08-19 case: Shohei Ohtani's
+shelf_score was 81.2 on `+300-499` [final_score, ~0-100], 0.978 on Hot
+Hitters [recent OPS, ~0.5-1.5], and 3.56 on Cold Pitchers to Attack
+[opposing pitcher's recent ERA, ~0-20+] — raw comparison would make
+odds-tier shelves win almost every contested case purely from unit
+differences). Instead every eligible candidate is converted to a
+PERCENTILE RANK (0-100) within that shelf's own full eligible pool
+first, and percentiles are compared across shelves — an apples-to-apples
+comparison the raw numbers never were. A percentile TIE (realistic on
+thin pools) falls back to the fixed build order as a tertiary tiebreak,
+not the primary mechanism.
+
+Confirmed against a real live pool (66 real candidates): still zero
+players appear on 2+ shelves (same bar as the build-order version), and
+score-based assignment now genuinely differs from build order in real
+cases — e.g. Kyle Tucker: build order would have placed him on
+`+500-699` (42.9th percentile there, the first shelf he's eligible for),
+but he's actually 66.7th percentile on Cold Pitchers to Attack, and
+that's where `assign_shelves()` correctly places him. Christian Walker
+is an even starker real case: 100th percentile (the single best
+candidate) on Weather Factors but only 43rd percentile on Going Nuclear
+— build order would have swept him into Going Nuclear anyway (it builds
+first), score-based correctly keeps him on Weather Factors instead.
+Shelf sizes stayed effectively identical to the build-order version
+(real backfill candidates filled every gap), and every shelf's own
+internal ranking/gating was unaffected.
+
+Real edge case this surfaces for Tasty Six, still worth knowing even
+though the code below needed no changes: on one real test slate (before
+this fix), the SAME real player (Riley Greene) was independently the #1
+pick for both `Going Nuclear` and `Cold Pitchers to Attack` — meaning a
+naive "just take each shelf's #1" Tasty Six could show the same player
+twice. Tasty Six's own deterministic fallback (below) still exists and
+is still correct, but since shelves are now player-deduped upstream, a
+player can no longer appear in more than one shelf's list at all — so
+that fallback has no real scenario left to trigger. Confirmed directly
+against the same real pool: `repeats` came back empty. It's kept as a
+unit-tested safety net (see `test_shelf_curation.py`'s forced-duplicate
+regression test, which rigs a duplicate by hand to prove the mechanism
+still works standalone), not removed as dead code.
 
 **3. Tasty Six** — `compute_tasty_six()`: processes shelves in a fixed
 order (the three odds tiers, then Hot Hitters, then Cold Pitchers to
@@ -1024,8 +1070,23 @@ orchestration on top of it, mirroring how `scored_picks.py` orchestrates
 
 ### The one genuinely new problem this solves: multi-shelf candidates
 
-Confirmed and tested repeatedly this session: a candidate can legitimately
-appear on multiple shelves. The Performance Tracker needs a result **per
+**UPDATE, post cross-slate player dedup (see shelf_curation.py's own
+"Can a candidate appear in multiple shelves?" Q&A above):** a candidate
+can no longer legitimately appear on multiple shelves in the same slate
+going forward — `assign_shelves()` now caps a player to one shelf per
+run. The grouping/fan-out logic below is UNCHANGED and still correct (it
+degrades gracefully to a fan-out of 1 when there's nothing to fan out to,
+and its result is unaffected either way), but the specific frequency
+claimed below ("a candidate showing up on 2-3 of six shelves is common")
+describes pre-fix data and will trend toward never happening on new
+slates. Not modified here since it isn't broken — flagged so a future
+reader doesn't mistake the historical validation run below for current
+behavior. `grade_official_picks()` itself needed no code changes for
+this.
+
+Confirmed and tested repeatedly this session (historically, before the
+shelf-level dedup fix above): a candidate could legitimately appear on
+multiple shelves. The Performance Tracker needs a result **per
 shelf appearance** (so "Hot Hitters: 12-8" tracks separately from "Going
 Nuclear: 3-15" even for the same real player/game) — but the underlying
 real-world fact (did this player actually hit a home run) cannot differ
@@ -1036,13 +1097,14 @@ never re-querying MLB's API redundantly, and guaranteeing every shelf
 appearance of the same real pick reports an identical verdict, never a
 contradiction.
 
-Confirmed against real data (`test_official_pick_grading.py`, reusing the
-same real 239-candidate, 14-game pool `test_shelf_curation.py` uses): a
-real day's 48 official shelf picks resolved to only 42 unique
+Confirmed against real data at the time (`test_official_pick_grading.py`,
+reusing the same real 239-candidate, 14-game pool `test_shelf_curation.py`
+uses): a real day's 48 official shelf picks resolved to only 42 unique
 `(mlbam_id, game_pk)` real MLB lookups — 6 real candidates each appeared
 on 2 shelves (e.g. CJ Abrams: `+300-499` and `Hot Hitters`; Riley Greene:
 `Going Nuclear` and `Cold Pitchers to Attack`), and every one of those 6
-reported the exact same real verdict across both of its shelf rows.
+reported the exact same real verdict across both of its shelf rows. A
+slate graded today would no longer produce this 48-vs-42 gap.
 Real status breakdown that day: 42 lost, 6 won — including real winners
 Yordan Alvarez, Cal Raleigh, and Julio Rodríguez — zero errors, zero
 pending/void (all 14 real games were genuinely Final).

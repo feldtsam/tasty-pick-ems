@@ -19,7 +19,20 @@ Run: python3 pipeline/api/test_shelf_curation.py
 import json
 from pathlib import Path
 
-from shelf_curation import DEFAULT_MAX_PER_GAME, DEFAULT_SHELF_SIZE, ODDS_TIERS, assign_shelves, compute_tasty_six
+from shelf_curation import (
+    DEFAULT_MAX_PER_GAME,
+    DEFAULT_SHELF_SIZE,
+    ODDS_TIERS,
+    _cold_pitchers_eligible,
+    _hot_hitters_eligible,
+    _odds_tier_eligible,
+    _percentile_rank,
+    _rank_eligible,
+    _resolve_player_conflicts,
+    _weather_factors_eligible,
+    assign_shelves,
+    compute_tasty_six,
+)
 
 POOL_PATH = Path("/tmp/shelf_test_pool.json")
 SEASON = 2026
@@ -52,6 +65,36 @@ if __name__ == "__main__":
     print(f"Real pool: {len(pool)} scored picks\n")
 
     results = []
+
+    # --- Synthetic, deterministic unit test of _resolve_player_conflicts
+    # + _percentile_rank in isolation, pinned down independent of
+    # whatever today's real pool happens to contain: player A is rank 1
+    # of 2 (percentile 100) in shelf X but rank 2 of 2 (percentile 50) in
+    # shelf Y — must be kept in X, dropped entirely from Y (not just
+    # demoted), leaving Y's own unrelated candidate (B) untouched. Also
+    # confirms the internal _percentile bookkeeping field never leaks
+    # into the returned entries. ---
+    synthetic = {
+        "X": [
+            {"candidate": {"mlbam_id": 1, "player_name": "A"}, "shelf_score": 90},
+            {"candidate": {"mlbam_id": 3, "player_name": "C"}, "shelf_score": 10},
+        ],
+        "Y": [
+            {"candidate": {"mlbam_id": 2, "player_name": "B"}, "shelf_score": 5.0},
+            {"candidate": {"mlbam_id": 1, "player_name": "A"}, "shelf_score": 1.0},
+        ],
+    }
+    synthetic_resolved = _resolve_player_conflicts(synthetic)
+    results.append(check(
+        "_resolve_player_conflicts: player A (100th pct in X, 50th pct in Y) keeps only X",
+        {e["candidate"]["mlbam_id"] for e in synthetic_resolved["X"]} == {1, 3}
+        and {e["candidate"]["mlbam_id"] for e in synthetic_resolved["Y"]} == {2},
+    ))
+    results.append(check(
+        "_resolve_player_conflicts: the internal _percentile field never leaks into returned entries",
+        all("_percentile" not in e for entries in synthetic_resolved.values() for e in entries),
+    ))
+
     results.append(check("real pool is non-trivially sized (>=50 candidates)", len(pool) >= 50))
 
     shelves = assign_shelves(pool, season=SEASON, shelf_size=DEFAULT_SHELF_SIZE)
@@ -114,16 +157,107 @@ if __name__ == "__main__":
     )
     results.append(check("Weather Factors: environment is genuinely the dominant pillar for every entry", all_dominant))
 
-    # --- Design question #2, confirmed against real data: candidates CAN
-    # appear in multiple shelves, and nothing breaks when they do ---
+    # --- Cross-slate player dedup (the real fix this test guards):
+    # reverses the earlier "multiple shelf membership is expected"
+    # design. A player is keyed by mlbam_id alone here (not (mlbam_id,
+    # game_pk)) — every shelf's candidates are batter HR-prop picks tied
+    # to that batter's own single game_pk that day, so mlbam_id alone is
+    # already the right cross-shelf identity; the old (mlbam_id,
+    # game_pk) key was really only ever distinguishing "same player,"
+    # never "same player, different games," on any one real slate. ---
     membership = {}
     for shelf_name, entries in shelves.items():
         for e in entries:
-            key = (e["candidate"]["mlbam_id"], e["candidate"]["game_pk"])
-            membership.setdefault(key, []).append(shelf_name)
+            mlbam_id = e["candidate"]["mlbam_id"]
+            membership.setdefault(mlbam_id, []).append(shelf_name)
     multi_shelf = {k: v for k, v in membership.items() if len(v) > 1}
-    print(f"\nCandidates in 2+ shelves: {len(multi_shelf)}")
-    results.append(check("at least one real candidate appears in multiple shelves (expected, not a bug)", len(multi_shelf) > 0))
+    print(f"\nPlayers in 2+ shelves: {len(multi_shelf)}")
+    results.append(check("ZERO real players appear in more than one shelf on this real slate (the cross-slate dedup fix)", len(multi_shelf) == 0))
+
+    # --- Direct proof of mechanism #1: score-based assignment picks a
+    # contested player's genuinely HIGHEST-PERCENTILE shelf, not the
+    # earliest-built one. Recomputes each shelf's full eligible pool +
+    # percentile independently here (not reusing assign_shelves()'s
+    # internals) and, for every player eligible for 2+ shelves, compares
+    # what BUILD ORDER would have chosen (first eligible shelf in fixed
+    # order) against what PERCENTILE actually chose (assign_shelves()'s
+    # real output) — dynamically finding a real disagreement on today's
+    # real pool rather than hardcoding one player's name, since who's
+    # contested (and which way it goes) can shift day to day. Real 2026-
+    # 08-19 case that first surfaced this: Christian Walker was 100th
+    # percentile (rank 1 of his pool) on Weather Factors but only 43rd
+    # percentile on Going Nuclear — build order would have swept him into
+    # Going Nuclear anyway (it builds first), score-based correctly keeps
+    # him on Weather Factors instead. ---
+    batter_ids = list({c["mlbam_id"] for c in pool})
+    pitcher_ids = list({c["opp_pitcher_mlbam_id"] for c in pool if c.get("opp_pitcher_mlbam_id")})
+    from recent_form import fetch_batters_recent_form, fetch_pitchers_recent_form  # noqa: E402
+    batter_form = fetch_batters_recent_form(batter_ids, SEASON)
+    pitcher_form = fetch_pitchers_recent_form(pitcher_ids, SEASON)
+
+    eligible_by_shelf = {}
+    for label, lo, hi in ODDS_TIERS:
+        eligible_by_shelf[label] = _odds_tier_eligible(pool, lo, hi)
+    eligible_by_shelf["Hot Hitters"] = _hot_hitters_eligible(pool, batter_form)
+    eligible_by_shelf["Cold Pitchers to Attack"] = _cold_pitchers_eligible(pool, pitcher_form)
+    eligible_by_shelf["Weather Factors"] = _weather_factors_eligible(pool)
+    build_order = list(eligible_by_shelf.keys())
+
+    real_membership = {}
+    for shelf_name, entries in eligible_by_shelf.items():
+        for e in _percentile_rank(entries):
+            real_membership.setdefault(e["candidate"]["mlbam_id"], []).append((shelf_name, e["_percentile"]))
+
+    disagreement = None
+    for mlbam_id, shelf_pcts in real_membership.items():
+        if len(shelf_pcts) < 2:
+            continue
+        build_order_winner = min(shelf_pcts, key=lambda t: build_order.index(t[0]))[0]
+        percentile_winner = max(shelf_pcts, key=lambda t: t[1])[0]
+        if build_order_winner != percentile_winner:
+            disagreement = (mlbam_id, shelf_pcts, build_order_winner, percentile_winner)
+            break
+
+    if disagreement:
+        mlbam_id, shelf_pcts, build_order_winner, percentile_winner = disagreement
+        name = next(e["candidate"]["player_name"] for e in eligible_by_shelf[shelf_pcts[0][0]] if e["candidate"]["mlbam_id"] == mlbam_id)
+        print(f"Real build-order-vs-percentile disagreement found: {name} — {[(s, round(p,1)) for s,p in shelf_pcts]}")
+        print(f"  build order would pick: {build_order_winner}   percentile actually picks: {percentile_winner}")
+        actual_shelf = next((sn for sn, entries in shelves.items() if any(e["candidate"]["mlbam_id"] == mlbam_id for e in entries)), None)
+        results.append(check(
+            f"{name}: assign_shelves() actually placed them on their highest-percentile shelf "
+            f"({percentile_winner}), NOT the earliest-built eligible one ({build_order_winner})",
+            actual_shelf == percentile_winner,
+        ))
+    else:
+        print("(skipped the score-vs-build-order disagreement check — every real contested player on this pool happened to agree both ways)")
+
+    # --- Direct proof of mechanism #2: backfill still works after
+    # conflict resolution. Seeds a real shelf's conflict-resolved pool by
+    # removing its own real #1 entirely (simulating them having lost the
+    # conflict to a higher-percentile shelf) and confirms _rank_eligible
+    # promotes the next-best REMAINING real candidate rather than
+    # shrinking the shelf — same skip-and-backfill guarantee as the
+    # DEFAULT_MAX_PER_GAME cap already has, now proven for the player-
+    # conflict path too. Uses Going Nuclear: its real eligible pool is
+    # large on this pool (58 candidates for an 8-slot shelf), so a real
+    # backfill candidate is guaranteed to exist. ---
+    nuclear_eligible = eligible_by_shelf["Going Nuclear"]
+    baseline_nuclear = _rank_eligible(nuclear_eligible, DEFAULT_SHELF_SIZE, DEFAULT_MAX_PER_GAME)
+    if baseline_nuclear and len(nuclear_eligible) > len(baseline_nuclear):
+        real_top_player = baseline_nuclear[0]["candidate"]["mlbam_id"]
+        real_top_name = baseline_nuclear[0]["candidate"]["player_name"]
+        without_top = [e for e in nuclear_eligible if e["candidate"]["mlbam_id"] != real_top_player]
+        backfilled_nuclear = _rank_eligible(without_top, DEFAULT_SHELF_SIZE, DEFAULT_MAX_PER_GAME)
+        results.append(check(
+            f"post-conflict-resolution backfill: removing the real #1 ({real_top_name}) from Going Nuclear's "
+            f"conflict-resolved pool still produces a full {DEFAULT_SHELF_SIZE}-entry shelf "
+            f"({len(nuclear_eligible)} real eligible candidates before removal)",
+            all(e["candidate"]["mlbam_id"] != real_top_player for e in backfilled_nuclear)
+            and len(backfilled_nuclear) == len(baseline_nuclear),
+        ))
+    else:
+        print("(skipped the post-conflict backfill check — Going Nuclear had no spare real candidates on this real pool)")
 
     # --- Real production bug (2026-08-09), confirmed against live data:
     # Cold Pitchers to Attack came back 8 of 8 picks from a single real
@@ -146,7 +280,9 @@ if __name__ == "__main__":
             max_from_one_game <= DEFAULT_MAX_PER_GAME,
         ))
 
-    # --- No two shelves are near-identical (>=6 of 8 shared candidates) ---
+    # --- No two shelves share ANY candidate — a direct consequence of the
+    # cross-slate dedup above, checked pairwise as its own explicit proof
+    # rather than just inferred from the membership check. ---
     names = list(shelves.keys())
     max_pairwise_overlap = 0
     for i in range(len(names)):
@@ -155,19 +291,28 @@ if __name__ == "__main__":
             b = {e["candidate"]["mlbam_id"] for e in shelves[names[j]]}
             max_pairwise_overlap = max(max_pairwise_overlap, len(a & b))
     print(f"Largest pairwise shelf overlap: {max_pairwise_overlap} of {DEFAULT_SHELF_SIZE}")
-    results.append(check("no two shelves are near-identical (largest overlap stays under 6 of 8)", max_pairwise_overlap < 6))
+    results.append(check("no two shelves share any real player (pairwise overlap is exactly 0)", max_pairwise_overlap == 0))
 
     # --- Tasty Six: one entry per shelf, all six populated on a real slate,
-    # and — the fallback rule's whole point — six DISTINCT players even
-    # though shelves themselves are allowed to overlap ---
+    # and — the fallback rule's original whole point — six DISTINCT
+    # players. NOW STRUCTURALLY GUARANTEED rather than merely likely:
+    # since shelves themselves are cross-slate deduped by player before
+    # compute_tasty_six ever runs, a player can no longer be present in
+    # more than one shelf's ranked list at all — so compute_tasty_six's
+    # own used_keys/repeats fallback (still present, unmodified, still
+    # correct as a unit — see the forced-duplicate test below) has no
+    # real scenario left to fire on. repeats should always come back
+    # empty in practice now, checked directly, not just tolerated. ---
     tasty_picks = tasty_six["picks"]
     results.append(check("Tasty Six has exactly 6 entries", len(tasty_picks) == 6))
     results.append(check("Tasty Six: no shelf came back empty on this real slate", all(v is not None for v in tasty_picks.values())))
 
     tasty_keys = [(v["candidate"]["mlbam_id"], v["candidate"]["game_pk"]) for v in tasty_picks.values()]
+    results.append(check("Tasty Six: six distinct real players on this real slate", len(set(tasty_keys)) == 6))
     results.append(check(
-        f"Tasty Six: six distinct real players on this real slate (no repeat forced) — repeats flagged: {tasty_six['repeats']}",
-        len(set(tasty_keys)) == 6 or len(tasty_six["repeats"]) > 0,
+        "Tasty Six: repeats comes back empty — its own fallback is no longer reachable given shelves are "
+        "already player-deduped upstream (a real, checked consequence of this fix, not assumed)",
+        tasty_six["repeats"] == [],
     ))
 
     print(f"\nTasty Six (repeats: {tasty_six['repeats'] or 'none'}):")
@@ -175,14 +320,16 @@ if __name__ == "__main__":
         c = entry["candidate"]
         print(f"  {shelf_name}: {c['player_name']} ({c['team']}) odds={c['odds']} final={c['final_score']}")
 
-    # --- Regression test for the exact real case that motivated this rule:
-    # confirmed earlier that Riley Greene was independently the #1 pick for
-    # BOTH "Going Nuclear" and "Cold Pitchers to Attack" on a real slate.
-    # Whether or not that exact tie recurs on today's real data, prove the
-    # fallback mechanism itself works by forcing the same scenario directly
-    # against real shelf data — one shelf's #1 duplicated as another
-    # shelf's #1 — and confirming the second shelf falls through to its own
-    # #2 (or further) instead of accepting the duplicate. ---
+    # --- Unit-level regression test for compute_tasty_six's OWN fallback,
+    # kept even though the cross-slate shelf dedup above means this exact
+    # scenario (Riley Greene independently #1 on two real shelves at once)
+    # can no longer occur naturally through assign_shelves() anymore — the
+    # fallback code itself is unmodified and still correct, it just has no
+    # real trigger left upstream (see the Tasty Six "repeats" check above).
+    # Rigging shelves by hand here, bypassing assign_shelves entirely,
+    # tests compute_tasty_six as a standalone unit against a duplicate it
+    # would never naturally receive today, so this safety net doesn't
+    # silently bit-rot unnoticed if something upstream ever changes again. ---
     shelf_names_in_order = list(shelves.keys())
     contested_shelf, other_shelf = None, None
     for i, name_a in enumerate(shelf_names_in_order):

@@ -66,10 +66,22 @@ if __name__ == "__main__":
 
     # --- The real efficiency + consistency property this module exists
     # for: a candidate on multiple shelves gets ONE real MLB lookup, fanned
-    # out to multiple result rows, all reporting the identical verdict. ---
+    # out to multiple result rows, all reporting the identical verdict.
+    #
+    # UPDATED for shelf_curation.py's cross-slate player dedup fix: a
+    # candidate can no longer appear on multiple shelves in the same
+    # slate at all (see shelf_curation.py's and pipeline/README.md's own
+    # "Can a candidate appear in multiple shelves?" — now No, at most one
+    # shelf per player per run). That makes unique_games_graded == the
+    # pick count too (fan-out of 1 every time), not strictly less than it
+    # — checked here as equality now, not assumed. The grouping/fan-out
+    # CODE in official_pick_grading.py itself is unmodified and still
+    # correct (it degrades gracefully to fan-out-of-1), so this is a
+    # stale test assumption to update, not a code regression. ---
     results.append(check(
-        "real dedup: unique_games_graded equals the real number of distinct (mlbam_id, game_pk) pairs, not the pick count",
-        result["unique_games_graded"] == len(unique_pairs) < len(picks),
+        "real dedup: unique_games_graded equals both the real number of distinct (mlbam_id, game_pk) pairs "
+        "AND the pick count (no cross-shelf duplicates can exist anymore, so fan-out is always 1:1 now)",
+        result["unique_games_graded"] == len(unique_pairs) == len(picks),
     ))
 
     by_key = defaultdict(list)
@@ -82,13 +94,23 @@ if __name__ == "__main__":
         name = next(p["player_name"] for p in picks if p["mlbam_id"] == mlbam_id and p["game_pk"] == game_pk)
         print(f"  {name}: shelves={[r['shelf'] for r in rows]} status={rows[0]['status']} home_runs={rows[0]['home_runs']}")
 
-    results.append(check("at least one real candidate appeared on 2+ shelves in this real slate", len(multi_shelf) > 0))
+    # ZERO now, not "at least one" — the direct, expected consequence of
+    # shelf_curation.py's cross-slate player dedup (see above). The two
+    # checks below are kept, unmodified in what they assert, specifically
+    # BECAUSE they degrade safely to a vacuous pass over an empty
+    # multi_shelf (all() over nothing is True) rather than needing to be
+    # deleted — if a future change ever reintroduces multi-shelf overlap,
+    # they start actually checking something again instead of silently
+    # having been removed.
+    results.append(check("ZERO real candidates appear on 2+ shelves in this real slate (the cross-slate dedup fix)", len(multi_shelf) == 0))
     results.append(check(
-        "every multi-shelf candidate's shelf appearances report an IDENTICAL real verdict — graded once, shown consistently everywhere",
+        "every multi-shelf candidate's shelf appearances report an IDENTICAL real verdict — graded once, shown consistently everywhere "
+        "(vacuously true now that multi_shelf is always empty; kept as a live safety net, not deleted)",
         all(len({r["status"] for r in rows}) == 1 and len({r["home_runs"] for r in rows}) == 1 for rows in multi_shelf.values()),
     ))
     results.append(check(
-        "each shelf appearance is still its own distinct result row (per-shelf tracking, not collapsed into one)",
+        "each shelf appearance is still its own distinct result row (per-shelf tracking, not collapsed into one) "
+        "(vacuously true now that multi_shelf is always empty; kept as a live safety net, not deleted)",
         all(len(rows) == len({r["shelf"] for r in rows}) for rows in multi_shelf.values()),
     ))
 

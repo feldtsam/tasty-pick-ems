@@ -38,12 +38,53 @@ their debut, a pitcher on a short IL-return workload) is simply not
 eligible for that shelf, rather than ranked on a 2-game "hot streak" that's
 really just noise.
 
-MULTIPLE SHELF MEMBERSHIP IS EXPECTED, not a bug: shelves are computed
-completely independently over the full candidate pool — there is
-deliberately no cross-shelf deduplication. A real elite hitter in a great
-park with a cold opposing starter can legitimately be an odds-tier pick,
-a Hot Hitter, AND a Cold-Pitcher-matchup pick simultaneously. Confirmed
-this doesn't break anything (see test_shelf_curation.py).
+CROSS-SLATE PLAYER DEDUPLICATION: a player appears on at most ONE shelf
+per slate run. This reverses an earlier design decision — multiple shelf
+membership used to be considered expected, not a bug (a real elite
+hitter in a great park with a cold opposing starter could legitimately
+be an odds-tier pick, a Hot Hitter, AND a Cold-Pitcher-matchup pick
+simultaneously) — but real production screenshots showed this reads
+badly to users (the same player's name/photo repeated across shelves on
+the same slate).
+
+SCORE-BASED ASSIGNMENT, not build-order priority (a real, deliberate
+revision of THIS module's own first version of the fix): a contested
+player is kept on whichever shelf they score HIGHEST in, not whichever
+shelf happens to build first. "Highest" is NOT the raw shelf_score
+compared directly across shelves — confirmed directly (real 2026-08-19
+data) that this would be meaningless: Shohei Ohtani's shelf_score was
+81.2 on `+300-499` (final_score, ~0-100 scale), 0.978 on Hot Hitters
+(recent OPS, ~0.5-1.5 scale), and 3.56 on Cold Pitchers to Attack
+(opposing pitcher's recent ERA, ~0-20+ scale) — comparing those raw
+numbers would make odds-tier shelves win almost every contested case
+purely from unit/scale differences, not genuine fit. Instead, every
+eligible candidate is converted to a PERCENTILE RANK (0-100) within
+that shelf's own full eligible pool first (_percentile_rank) — "how
+exceptional is this player FOR this shelf, relative to who else could
+fill it" — and percentiles are compared across shelves, an apples-to-
+apples comparison the raw metrics never were. See _resolve_player_
+conflicts for the full mechanism; a percentile TIE (two shelves,
+identical relative standing — realistic on thin pools, e.g. rank 1 of 1
+in both) falls back to the fixed build order below as a deterministic
+tertiary tiebreak, not the primary mechanism anymore.
+
+THIS REQUIRES A DIFFERENT SHAPE than the build-order version: shelves
+can no longer be built one at a time with a running exclusion set,
+since a player's assignment can't be decided until every shelf's FULL
+eligible pool (and every OTHER shelf they might also qualify for) is
+known. assign_shelves() now runs three distinct phases: (1) compute
+every shelf's full eligible pool + scores, across all shelves, before
+assigning anyone (the *_eligible functions); (2) resolve every multi-
+shelf player to their single highest-percentile shelf, removing them
+from every other shelf's eligible pool (_resolve_player_conflicts);
+(3) only then run the existing per-shelf assembly — sort, size limit,
+DEFAULT_MAX_PER_GAME cap, skip-and-backfill from the next-best
+REMAINING eligible candidate (_rank_eligible / _ranked, unchanged from
+before either fix). Fixed build order (the three odds tiers, then Hot
+Hitters, then Cold Pitchers to Attack, then Weather Factors) is
+preserved throughout, both for the tiebreak above and for compute_
+tasty_six()'s own downstream ordering dependency — see test_shelf_
+curation.py for the real-data validation.
 
 SHELF SIZE: DEFAULT_SHELF_SIZE=8, proposed from real pool sizes observed
 while building this (150 real scored picks across 9 real games) — see the
@@ -89,17 +130,20 @@ DEFAULT_MAX_PER_GAME = 3
 def _ranked(entries: list, size: int, max_per_game: int = DEFAULT_MAX_PER_GAME) -> list:
     """
     Attach a 1-based rank and truncate to `size` — shared by every
-    shelf-builder below so rank numbering (and now the per-game cap) is
+    shelf-builder below so rank numbering and the per-game cap are
     applied identically everywhere, not reimplemented per shelf.
 
     `entries` must already be sorted best-first by the caller's own
-    ranking metric. Walks that real order and SKIPS (never discards
-    outright — just doesn't count toward this shelf) any entry that would
-    push its real game_pk over `max_per_game`, letting the next-best real
-    candidate from a DIFFERENT game backfill the slot instead of leaving
-    it empty or letting one real game crowd out the rest of the slate. A
-    game_pk that never reaches the cap is completely unaffected — this
-    only activates once a specific real game's own candidates would
+    ranking metric, and already conflict-resolved (see _resolve_player_
+    conflicts — a player_id appearing twice is no longer this function's
+    concern at all; that's decided upstream now, before this ever runs).
+    Walks that real order and SKIPS (never discards outright — just
+    doesn't count toward this shelf) any entry that would push its real
+    game_pk over `max_per_game`, letting the next-best real candidate
+    from a DIFFERENT game backfill the slot instead of leaving it empty
+    or letting one real game crowd out the rest of the slate. A game_pk
+    that never reaches the cap is completely unaffected — this only
+    activates once a specific real game's own candidates would
     otherwise dominate.
     """
     game_counts = {}
@@ -115,27 +159,39 @@ def _ranked(entries: list, size: int, max_per_game: int = DEFAULT_MAX_PER_GAME) 
     return kept
 
 
-def _odds_tier_shelf(candidates: list, lo: int, hi, size: int, max_per_game: int = DEFAULT_MAX_PER_GAME) -> list:
+def _rank_eligible(entries: list, size: int, max_per_game: int = DEFAULT_MAX_PER_GAME, sort_key=None) -> list:
+    """
+    Sorts an already-eligible, already conflict-resolved entries list
+    best-first (by shelf_score descending, unless a shelf needs its own
+    secondary tiebreak — see _cold_pitchers_eligible) and applies
+    _ranked()'s size/max_per_game truncation. The thin "assemble" half
+    of what used to be one combined "_xxx_shelf" function per shelf,
+    now separated from eligibility (the *_eligible functions below) so
+    _resolve_player_conflicts can run in between on each shelf's FULL
+    pool, before any size/max_per_game truncation happens.
+    """
+    if sort_key is None:
+        def sort_key(e):
+            return -e["shelf_score"]
+    return _ranked(sorted(entries, key=sort_key), size, max_per_game)
+
+
+def _odds_tier_eligible(candidates: list, lo: int, hi) -> list:
     pool = [c for c in candidates if c["odds"] >= lo and (hi is None or c["odds"] <= hi)]
-    pool.sort(key=lambda c: -c["final_score"])
-    return _ranked([{"candidate": c, "shelf_score": c["final_score"]} for c in pool], size, max_per_game)
+    return [{"candidate": c, "shelf_score": c["final_score"]} for c in pool]
 
 
-def _hot_hitters_shelf(candidates: list, batter_form: dict, size: int, max_per_game: int = DEFAULT_MAX_PER_GAME) -> list:
+def _hot_hitters_eligible(candidates: list, batter_form: dict) -> list:
     eligible = []
     for c in candidates:
         form = batter_form.get(c["mlbam_id"])
         if not form or form["recent_games_sampled"] < MIN_HITTER_RECENT_SAMPLE or form["recent_ops"] is None:
             continue
-        eligible.append((c, form))
-    eligible.sort(key=lambda pair: -pair[1]["recent_ops"])
-    return _ranked(
-        [{"candidate": c, "shelf_score": form["recent_ops"], "recent_form": form} for c, form in eligible],
-        size, max_per_game,
-    )
+        eligible.append({"candidate": c, "shelf_score": form["recent_ops"], "recent_form": form})
+    return eligible
 
 
-def _cold_pitchers_shelf(candidates: list, pitcher_form: dict, size: int, max_per_game: int = DEFAULT_MAX_PER_GAME) -> list:
+def _cold_pitchers_eligible(candidates: list, pitcher_form: dict) -> list:
     eligible = []
     for c in candidates:
         opp_id = c.get("opp_pitcher_mlbam_id")
@@ -144,23 +200,23 @@ def _cold_pitchers_shelf(candidates: list, pitcher_form: dict, size: int, max_pe
         form = pitcher_form.get(opp_id)
         if not form or form["recent_starts_sampled"] < MIN_PITCHER_RECENT_SAMPLE or form["recent_era"] is None:
             continue
-        eligible.append((c, form))
+        eligible.append({"candidate": c, "shelf_score": form["recent_era"], "opposing_pitcher_recent_form": form})
+    return eligible
+
+
+def _cold_pitchers_sort_key(e: dict):
     # Highest recent ERA first (coldest pitcher = best to attack); the
     # batter's own final_score breaks ties when the same cold pitcher
     # produces multiple eligible batters (expected — see module docstring).
-    # THIS is exactly the real mechanism that let one real game take over
+    # This is the real mechanism that once let one real game take over
     # the whole shelf: every batter facing the same real cold pitcher
     # shares that pitcher's identical recent_era, so they all sort
     # together at the top — _ranked()'s max_per_game cap is what actually
-    # prevents that now, not anything in this sort itself.
-    eligible.sort(key=lambda pair: (-pair[1]["recent_era"], -pair[0]["final_score"]))
-    return _ranked(
-        [{"candidate": c, "shelf_score": form["recent_era"], "opposing_pitcher_recent_form": form} for c, form in eligible],
-        size, max_per_game,
-    )
+    # prevents that, not anything in this sort itself.
+    return (-e["shelf_score"], -e["candidate"]["final_score"])
 
 
-def _weather_factors_shelf(candidates: list, size: int, max_per_game: int = DEFAULT_MAX_PER_GAME) -> list:
+def _weather_factors_eligible(candidates: list) -> list:
     eligible = []
     for c in candidates:
         pillars = {
@@ -168,9 +224,72 @@ def _weather_factors_shelf(candidates: list, size: int, max_per_game: int = DEFA
             "environment": c["environment_score"], "opportunity": c["opportunity_score"],
         }
         if max(pillars, key=pillars.get) == "environment":
-            eligible.append(c)
-    eligible.sort(key=lambda c: -c["environment_score"])
-    return _ranked([{"candidate": c, "shelf_score": c["environment_score"]} for c in eligible], size, max_per_game)
+            eligible.append({"candidate": c, "shelf_score": c["environment_score"]})
+    return eligible
+
+
+def _percentile_rank(entries: list) -> list:
+    """
+    Attaches _percentile (0-100, higher = better) to a COPY of each
+    entry, based on that entry's rank position within THIS list's own
+    shelf_score ordering — 1-indexed, best gets 100, worst gets
+    100/n. This is what makes "highest score" comparable ACROSS shelves
+    whose shelf_score metrics are on completely different scales (OPS
+    ~0.5-1.5, ERA ~0-20+, final_score/environment_score ~0-100) — see
+    the module docstring's real Shohei Ohtani numbers. Computed once,
+    upfront, against each shelf's FULL eligible pool (before any
+    conflict resolution or truncation) — an order-independent snapshot,
+    not a value that could shift depending on what order conflicts
+    happen to get resolved in.
+    """
+    ranked = sorted(entries, key=lambda e: -e["shelf_score"])
+    n = len(ranked)
+    return [{**e, "_percentile": 100.0 * (n - i) / n} for i, e in enumerate(ranked)]
+
+
+def _resolve_player_conflicts(eligible_by_shelf: dict) -> dict:
+    """
+    eligible_by_shelf: {shelf_name: [entry, ...]}, each shelf's FULL
+    eligible pool (unranked, untruncated) — the *_eligible functions'
+    own output, in shelf_curation's fixed build order (three odds
+    tiers, Hot Hitters, Cold Pitchers to Attack, Weather Factors).
+
+    For every player_id (mlbam_id) eligible for 2+ shelves, keeps them
+    ONLY in the shelf where their _percentile_rank is highest, removing
+    them as a candidate from every other eligible shelf entirely — not
+    just from that shelf's final ranked output, but from the pool
+    _rank_eligible sorts and truncates, so a shelf that loses a
+    contested player still has its own next-best REMAINING real
+    candidate available to backfill the freed slot (the same skip-and-
+    backfill _ranked() already does for the per-game cap).
+
+    Ties (identical percentile in 2+ shelves — realistic on thin pools,
+    e.g. a player who's rank 1 of 1 in one shelf and rank 1 of 1 in
+    another) are broken by this dict's own iteration order — the fixed
+    build order above — via strict `>` when updating each player's best
+    shelf, so the FIRST shelf encountered wins a true tie. A secondary,
+    tertiary tiebreak, not the primary mechanism.
+
+    Returns a new {shelf_name: [entry, ...]} dict, same shelf keys and
+    order as the input, with every player_id appearing in at most one
+    shelf's list, and _percentile stripped back off (it was only ever
+    needed for this comparison, not the final shelf output shape).
+    """
+    percentiled = {shelf_name: _percentile_rank(entries) for shelf_name, entries in eligible_by_shelf.items()}
+
+    best_shelf = {}
+    for shelf_name, entries in percentiled.items():
+        for e in entries:
+            mlbam_id = e["candidate"]["mlbam_id"]
+            pct = e["_percentile"]
+            if mlbam_id not in best_shelf or pct > best_shelf[mlbam_id][1]:
+                best_shelf[mlbam_id] = (shelf_name, pct)
+
+    resolved = {}
+    for shelf_name, entries in percentiled.items():
+        kept = [e for e in entries if best_shelf[e["candidate"]["mlbam_id"]][0] == shelf_name]
+        resolved[shelf_name] = [{k: v for k, v in e.items() if k != "_percentile"} for e in kept]
+    return resolved
 
 
 def assign_shelves(
@@ -193,6 +312,25 @@ def assign_shelves(
     that motivated this. Kept as a plain parameter, same "product call,
     not an engineering one" treatment as shelf_size itself.
 
+    CROSS-SLATE PLAYER DEDUPLICATION, SCORE-BASED: every shelf's full
+    eligible pool is computed first (the *_eligible functions, still in
+    this function's own fixed build order — three odds tiers, then Hot
+    Hitters, then Cold Pitchers to Attack, then Weather Factors), THEN
+    _resolve_player_conflicts keeps each multi-shelf player only in
+    their single highest-percentile shelf, THEN each shelf's remaining
+    (conflict-resolved) pool is sorted and truncated via _rank_eligible
+    — see the module docstring and _resolve_player_conflicts for the
+    full reasoning (why raw shelf_score isn't comparable across shelves,
+    why percentile rank is, and how build order still serves as a
+    tertiary tiebreak on true percentile ties). Real production case
+    that originally motivated cross-slate dedup at all (live
+    screenshots, not hypothetical): the same player appearing twice in
+    the same shelf's OWN list is a different bug _ranked()'s max_per_
+    game cap doesn't touch (that only caps one game_pk's share of a
+    SINGLE shelf) — this caps one PLAYER's presence across the WHOLE
+    slate's six shelves. See shelf_curation's test suite for the
+    real-data validation of this.
+
     Returns {shelf_name: [{"candidate": {...}, "rank": int,
     "shelf_score": float, ...extra}, ...]}, one list per shelf name.
     """
@@ -202,12 +340,19 @@ def assign_shelves(
     batter_form = fetch_batters_recent_form(batter_ids, season)
     pitcher_form = fetch_pitchers_recent_form(pitcher_ids, season)
 
-    shelves = {}
+    eligible_by_shelf = {}
     for label, lo, hi in ODDS_TIERS:
-        shelves[label] = _odds_tier_shelf(candidates, lo, hi, shelf_size, max_per_game)
-    shelves["Hot Hitters"] = _hot_hitters_shelf(candidates, batter_form, shelf_size, max_per_game)
-    shelves["Cold Pitchers to Attack"] = _cold_pitchers_shelf(candidates, pitcher_form, shelf_size, max_per_game)
-    shelves["Weather Factors"] = _weather_factors_shelf(candidates, shelf_size, max_per_game)
+        eligible_by_shelf[label] = _odds_tier_eligible(candidates, lo, hi)
+    eligible_by_shelf["Hot Hitters"] = _hot_hitters_eligible(candidates, batter_form)
+    eligible_by_shelf["Cold Pitchers to Attack"] = _cold_pitchers_eligible(candidates, pitcher_form)
+    eligible_by_shelf["Weather Factors"] = _weather_factors_eligible(candidates)
+
+    resolved = _resolve_player_conflicts(eligible_by_shelf)
+
+    shelves = {}
+    for shelf_name, entries in resolved.items():
+        sort_key = _cold_pitchers_sort_key if shelf_name == "Cold Pitchers to Attack" else None
+        shelves[shelf_name] = _rank_eligible(entries, shelf_size, max_per_game, sort_key)
     return shelves
 
 

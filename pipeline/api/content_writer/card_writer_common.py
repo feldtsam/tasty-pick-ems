@@ -96,10 +96,11 @@ TOP_LEVEL_CITABLE_FIELDS = (
 
 # Present only on picks sourced from the Hot Hitters or Cold Pitchers to
 # Attack shelves specifically — see shelf_curation.py's
-# _hot_hitters_shelf()/_cold_pitchers_shelf(), which attach these as extra
-# fields on the shelf entry, not on the underlying scored_picks candidate
-# itself. Included here so a real recent-form stat is citable when present,
-# not silently unavailable depending on which shelf a pick came from.
+# _hot_hitters_eligible()/_cold_pitchers_eligible(), which attach these as
+# extra fields on the shelf entry, not on the underlying scored_picks
+# candidate itself. Included here so a real recent-form stat is citable
+# when present, not silently unavailable depending on which shelf a pick
+# came from.
 #
 # Flattened into dotted per-field keys (recent_form.recent_ops, etc.),
 # same treatment as pillar_detail's components — NOT stored as one opaque
