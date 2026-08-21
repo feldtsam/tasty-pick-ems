@@ -289,11 +289,41 @@ def _build_shelf(
     }
 
 
-def _red_zone_story(row: pd.Series) -> dict:
+def add_red_zone_trend_windows(weekly: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attaches i10_touches_trail3/gl_touches_trail3/rz_tds_trail3 (trailing
+    INCLUSIVE 3-game sums, display-only — see _trailing_sum's own
+    docstring for why these are deliberately NOT the scoring pillars'
+    shift(1)'d _last3 columns) — the exact three columns red_zone_story
+    reads. Extracted out of build_red_zone_trends (which now calls this
+    instead of computing them inline) so a caller that needs red_zone_
+    story() for a row OUTSIDE shelves.py's own top-N ranking — see
+    curate_home_shelves.py's home-shelf reconnection — doesn't have to
+    reimplement this prep step. Confirmed a strict no-op for
+    build_red_zone_trends' own output (test_shelves.py, unchanged
+    pass/fail).
+    """
+    weekly = weekly.copy()
+    weekly["i10_touches_trail3"] = _trailing_sum(weekly, "i10_touches", 3)
+    weekly["gl_touches_trail3"] = _trailing_sum(weekly, "gl_touches", 3)
+    weekly["rz_tds_trail3"] = _trailing_sum(weekly, "rz_tds", 3)
+    return weekly
+
+
+def red_zone_story(row: pd.Series) -> dict:
     """
     Proven Heat vs. Emerging Heat, whichever dominates this row's
     td_opportunity — see scoring.score_td_opportunity for both
     sub-components' own definitions, reused here unmodified.
+
+    PUBLIC (no leading underscore), same reasoned exception as
+    eligible_pool/odds_band_eligible above: curate_home_shelves.py's
+    reconnected content step calls this directly on a home-assigned
+    player's own row, not on rows drawn from this module's own top-N
+    ranking — see that module's docstring for why a lookup keyed against
+    build_all_shelves()'s own (already-capped) card list has real gaps
+    for that purpose. Requires add_red_zone_trend_windows() already
+    applied to `weekly` before this row was pulled from it.
 
     NOT a blind proven_heat >= emerging_heat comparison, on purpose —
     caught directly in real-historical validation (2025 Week 10, 3 of 6
@@ -332,8 +362,14 @@ def _red_zone_story(row: pd.Series) -> dict:
     return {"headline": headline, "evidence": evidence}
 
 
-def _position_story(row: pd.Series, position: str) -> dict:
+def position_story(row: pd.Series, position: str) -> dict:
     """
+    PUBLIC (no leading underscore) — same reasoned exception as
+    red_zone_story above; called directly by curate_home_shelves.py on a
+    home-assigned player's own row. No extra column prep needed beyond
+    what score_role_momentum already puts on `weekly` (unlike
+    red_zone_story, which needs add_red_zone_trend_windows() first).
+
     Role Trend vs. External Opportunity, whichever dominates this row's
     role_momentum — see scoring.score_role_momentum. External
     Opportunity's evidence is always safe as-is: it comes directly from
@@ -344,7 +380,7 @@ def _position_story(row: pd.Series, position: str) -> dict:
     way there is on the Role Trend one below.
 
     Role Trend's OWN raw evidence is checked before use, same fix and
-    same reason as _red_zone_story: role_trend can legitimately win on
+    same reason as red_zone_story: role_trend can legitimately win on
     the strength of depth-chart movement or the OTHER trend window even
     while this week's own snap share is flat or falling — caught
     directly in validation (RB Trends, 2025 Week 10: "role may already
@@ -408,10 +444,7 @@ def build_red_zone_trends(weekly: pd.DataFrame, config: dict = CONFIG) -> dict:
     RB/WR/TE).
     """
     threshold = config["completeness_threshold"]["red_zone_trends"]
-    weekly = weekly.copy()
-    weekly["i10_touches_trail3"] = _trailing_sum(weekly, "i10_touches", 3)
-    weekly["gl_touches_trail3"] = _trailing_sum(weekly, "gl_touches", 3)
-    weekly["rz_tds_trail3"] = _trailing_sum(weekly, "rz_tds", 3)
+    weekly = add_red_zone_trend_windows(weekly)
     weekly["_primary_value"] = weekly["td_opportunity"]
     weekly["_completeness_value"] = weekly["td_opportunity_completeness"]
 
@@ -419,7 +452,7 @@ def build_red_zone_trends(weekly: pd.DataFrame, config: dict = CONFIG) -> dict:
         weekly, primary_col="td_opportunity", completeness_col="td_opportunity_completeness",
         threshold=threshold, shelf_size=config["shelf_size"], odds_floor=config["attd_odds_floor"],
     )
-    result["cards"] = _finalize_cards(result, _red_zone_story)
+    result["cards"] = _finalize_cards(result, red_zone_story)
     return result
 
 
@@ -434,7 +467,7 @@ def _build_position_trends(weekly: pd.DataFrame, position: str, shelf_key: str, 
         threshold=threshold, shelf_size=config["shelf_size"], odds_floor=config["attd_odds_floor"],
         position_filter=position,
     )
-    result["cards"] = _finalize_cards(result, lambda row: _position_story(row, position))
+    result["cards"] = _finalize_cards(result, lambda row: position_story(row, position))
     return result
 
 
@@ -471,7 +504,7 @@ def build_wr_trends(weekly: pd.DataFrame, pbp: pd.DataFrame = None, config: dict
     )
 
     def _wr_story(row):
-        story = _position_story(row, "WR")
+        story = position_story(row, "WR")
         if pd.notna(row.get("target_share_trend")):
             story["evidence"] += f"; whole-game target share trend {row['target_share_trend']*100:+.1f}pp"
         return story
@@ -505,8 +538,11 @@ def odds_band_eligible(weekly: pd.DataFrame, lo: int, hi) -> pd.DataFrame:
     return pool
 
 
-def _odds_band_story(row: pd.Series) -> dict:
+def odds_band_story(row: pd.Series) -> dict:
     """
+    PUBLIC (no leading underscore) — same reasoned exception as
+    red_zone_story/position_story above.
+
     Odds-band shelves are ranked by the final composite (tpe_score), not
     one themed pillar the way the four trend shelves are — there's no
     "proven vs. emerging"-style split to draw a specific narrative from
@@ -553,7 +589,7 @@ def _build_odds_band_shelf(weekly: pd.DataFrame, lo: int, hi, shelf_size: int) -
 
 def build_odds_band_shelf(weekly: pd.DataFrame, lo: int, hi, config: dict = CONFIG) -> dict:
     result = _build_odds_band_shelf(weekly, lo, hi, config["shelf_size"])
-    result["cards"] = _finalize_cards(result, _odds_band_story)
+    result["cards"] = _finalize_cards(result, odds_band_story)
     return result
 
 

@@ -180,11 +180,49 @@ if __name__ == "__main__":
     # ============================================================
     results.append(check("content_draft_rows count matches the uncapped home-assignment count", len(draft_rows) == len(kept)))
     results.append(check("every row has review_status='pending_review'", all(r["review_status"] == "pending_review" for r in draft_rows)))
-    results.append(check(
-        "every row's headline/why_its_tasty/editorial_content is explicitly None (not fabricated placeholder text)",
-        all(r["headline"] is None and r["why_its_tasty"] is None and r["editorial_content"] is None for r in draft_rows),
-    ))
     results.append(check("every row has a real shelf, rank, and player_id", all(r["shelf"] and r["rank"] and r["player_id"] for r in draft_rows)))
+
+    # ============================================================
+    # Part A reconnection — regular (non-Tasty-Six) rows get real
+    # deterministic content from shelves.py's own story generators;
+    # Tasty-Six rows are deliberately excluded (reserved for Part C's
+    # LLM writer); editorial_content stays None for everyone at this
+    # stage (stale assumption from before Part A corrected here, not
+    # left silently green — the old assertion claimed EVERY row's
+    # headline/why_its_tasty was None, which is no longer true).
+    # ============================================================
+    regular_rows = [r for r in draft_rows if not r["is_tasty_six"]]
+    tasty_rows = [r for r in draft_rows if r["is_tasty_six"]]
+    results.append(check(
+        f"every real regular (non-Tasty-Six) row has a real, non-empty headline and why_its_tasty "
+        f"({len(regular_rows)} rows checked)",
+        len(regular_rows) > 0 and all(
+            isinstance(r["headline"], str) and r["headline"] and isinstance(r["why_its_tasty"], str) and r["why_its_tasty"]
+            for r in regular_rows
+        ),
+    ))
+    results.append(check(
+        f"every real Tasty-Six row still has headline/why_its_tasty=None (reserved for Part C's LLM writer, "
+        f"not this deterministic system) ({len(tasty_rows)} rows checked)",
+        all(r["headline"] is None and r["why_its_tasty"] is None for r in tasty_rows) if tasty_rows else True,
+    ))
+    if not tasty_rows:
+        print("(no real Tasty-Six content_draft_row this run to check the exclusion against — see the Tasty Six sparsity check above)")
+    results.append(check(
+        "editorial_content is None for every row (Tasty Six or not) -- no source produces it yet",
+        all(r["editorial_content"] is None for r in draft_rows),
+    ))
+
+    print("\nReal reconnected content, spot-check across multiple real players/shelves:")
+    seen_shelves = set()
+    for r in regular_rows:
+        if r["shelf"] in seen_shelves:
+            continue
+        seen_shelves.add(r["shelf"])
+        print(f"  [{r['shelf']}] {r['player_name']}")
+        print(f"    headline: {r['headline']}")
+        print(f"    why_its_tasty: {r['why_its_tasty']}")
+    print()
 
     # ============================================================
     # Synthetic, deterministic unit test of the trend-vs-trend tiebreak

@@ -60,22 +60,31 @@ was written, see the conversation this was designed and approved in):
    explicitly provisional, flagged for validation against real weekly
    data once the season is live — not treated as final on paper.
 
-NOT BUILT HERE, confirmed a real gap, not assumed away: content
-generation (headline/why-it's-tasty/editorial text) via "the adapted
-MLB Content Voice Engine." Checked directly before building this, not
-assumed working: pipeline/api/content_writer's PILLAR_NAMES is still
-hardcoded to MLB's own four pillars ("skill", "matchup", "environment",
-"opportunity") with a strict schema enum on exactly those four, and no
-NFL-specific content writer exists anywhere in nfl/. The premise that
-this engine "already exists and works" for NFL does not hold up against
-the real code — adapting it for NFL's five pillars is real, separate
-work deserving its own investigate-and-propose cycle, the same
-discipline this task itself went through, not something to improvise as
-a side effect of selection logic. shape_content_draft_rows() below
-produces every field this task's own selection/ranking logic actually
-owns (shelf, rank, is_tasty_six, review_status, the real scored fields)
-and leaves headline/why_its_tasty/editorial_content as None, clearly
-flagged, rather than fabricating placeholder text.
+CONTENT GENERATION — Part A reconnected (this update), Part C still not
+built. Investigation (a separate cycle, before this update) confirmed
+the "adapted MLB Content Voice Engine already exists and works for NFL"
+premise did not hold: pipeline/api/content_writer's PILLAR_NAMES was
+(and still is) hardcoded to MLB's own four pillars, and no NFL-specific
+LLM writer exists anywhere in nfl/ — that's real, separate work (Part C)
+with its own approved design, not built in this module.
+
+What Part A DOES reconnect: nfl/shelves.py already has a deterministic,
+non-LLM headline+evidence generator (red_zone_story/position_story/
+odds_band_story, now public — see shelves.py) wired into all seven
+shelves, real and already debugged against real historical bugs. This
+module previously discarded that entirely and wrote headline/why_its_
+tasty as None unconditionally. shape_content_draft_rows() below now
+calls those same story generators directly on every REGULAR (non-Tasty-
+Six) home-assigned row — not via a build_all_shelves() lookup, which has
+a real population gap (see _story_for_row's own docstring: shelves.py's
+own top-N ranking for a shelf and this module's home-assigned population
+for that shelf are genuinely different sets, so a lookup keyed by
+(shelf, player_id) silently misses real rows). is_tasty_six=True rows
+are deliberately EXCLUDED from this path and keep headline/why_its_tasty
+as None — they're reserved for Part C's LLM writer, not this
+deterministic system, per the approved architecture. editorial_content
+stays None for every row at this stage (no source, deterministic or
+LLM, produces it yet — see Part C).
 
 NOT BUILT HERE EITHER: an actual HTTP write to nfl_content_drafts. The
 shaping function (shape_content_draft_rows) produces exactly the rows a
@@ -104,7 +113,10 @@ import pandas as pd
 
 from normalize import build_reference_scale, fill_neutral, percentile_lookup
 from shelves import CONFIG as SHELVES_CONFIG
-from shelves import ODDS_BANDS, eligible_pool, odds_band_eligible
+from shelves import (
+    ODDS_BANDS, add_red_zone_trend_windows, eligible_pool, odds_band_eligible,
+    odds_band_story, position_story, red_zone_story,
+)
 
 SHELF_ORDER = [
     "Red Zone Trends", "RB Trends", "WR Trends", "TE Trends",
@@ -386,14 +398,80 @@ def select_tasty_six(capped_assignments: pd.DataFrame, config: dict = CONFIG) ->
     return picks
 
 
-def shape_content_draft_rows(capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int) -> list:
+def _story_for_row(row: pd.Series, shelf_name: str) -> dict:
+    """
+    Dispatches to shelves.py's own deterministic, already-validated
+    per-row story generator (red_zone_story/position_story/odds_band_
+    story) for whichever shelf this IS the player's real home shelf —
+    the exact same headline/evidence text a player would get on
+    shelves.py's own display list, computed FRESH for this specific row
+    rather than looked up from build_all_shelves()'s own card output.
+
+    WHY FRESH, NOT A LOOKUP — the real reason Part A's reconnection
+    isn't just "call build_all_shelves() and match by (shelf, player_id)":
+    shelves.py's own top-N ranking for a shelf and this module's
+    home-assigned population for that SAME shelf are genuinely different
+    populations, not just different names for the same thing. shelves.py
+    ranks the FULL eligible pool by that shelf's primary signal alone,
+    with no cross-shelf exclusivity — a player can sit in the raw top 6
+    for RB Trends there even though this module home-assigns them to Red
+    Zone Trends instead (their percentile there won the trend-vs-trend
+    comparison). That "frees a slot" in RB Trends' real home-assigned
+    top 6 for a player who wouldn't have cracked shelves.py's own raw
+    top-6 cut at all (confirmed directly against the real 2025 Week 10
+    pool during this task's own validation — see the module test suite).
+    A card-list lookup keyed by (shelf, player_id) would silently miss
+    exactly these players — real home-assigned, uncapped rows with no
+    corresponding card anywhere in build_all_shelves()'s output. Calling
+    the row-level story function directly, on every home-assigned row,
+    has no such gap: it doesn't care whether this row would have made
+    shelves.py's own cut.
+
+    Requires add_red_zone_trend_windows() already applied upstream when
+    shelf_name == "Red Zone Trends" — see shape_content_draft_rows'
+    weekly_story_lookup construction, the only caller.
+    """
+    if shelf_name == "Red Zone Trends":
+        return red_zone_story(row)
+    if shelf_name in ("RB Trends", "WR Trends", "TE Trends"):
+        return position_story(row, shelf_name.split()[0])
+    return odds_band_story(row)
+
+
+def shape_content_draft_rows(
+    capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int, weekly: pd.DataFrame = None,
+) -> list:
     """
     One dict per (surviving-the-cap) player-shelf placement, shaped for
     an eventual nfl_content_drafts write. Every field this task's own
-    selection/ranking logic actually owns is real; headline/why_its_
-    tasty/editorial_content are explicitly None, not fabricated
-    placeholder text — see module docstring for why (the adapted
-    Content Voice Engine doesn't exist for NFL yet, confirmed directly).
+    selection/ranking logic actually owns is real.
+
+    RECONNECTED (Part A): headline/why_its_tasty now come from shelves.
+    py's own deterministic, already-validated story generators (see
+    _story_for_row) for every REGULAR (non-Tasty-Six) row — real,
+    grounded template text, not an LLM call. `weekly` is the same
+    already-scored table assign_home_shelves() was built from; pass it
+    here (or through curate_nfl_shelves, which threads it automatically)
+    to populate real content. Omit it (the old behavior, still supported
+    for callers that only need the selection/ranking fields) and every
+    row's headline/why_its_tasty fall back to None, same as before this
+    task.
+
+    TASTY SIX ROWS ARE DELIBERATELY EXCLUDED from this deterministic
+    path — is_tasty_six=True rows keep headline/why_its_tasty as None
+    here regardless of whether `weekly` was passed, per the approved
+    architecture: Tasty Six gets its own LLM writer (Part C, not yet
+    built), not shelves.py's per-shelf template text. Writing the
+    deterministic version in first would mean a real risk of a
+    half-upgraded card shipping if Part C is delayed — None is the
+    honest "not written yet" signal, same discipline as leaving these
+    fields None entirely before this task.
+
+    editorial_content stays None for every row, Tasty Six or not — no
+    deterministic or LLM source for it exists yet at either tier (see
+    module docstring; Part C is scoped to add it for Tasty Six only,
+    matching MLB's own regular-card-has-no-editorial-sentence split).
+
     review_status is always "pending_review" — never auto-approved, per
     explicit instruction; nothing in this task ever sets it to anything
     else.
@@ -401,8 +479,21 @@ def shape_content_draft_rows(capped_assignments: pd.DataFrame, tasty_six: dict, 
     if len(capped_assignments) == 0:
         return []
     tasty_lookup = {shelf: (row["player_id"] if row is not None else None) for shelf, row in tasty_six.items()}
+
+    story_lookup = {}
+    if weekly is not None and len(weekly) > 0:
+        prepped = add_red_zone_trend_windows(weekly)
+        story_lookup = {row["player_id"]: row for _, row in prepped.iterrows()}
+
     rows = []
     for _, r in capped_assignments[~capped_assignments["capped"]].iterrows():
+        is_tasty_six = tasty_lookup.get(r["home_shelf"]) == r["player_id"]
+
+        headline, why_its_tasty = None, None
+        if not is_tasty_six and r["player_id"] in story_lookup:
+            story = _story_for_row(story_lookup[r["player_id"]], r["home_shelf"])
+            headline, why_its_tasty = story["headline"], story["evidence"]
+
         rows.append({
             "player_id": r["player_id"],
             "player_name": r["player_name"],
@@ -410,13 +501,13 @@ def shape_content_draft_rows(capped_assignments: pd.DataFrame, tasty_six: dict, 
             "week": week,
             "shelf": r["home_shelf"],
             "rank": int(r["rank"]),
-            "is_tasty_six": tasty_lookup.get(r["home_shelf"]) == r["player_id"],
+            "is_tasty_six": is_tasty_six,
             "review_status": "pending_review",
             "tpe_score": r.get("tpe_score"),
             "evidence_quality": r.get("evidence_quality"),
             "consensus_price_american": r.get("consensus_price_american"),
-            "headline": None,
-            "why_its_tasty": None,
+            "headline": headline,
+            "why_its_tasty": why_its_tasty,
             "editorial_content": None,
         })
     return rows
@@ -438,7 +529,7 @@ def curate_nfl_shelves(
     home_assignments = assign_home_shelves(weekly, config, shelves_config)
     capped = apply_shelf_cap(home_assignments, config)
     tasty_six = select_tasty_six(capped, config)
-    content_draft_rows = shape_content_draft_rows(capped, tasty_six, season, week)
+    content_draft_rows = shape_content_draft_rows(capped, tasty_six, season, week, weekly=weekly)
     return {
         "home_assignments": home_assignments,
         "capped": capped,
