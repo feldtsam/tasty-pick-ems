@@ -26,7 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer" / "voice"))
 
-from card_writer_common import flatten_source_facts  # noqa: E402
+from card_writer_common import (  # noqa: E402
+    RECENT_FORM_CITABLE_FIELDS,
+    RECENT_FORM_SKIP_FIELDS,
+    TOP_LEVEL_CITABLE_FIELDS,
+    flatten_source_facts,
+)
 from content_writer.shelf_card_prompt import build_system_prompt, build_user_prompt  # noqa: E402
 from content_writer.shelf_card_writer_schema import SHELF_CARD_TOOL_SCHEMA, validate_schema_shape  # noqa: E402
 from generate_shelf_card_content import draft_for_write, run_all_validators  # noqa: E402
@@ -105,7 +110,9 @@ if __name__ == "__main__":
     ))
 
     # --- Prompt construction against real data ---
-    facts = flatten_source_facts(REAL_CANDIDATE)
+    facts = flatten_source_facts(
+        REAL_CANDIDATE, TOP_LEVEL_CITABLE_FIELDS, ("pillar_detail",), RECENT_FORM_CITABLE_FIELDS, RECENT_FORM_SKIP_FIELDS,
+    )
     system_prompt = build_system_prompt("Hot Hitters", "strong_setup")
     user_prompt = build_user_prompt(facts)
 

@@ -38,8 +38,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer" / "voi
 from banned_language import find_banned_phrases  # noqa: E402
 from card_writer_common import (  # noqa: E402
     MODEL_NAME,
+    PILLAR_NAMES,
+    RECENT_FORM_CITABLE_FIELDS,
+    RECENT_FORM_SKIP_FIELDS,
+    STAR_PILLAR_SCORE_KEYS,
+    TOP_LEVEL_CITABLE_FIELDS,
     call_claude_with_tool,
     flatten_source_facts,
+    mlb_tolerance_for_key,
     validate_citations,
     validate_numeric_grounding,
     validate_star_consistency,
@@ -68,6 +74,16 @@ def run_all_validators(output: dict, source_facts: dict, candidate: dict) -> lis
     star consistency, then banned language checked against EVERY real
     user-facing string the card produces (title, editorial_sentence, and
     every reason_text) -- not just prose in general.
+
+    `candidate` is no longer read directly by this function (NFL Content
+    Generation Part B: validate_star_consistency now looks up a pillar's
+    real score from source_facts, not candidate["pillar_detail"] -- see
+    card_writer_common.py). Kept as a parameter anyway, unused, rather
+    than removing it -- this function's own real callers (below, and this
+    module's test suite) all pass it positionally, and dropping it would
+    be a real signature change with its own call-site risk that has
+    nothing to do with Part B's actual scope (parameterizing the four
+    card_writer_common functions, not this orchestration function).
     """
     issues = []
 
@@ -79,8 +95,8 @@ def run_all_validators(output: dict, source_facts: dict, candidate: dict) -> lis
     why_reasons = output["why_reasons"]
 
     issues.extend({"check": "citation", **v} for v in validate_citations(why_reasons, source_facts))
-    issues.extend({"check": "numeric_grounding", **v} for v in validate_numeric_grounding(why_reasons, source_facts))
-    issues.extend({"check": "star_consistency", **v} for v in validate_star_consistency(why_reasons, candidate))
+    issues.extend({"check": "numeric_grounding", **v} for v in validate_numeric_grounding(why_reasons, source_facts, mlb_tolerance_for_key))
+    issues.extend({"check": "star_consistency", **v} for v in validate_star_consistency(why_reasons, source_facts, PILLAR_NAMES, STAR_PILLAR_SCORE_KEYS))
 
     banned_targets = [("title", output["title"]), ("editorial_sentence", output["editorial_sentence"])]
     banned_targets += [(f"why_reasons[{i}].reason_text", r["reason_text"]) for i, r in enumerate(why_reasons)]
@@ -140,7 +156,9 @@ def generate_tasty_six_draft(
             f"needs deliberate handling per principles.py, not a default band."
         )
 
-    source_facts = flatten_source_facts(candidate)
+    source_facts = flatten_source_facts(
+        candidate, TOP_LEVEL_CITABLE_FIELDS, ("pillar_detail",), RECENT_FORM_CITABLE_FIELDS, RECENT_FORM_SKIP_FIELDS,
+    )
     system_prompt = build_system_prompt(shelf, confidence_band, avoid_headlines=avoid_headlines)
     user_prompt = build_user_prompt(source_facts)
 

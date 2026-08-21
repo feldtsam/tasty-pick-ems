@@ -16,7 +16,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 
 from card_writer_common import (
+    PILLAR_NAMES,
+    RECENT_FORM_CITABLE_FIELDS,
+    RECENT_FORM_SKIP_FIELDS,
+    STAR_PILLAR_SCORE_KEYS,
+    TOP_LEVEL_CITABLE_FIELDS,
     flatten_source_facts,
+    mlb_tolerance_for_key,
     validate_citations,
     validate_numeric_grounding,
     validate_star_consistency,
@@ -99,7 +105,9 @@ def check(label, condition):
 
 if __name__ == "__main__":
     results = []
-    facts = flatten_source_facts(REAL_CANDIDATE)
+    facts = flatten_source_facts(
+        REAL_CANDIDATE, TOP_LEVEL_CITABLE_FIELDS, ("pillar_detail",), RECENT_FORM_CITABLE_FIELDS, RECENT_FORM_SKIP_FIELDS,
+    )
 
     results.append(check(
         "flatten_source_facts pulls the real top-level fields",
@@ -145,8 +153,8 @@ if __name__ == "__main__":
         },
     ]
     results.append(check("clean card: zero citation violations", validate_citations(clean_reasons, facts) == []))
-    results.append(check("clean card: zero numeric-grounding violations", validate_numeric_grounding(clean_reasons, facts) == []))
-    results.append(check("clean card: zero star-consistency violations", validate_star_consistency(clean_reasons, REAL_CANDIDATE) == []))
+    results.append(check("clean card: zero numeric-grounding violations", validate_numeric_grounding(clean_reasons, facts, mlb_tolerance_for_key) == []))
+    results.append(check("clean card: zero star-consistency violations", validate_star_consistency(clean_reasons, facts, PILLAR_NAMES, STAR_PILLAR_SCORE_KEYS) == []))
     results.append(check("clean card: passes schema-shape validation", validate_schema_shape({
         "title": "Real Title", "editorial_sentence": "Real sentence.", "why_reasons": clean_reasons,
     }) == []))
@@ -171,7 +179,7 @@ if __name__ == "__main__":
         "reason_text": "His power grade is a massive 95.0, elite raw juice.",
         "source_fact_keys": ["pillar_detail.skill.components.power_production"],
     }]
-    numeric_violations = validate_numeric_grounding(distorted_number_reasons, facts)
+    numeric_violations = validate_numeric_grounding(distorted_number_reasons, facts, mlb_tolerance_for_key)
     results.append(check(
         "a distorted number on a validly-cited key is still caught",
         len(numeric_violations) == 1 and "95.0" in numeric_violations[0]["issue"],
@@ -187,7 +195,31 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "an ordinal number ('3rd') does not false-positive numeric grounding",
-        validate_numeric_grounding(ordinal_reasons, facts) == [],
+        validate_numeric_grounding(ordinal_reasons, facts, mlb_tolerance_for_key) == [],
+    ))
+
+    # --- Real bug found and fixed during NFL Content Generation Part C's
+    # own validation (2026-08-21), confirmed NOT NFL-specific: a MULTI-
+    # DIGIT ordinal ("89th") was silently mis-extracted as a bare, WRONG
+    # number ("8") by the old lookahead-based _NUMBER_PATTERN — a real
+    # regex backtracking trap that single-digit ordinals like "3rd" above
+    # happened to never trigger (see _NUMBER_PATTERN's own docstring in
+    # card_writer_common.py for the full mechanism). "89" is deliberately
+    # far from every real value in this fixture (skill=70.0, matchup=37.4,
+    # environment=28.2, opportunity=80.0, final_score=54.0) specifically
+    # so this test distinguishes the fix from coincidental grounding: the
+    # OLD buggy pattern would have extracted "8" and flagged it as a real
+    # violation (8 is outside the 1-5 small-integer exemption); the FIXED
+    # pattern excludes "89th" entirely as an ordinal, so there's nothing
+    # to check at all. ---
+    multi_digit_ordinal_reasons = [{
+        "pillar": "skill", "stars": 3,
+        "reason_text": "His underlying metrics rank in a real 89th percentile tier leaguewide this month.",
+        "source_fact_keys": ["final_score"],
+    }]
+    results.append(check(
+        "a MULTI-DIGIT ordinal number ('89th') does not false-positive numeric grounding either (the real bug this fixed)",
+        validate_numeric_grounding(multi_digit_ordinal_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- False-positive guard: a small narrative integer (1-5, e.g. a
@@ -200,7 +232,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "a small narrative integer (2) does not false-positive numeric grounding",
-        validate_numeric_grounding(small_int_reasons, facts) == [],
+        validate_numeric_grounding(small_int_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- Adversarial case 3: a 5-star claim on a real pillar score that's
@@ -211,7 +243,7 @@ if __name__ == "__main__":
         "reason_text": "Everything about tonight's park and weather screams home run.",
         "source_fact_keys": ["pillar_detail.environment.score"],
     }]
-    star_violations = validate_star_consistency(inflated_stars_reasons, REAL_CANDIDATE)
+    star_violations = validate_star_consistency(inflated_stars_reasons, facts, PILLAR_NAMES, STAR_PILLAR_SCORE_KEYS)
     results.append(check(
         "an inflated 5-star claim on a real 28.2 environment score is caught",
         len(star_violations) == 1 and "5 stars" in star_violations[0]["issue"],
@@ -242,7 +274,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "a percentage/score value rounded to the nearest whole number (81.1 -> 81) is NOT flagged",
-        validate_numeric_grounding(rounded_score_reasons, facts) == [],
+        validate_numeric_grounding(rounded_score_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- Tolerance tier 2: odds keep EXACT matching — a small deviation
@@ -254,7 +286,7 @@ if __name__ == "__main__":
         "reason_text": "Priced at 600.3 tonight, real value at this number.",
         "source_fact_keys": ["odds"],
     }]
-    odds_violations = validate_numeric_grounding(odds_drift_reasons, facts)
+    odds_violations = validate_numeric_grounding(odds_drift_reasons, facts, mlb_tolerance_for_key)
     results.append(check(
         "odds gets EXACT tolerance -- a small 0.3 drift (well within the 0.5 rounding tier) is still caught",
         len(odds_violations) == 1 and "600.3" in odds_violations[0]["issue"],
@@ -270,7 +302,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "rate stats rounded to 2 decimals (.7429... -> .74, 3.1935... -> 3.19) are NOT flagged",
-        validate_numeric_grounding(rate_stat_rounded_reasons, facts) == [],
+        validate_numeric_grounding(rate_stat_rounded_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # real recent_k_per_9=7.548... rounds to 8 -- deliberately chosen
@@ -282,7 +314,7 @@ if __name__ == "__main__":
         "reason_text": "Real recent form here -- a strikeout rate of 8 per nine over that stretch.",
         "source_fact_keys": ["opposing_pitcher_recent_form.recent_k_per_9"],
     }]
-    rate_stat_violations = validate_numeric_grounding(rate_stat_whole_number_reasons, facts)
+    rate_stat_violations = validate_numeric_grounding(rate_stat_whole_number_reasons, facts, mlb_tolerance_for_key)
     results.append(check(
         "rate stats do NOT get the 0.5 whole-number rounding tier -- '8' for a real 7.548 K/9 is still caught",
         len(rate_stat_violations) == 1,
@@ -296,7 +328,7 @@ if __name__ == "__main__":
         "reason_text": "Sampled across his last 16 games, real recent signal.",
         "source_fact_keys": ["recent_form.recent_games_sampled"],
     }]
-    count_violations = validate_numeric_grounding(count_field_drift_reasons, facts)
+    count_violations = validate_numeric_grounding(count_field_drift_reasons, facts, mlb_tolerance_for_key)
     results.append(check(
         "recent-form count fields get EXACT tolerance -- 16 for a real 15-game sample is caught",
         len(count_violations) == 1,
@@ -314,7 +346,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "a validly-cited real recent_form number is genuinely found and grounded (not silently unfindable)",
-        validate_numeric_grounding(real_recent_form_citation_reasons, facts) == [],
+        validate_numeric_grounding(real_recent_form_citation_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- Real production false positive (2026-08-04, Jeremy Pena):
@@ -329,7 +361,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "a TRUE comparative claim ('both above 25' when real values are 28.5/46.4) is NOT flagged, even though neither rounds to 25",
-        validate_numeric_grounding(comparative_true_reasons, facts) == [],
+        validate_numeric_grounding(comparative_true_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- The exact real shape of the false positive this fix targets:
@@ -345,7 +377,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "the exact real Jeremy Pena false positive (90.7/90.8 vs claimed 'above 90') no longer triggers",
-        validate_numeric_grounding(pena_shaped_reasons, pena_shaped_facts) == [],
+        validate_numeric_grounding(pena_shaped_reasons, pena_shaped_facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- A comparative claim that is genuinely FALSE must still be caught
@@ -355,7 +387,7 @@ if __name__ == "__main__":
         "reason_text": "Contact-allowed and rate-outcome marks both sit above 200, elite by any measure.",
         "source_fact_keys": ["pillar_detail.matchup.components.contact_allowed", "pillar_detail.matchup.components.rate_outcome"],
     }]
-    comparative_false_violations = validate_numeric_grounding(comparative_false_reasons, facts)
+    comparative_false_violations = validate_numeric_grounding(comparative_false_reasons, facts, mlb_tolerance_for_key)
     results.append(check(
         "a FALSE comparative claim ('above 200' when real values are 28.5/46.4) is still caught",
         len(comparative_false_violations) == 1 and "above 200" in comparative_false_violations[0]["issue"],
@@ -373,7 +405,7 @@ if __name__ == "__main__":
         "reason_text": "A real park factor near .3 backs up the case here.",
         "source_fact_keys": ["pillar_detail.environment.components.park"],
     }]
-    near_zero_violations = validate_numeric_grounding(near_zero_fabrication_reasons, facts)
+    near_zero_violations = validate_numeric_grounding(near_zero_fabrication_reasons, facts, mlb_tolerance_for_key)
     results.append(check(
         "a fabricated 0.3 near a real 0.0 is now caught (was silently accepted under the old flat 0.5 tolerance)",
         len(near_zero_violations) == 1 and "0.3" in near_zero_violations[0]["issue"],
@@ -388,7 +420,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "writing the real value itself (0 for a real 0.0) still passes under the tightened near-zero tolerance",
-        validate_numeric_grounding(real_zero_reasons, facts) == [],
+        validate_numeric_grounding(real_zero_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- The near-zero fix must not affect normal-magnitude rounding --
@@ -399,6 +431,7 @@ if __name__ == "__main__":
         validate_numeric_grounding(
             [{"pillar": "skill", "stars": 4, "reason_text": "Power grade of 81 here.", "source_fact_keys": ["pillar_detail.skill.components.power_production"]}],
             facts,
+            mlb_tolerance_for_key,
         ) == [],
     ))
 
@@ -423,7 +456,7 @@ if __name__ == "__main__":
     }]
     results.append(check(
         "the exact real George Springer false positive ('1.74 HR/9' and '0.87 per 9') no longer triggers",
-        validate_numeric_grounding(per_nine_reasons, facts) == [],
+        validate_numeric_grounding(per_nine_reasons, facts, mlb_tolerance_for_key) == [],
     ))
 
     # --- The per-9 exclusion must stay narrow: a genuinely different,
@@ -436,7 +469,7 @@ if __name__ == "__main__":
         "reason_text": "A fabricated career mark of 8/95 backs this up, along with a rate of 12 per 90.",
         "source_fact_keys": ["opposing_pitcher_recent_form.recent_era"],
     }]
-    fake_slash_violations = validate_numeric_grounding(fake_slash_reasons, facts)
+    fake_slash_violations = validate_numeric_grounding(fake_slash_reasons, facts, mlb_tolerance_for_key)
     results.append(check(
         "a genuinely fabricated number following a slash or 'per' for an unrelated reason ('8/95', '12 per 90') is still caught, not swallowed by the per-9 exclusion",
         any("95" in v["issue"] for v in fake_slash_violations) and any("12" in v["issue"] for v in fake_slash_violations),

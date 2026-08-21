@@ -23,6 +23,27 @@ validate_schema_shape().
 See tasty_six_writer_schema.py's original docstring (still present there)
 for the full historical reasoning behind each piece — this file is a
 relocation, not a rewrite, and that context still applies.
+
+PARAMETERIZED (NFL Content Generation Part B, this update): flatten_
+source_facts, validate_numeric_grounding (+ mlb_tolerance_for_key, the
+renamed former _tolerance_for_key), and validate_star_consistency no
+longer read MLB-specific module constants (PILLAR_NAMES, TOP_LEVEL_
+CITABLE_FIELDS, etc.) implicitly — they take them as explicit parameters,
+so a future sport can pass its own without forking this file's ~400
+lines of validator logic (three real production bugs already found and
+fixed here: comparative-claim false positives, near-zero-tolerance blind
+spots, /9-notation misparsing — a fork risks each of those silently
+drifting between sports). validate_citations needed no change (checked
+directly: it never depended on an MLB-specific constant in the first
+place). MLB's own constants (PILLAR_NAMES, TOP_LEVEL_CITABLE_FIELDS,
+RECENT_FORM_CITABLE_FIELDS, RECENT_FORM_SKIP_FIELDS, the tolerance-tier
+sets, mlb_tolerance_for_key, STAR_PILLAR_SCORE_KEYS) all still live here,
+unchanged in value — MLB's real call sites (generate_shelf_card_content.
+py, generate_tasty_six_content.py) now pass them explicitly rather than
+relying on these functions reading them implicitly. Confirmed a strict
+behavioral no-op for MLB via a real before/after regression diff on real
+production inputs, not just "tests still pass" — see the conversation
+this change was validated in.
 """
 import re
 
@@ -118,45 +139,91 @@ RECENT_FORM_CITABLE_FIELDS = (
 
 # recent_window_dates is a nested {"first": ..., "last": ...} dict of date
 # STRINGS, not a numeric or narrative fact worth citing here — skipped
-# rather than flattened.
-_RECENT_FORM_SKIP_FIELDS = {"recent_window_dates"}
+# rather than flattened. PUBLIC (no leading underscore) — same reasoned
+# exception as nfl/shelves.py's eligible_pool: a real caller outside this
+# module (MLB's own writer call sites, post-parameterization — see below)
+# now passes this explicitly, not a trivial one-liner worth hiding.
+RECENT_FORM_SKIP_FIELDS = {"recent_window_dates"}
 
 
-def flatten_source_facts(candidate: dict) -> dict:
+def flatten_source_facts(
+    candidate: dict,
+    top_level_fields: tuple,
+    nested_dict_fields: tuple = (),
+    flat_dict_fields: tuple = (),
+    flat_dict_skip_fields: frozenset = frozenset(),
+) -> dict:
     """
+    PARAMETERIZED (NFL Content Generation Part B) — was hardcoded to
+    MLB's own TOP_LEVEL_CITABLE_FIELDS/RECENT_FORM_CITABLE_FIELDS/
+    _RECENT_FORM_SKIP_FIELDS module constants; every real call site now
+    passes them explicitly (see MLB's own callers below — this function's
+    BODY is otherwise byte-for-byte the same logic, just reading its
+    inputs from parameters instead of module globals; confirmed a strict
+    no-op via a real before/after regression diff, not just "tests still
+    pass" — see the conversation this change was validated in).
+
+    THE REAL SHAPE OF CHANGE NEEDED, investigated before this rework:
+    a single parameter swap was NOT enough. MLB's nested-dict flattening
+    (pillar_detail.{pillar}.score / pillar_detail.{pillar}.components.{x})
+    assumes a specific two-level shape — a named group with a "score" plus
+    a "components" sub-dict — that NFL's real scored output does not have
+    at all (nfl/scoring.py's five pillars are flat columns directly on the
+    weekly row, no pillar_detail nesting anywhere). Swapping only the
+    FIELD NAMES and leaving the nesting assumption hardcoded would still
+    make this function unusable for NFL. So `nested_dict_fields` is its
+    own parameter, defaulting to empty — a sport with no such nesting
+    (NFL, today) just omits it and gets everything through
+    `top_level_fields` instead, which is already flat-column-shaped by
+    construction. MLB passes ("pillar_detail",) to keep its own real
+    behavior unchanged.
+
     Turns one real curated candidate (a shelf_assignments/Tasty-Six entry,
     itself wrapping a scored_picks-shaped candidate dict under "candidate"
     per shelf_curation.py's real entry shape, OR a bare scored_picks-shaped
     dict) into the flat, citable {key: value} set a writer call is allowed
-    to reference. Dotted paths for pillar_detail's nested components (e.g.
-    "pillar_detail.skill.components.power_production") and for recent-form
+    to reference. Dotted paths for a nested group's components (e.g.
+    "pillar_detail.skill.components.power_production") and for flat-dict
     fields (e.g. "recent_form.recent_ops") give citations real granularity
     — pointing at the specific number a claim is about, not just the
-    parent pillar's overall score or an opaque nested blob.
+    parent group's overall score or an opaque nested blob.
+
+    top_level_fields: keys pulled directly from the (unwrapped) candidate
+    dict if present and non-None.
+    nested_dict_fields: top-level keys (default: none) whose value is
+    itself a dict of {group_name: {"score": ..., "components": {...}}} —
+    MLB's pillar_detail shape. Flattened to "{nested_key}.{group_name}
+    .score" and "{nested_key}.{group_name}.components.{comp_key}".
+    flat_dict_fields: top-level keys (read from the OUTER candidate, same
+    as MLB's original recent_form/opposing_pitcher_recent_form behavior —
+    these live on the shelf-entry wrapper, not inside "candidate") whose
+    value is a flat dict, flattened to "{key}.{field_name}", skipping any
+    name in flat_dict_skip_fields.
     """
     c = candidate.get("candidate", candidate)  # unwrap a shelf-entry shape if present
 
     facts = {}
-    for key in TOP_LEVEL_CITABLE_FIELDS:
+    for key in top_level_fields:
         if key in c and c[key] is not None:
             facts[key] = c[key]
 
-    pillar_detail = c.get("pillar_detail") or {}
-    for pillar_name, pillar_data in pillar_detail.items():
-        if not isinstance(pillar_data, dict):
-            continue
-        if "score" in pillar_data:
-            facts[f"pillar_detail.{pillar_name}.score"] = pillar_data["score"]
-        components = pillar_data.get("components") or {}
-        for comp_key, comp_val in components.items():
-            facts[f"pillar_detail.{pillar_name}.components.{comp_key}"] = comp_val
+    for nested_key in nested_dict_fields:
+        nested = c.get(nested_key) or {}
+        for group_name, group_data in nested.items():
+            if not isinstance(group_data, dict):
+                continue
+            if "score" in group_data:
+                facts[f"{nested_key}.{group_name}.score"] = group_data["score"]
+            components = group_data.get("components") or {}
+            for comp_key, comp_val in components.items():
+                facts[f"{nested_key}.{group_name}.components.{comp_key}"] = comp_val
 
-    for key in RECENT_FORM_CITABLE_FIELDS:
+    for key in flat_dict_fields:
         form = candidate.get(key)
         if not isinstance(form, dict):
             continue
         for field_name, field_val in form.items():
-            if field_name in _RECENT_FORM_SKIP_FIELDS or field_val is None:
+            if field_name in flat_dict_skip_fields or field_val is None:
                 continue
             facts[f"{key}.{field_name}"] = field_val
 
@@ -170,7 +237,15 @@ def flatten_source_facts(candidate: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def validate_citations(why_reasons: list, source_facts: dict) -> list[dict]:
-    """Every cited key must be a real key that exists in source_facts. A
+    """
+    NOT CHANGED for NFL Content Generation Part B — checked directly
+    before touching anything: this function already has zero dependency
+    on any MLB-specific module constant (no PILLAR_NAMES, no field-name
+    table, nothing). It operates purely on its two arguments, so it's
+    already sport-agnostic as written. Listed in Part B's task scope
+    alongside the other three, but no rework was needed or made here.
+
+    Every cited key must be a real key that exists in source_facts. A
     reason with zero citations is itself a violation — the schema requires
     minItems=1 on source_fact_keys, but a model can still technically emit
     an empty array if it ignores the schema description, so this is
@@ -196,7 +271,40 @@ def validate_citations(why_reasons: list, source_facts: dict) -> list[dict]:
 # digit for \d+ to anchor to at the start of ".74", so it silently matched
 # "74" instead of 0.74 — not a miss, a WRONG number, caught by this file's
 # own numeric-grounding tests once real rate-stat citations exercised it.
-_NUMBER_PATTERN = re.compile(r"(?<![a-zA-Z])-?\d*\.?\d+(?!\s*(?:st|nd|rd|th)\b)")
+#
+# NO LONGER excludes ordinals via an inline negative lookahead — real bug
+# found during NFL Content Generation Part C's own validation (2026-08-
+# 21): a MULTI-DIGIT ordinal like "89th" or "21st" was NOT excluded the
+# way single-digit ordinals like "3rd" were. `\d+(?!\s*(?:st|nd|rd|th)\b)`
+# is greedy, so it first tries to match "89", fails the lookahead (the
+# very next characters are "th"), and — since Python's re engine
+# backtracks on failure rather than giving up — retries with a SHORTER
+# match, "8" alone, whose lookahead trivially succeeds (the text right
+# after "8" is "9th", which doesn't literally start with a suffix
+# keyword). Net effect: "89th percentile" silently extracted a bare,
+# WRONG number ("8") instead of correctly excluding "89" as an ordinal —
+# confirmed directly (`_NUMBER_PATTERN.findall("89th percentile")` ->
+# `['8']` on the old pattern), and confirmed this was never NFL-specific:
+# the same collapse happens for any 2+-digit ordinal regardless of sport
+# (`_NUMBER_PATTERN.findall("21st century")` -> `['2']`) — MLB's own real
+# prose (shelves.py-style "trending 88th percentile" phrasing) could have
+# hit this identically; single-digit ordinals ("3rd home run", the only
+# case MLB's own test suite exercised) happened to never trigger it,
+# since \d+ can't backtrack below one digit.
+#
+# FIXED by moving ordinal exclusion out of this pattern entirely and into
+# its own span-based exclusion (_ORDINAL_PATTERN below), matching the
+# SAME architecture already used for comparative claims and /9 notation
+# (see validate_numeric_grounding) — exclude by SPAN, not by a fragile
+# lookahead baked into the extraction pattern itself. This pattern now
+# has no backtracking trap: it just extracts every number, full stop.
+_NUMBER_PATTERN = re.compile(r"(?<![a-zA-Z])-?\d*\.?\d+")
+
+# Matches a full ordinal token ("89th", "3rd", "21st") as ONE span, reused
+# by validate_numeric_grounding to exclude the number portion from the
+# point-value pass — see _NUMBER_PATTERN's docstring above for why this
+# is a separate, span-based exclusion rather than a lookahead.
+_ORDINAL_PATTERN = re.compile(r"(?<![a-zA-Z])-?\d*\.?\d+(?:st|nd|rd|th)\b", re.IGNORECASE)
 
 
 # Real false positive found in production generation (2026-08-04, George
@@ -382,8 +490,27 @@ _ROUNDING_RECENT_FORM_FIELD_NAMES = {
 }
 
 
-def _tolerance_for_key(key: str) -> float:
+def mlb_tolerance_for_key(key: str) -> float:
     """
+    PUBLIC, RENAMED from _tolerance_for_key (NFL Content Generation Part
+    B) — this function's BODY is unchanged (same MLB-specific
+    classification logic, same reliance on the module-level tolerance-tier
+    sets above), it's just now explicitly nameable and passable rather
+    than called implicitly by name from inside validate_numeric_grounding.
+    PARAMETERIZATION DESIGN CHOICE (config object vs. callable): this
+    classification logic is genuinely bespoke conditional branching (exact
+    literal key names, THEN prefix-scoped nested lookups with DIFFERENT
+    default tolerances per prefix — pillar_detail leaves default to
+    ROUNDING, recent-form leaves default to EXACT) — not a flat table. A
+    generic declarative config trying to capture that shape risks either
+    losing fidelity or reimplementing this exact branching one level up
+    for no real benefit. Passing the whole function as-is, unchanged, is
+    the genuinely zero-risk choice — validate_numeric_grounding below now
+    takes a `tolerance_for_key` callable parameter; MLB passes this
+    function by name, NFL's Part C would write and pass its own (almost
+    certainly much simpler, since NFL's scored columns have no nested-
+    prefix structure at all).
+
     Classifies a source-fact key into its real numeric tolerance. odds is
     checked first and explicitly — the field this whole design change was
     motivated by protecting. Everything not explicitly classified falls
@@ -452,9 +579,11 @@ def _rounding_tolerance_for_value(real_value: float) -> float:
     return max(NEAR_ZERO_TOLERANCE_FLOOR, min(ROUNDING_TOLERANCE, abs(real_value)))
 
 
-def _source_numbers_with_tolerance(source_facts: dict) -> list:
+def _source_numbers_with_tolerance(source_facts: dict, tolerance_for_key) -> list:
     """One (number, tolerance) pair per real number found across every
-    source fact — tolerance is looked up per KEY via _tolerance_for_key(),
+    source fact — tolerance is looked up per KEY via the injected
+    tolerance_for_key callable (see validate_numeric_grounding's own
+    docstring for why this is a callable parameter, not a config object),
     so a claimed number is judged against the precision expectation that's
     actually right for whichever real value it's closest to, not one flat
     tolerance applied to every kind of fact regardless of what it is.
@@ -466,20 +595,29 @@ def _source_numbers_with_tolerance(source_facts: dict) -> list:
     to exploit)."""
     pairs = []
     for key, value in source_facts.items():
-        base_tolerance = _tolerance_for_key(key)
+        base_tolerance = tolerance_for_key(key)
         for n in _numbers_in(value):
             tol = _rounding_tolerance_for_value(n) if base_tolerance == ROUNDING_TOLERANCE else base_tolerance
             pairs.append((n, tol))
     return pairs
 
 
-def validate_numeric_grounding(why_reasons: list, source_facts: dict) -> list[dict]:
+def validate_numeric_grounding(why_reasons: list, source_facts: dict, tolerance_for_key) -> list[dict]:
     """
+    PARAMETERIZED (NFL Content Generation Part B): `tolerance_for_key` is
+    now an injected callable (str -> float) instead of this function
+    always calling the module-level _tolerance_for_key by name. MLB's
+    real call sites pass mlb_tolerance_for_key (see its own docstring for
+    why a callable, not a config object, was the right shape here) —
+    behavior for MLB is unchanged, confirmed by a real before/after
+    regression diff, not just passing tests.
+
     Every number appearing in a reason's prose must appear somewhere among
     the real source-fact VALUES, within a tolerance appropriate to that
-    specific value's type (see _tolerance_for_key). This is defense in
-    depth on top of validate_citations() — a model can cite a real key and
-    still misstate its value; this catches that case specifically.
+    specific value's type (see the injected tolerance_for_key). This is
+    defense in depth on top of validate_citations() — a model can cite a
+    real key and still misstate its value; this catches that case
+    specifically.
 
     TOLERANCE IS PER-FIELD, NOT FLAT: a percentage/score-type value
     (skill_score, the pillar_detail percentile components, temp_f,
@@ -519,8 +657,13 @@ def validate_numeric_grounding(why_reasons: list, source_facts: dict) -> list[di
     pitched), not a separate factual number, and word-boundary-anchoring
     keeps this narrow: a genuinely different number that happens to
     follow a slash or the word "per" for an unrelated reason is untouched.
+
+    ORDINALS ("3rd", "89th", "21st") ARE EXCLUDED BY SPAN, not by a
+    lookahead inside _NUMBER_PATTERN itself — see _NUMBER_PATTERN's own
+    docstring for the real multi-digit-ordinal bug this replaced (found
+    during NFL Content Generation Part C's validation, not NFL-specific).
     """
-    source_pairs = _source_numbers_with_tolerance(source_facts)
+    source_pairs = _source_numbers_with_tolerance(source_facts, tolerance_for_key)
 
     violations = []
     for i, reason in enumerate(why_reasons):
@@ -547,6 +690,7 @@ def validate_numeric_grounding(why_reasons: list, source_facts: dict) -> list[di
         # no "claim" here to check) -- just excluded from the point-value
         # pass below.
         exclude_spans += [m.span(1) for m in _PER_NINE_PATTERN.finditer(text)]
+        exclude_spans += [m.span() for m in _ORDINAL_PATTERN.finditer(text)]
 
         for m in _NUMBER_PATTERN.finditer(text):
             if any(m.start() >= lo and m.end() <= hi for lo, hi in exclude_spans):
@@ -587,20 +731,53 @@ def _expected_star_range(real_score) -> tuple:
     return (1, 2)
 
 
-def validate_star_consistency(why_reasons: list, candidate: dict) -> list[dict]:
-    """A reason's stated `stars` must fall within a reasonable range for
-    the REAL score of the pillar it's tagged with — treats the star rating
-    itself as a claim that needs grounding, not just the prose."""
-    c = candidate.get("candidate", candidate)
-    pillar_detail = c.get("pillar_detail") or {}
+# {pillar_name: source_fact_key holding that pillar's real 0-100 score}
+# — the mapping validate_star_consistency uses to look up a pillar's real
+# score, now via already-flattened source_facts rather than reaching back
+# into candidate["pillar_detail"] directly (see validate_star_consistency's
+# own docstring for why this generalizes more cleanly than an MLB-specific
+# nested-dict lookup would). Derived from PILLAR_NAMES + flatten_source_
+# facts' own dotted-path convention ("pillar_detail.{pillar}.score"), so
+# it can never drift out of sync with what flatten_source_facts actually
+# produces for MLB.
+STAR_PILLAR_SCORE_KEYS = {p: f"pillar_detail.{p}.score" for p in PILLAR_NAMES}
 
+
+def validate_star_consistency(why_reasons: list, source_facts: dict, pillar_names: tuple, pillar_score_keys: dict) -> list[dict]:
+    """
+    PARAMETERIZED (NFL Content Generation Part B) — REWORKED, not just a
+    parameter swap: previously took `candidate` and reached directly into
+    candidate["candidate"]["pillar_detail"][pillar]["score"], an MLB-only
+    nested shape NFL has no equivalent of at all. Now takes the already-
+    flattened `source_facts` (the SAME dict every other validator already
+    operates on) plus `pillar_score_keys` — a {pillar_name: source_fact_
+    key} mapping telling this function which flat key holds each pillar's
+    real score. MLB passes STAR_PILLAR_SCORE_KEYS above (built from
+    flatten_source_facts' own "pillar_detail.{pillar}.score" convention,
+    so it's guaranteed to match what flatten_source_facts actually
+    produced — not a second, independently-typed path to the same data).
+    A future NFL writer (Part C) would pass its own flat mapping (e.g.
+    {"td_opportunity": "td_opportunity"} — no nesting to point through at
+    all) and needs no other change to this function.
+
+    Confirmed byte-identical behavior for MLB by construction: source_
+    facts["pillar_detail.{pillar}.score"] holds exactly the same value the
+    old code's pillar_detail.get(pillar, {}).get("score") did (both are
+    None when the pillar has no "score" key, or when the pillar isn't
+    present at all) — verified with a real before/after regression diff,
+    not assumed from the construction alone.
+
+    A reason's stated `stars` must fall within a reasonable range for
+    the REAL score of the pillar it's tagged with — treats the star rating
+    itself as a claim that needs grounding, not just the prose.
+    """
     violations = []
     for i, reason in enumerate(why_reasons):
         pillar = reason.get("pillar")
         stars = reason.get("stars")
-        if pillar not in PILLAR_NAMES or stars is None:
+        if pillar not in pillar_names or stars is None:
             continue  # a missing/invalid pillar or stars is a schema-shape violation, not this check's job
-        real_score = (pillar_detail.get(pillar) or {}).get("score")
+        real_score = source_facts.get(pillar_score_keys.get(pillar))
         lo, hi = _expected_star_range(real_score)
         if not (lo <= stars <= hi):
             violations.append({
