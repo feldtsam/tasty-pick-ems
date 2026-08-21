@@ -1,5 +1,16 @@
 """
-NFL Picks Trend Shelves — Red Zone Trends, RB Trends, WR Trends, TE Trends.
+NFL Picks Shelves — all seven, fixed blueprint order: Red Zone Trends,
+RB Trends, WR Trends, TE Trends, ATTD +300-499, ATTD +500-699, ATTD +700+.
+
+CORRECTION to a claim this docstring used to make: the three ATTD
+odds-band shelves were NOT already built elsewhere — that line was
+aspirational/stale, confirmed false by direct search (zero odds-band
+shelf logic existed anywhere in nfl/ outside this sentence) before the
+NFL Shelf Curation & Tasty Six work built them here, in this file,
+alongside the home-shelf-assignment layer that consumes all seven
+(see curate_home_shelves.py). Left as a cautionary note for whoever
+reads this next: a docstring claim needs the same real-code
+verification as any other, not just at commit time.
 
 Built per the approved Trend Shelf Architecture review (this session):
 Red Zone Trends answers "who is getting the opportunities" (ranked by
@@ -7,10 +18,13 @@ TD Opportunity); the three position shelves answer "whose ROLE is
 changing in a way that could create opportunity" (ranked by Role &
 Momentum, position-filtered). universal_tpe_score (the `tpe_score`
 column — same thing, scoring.py's own function name vs. the stored
-column name) is never the primary sort for any of these four shelves;
+column name) is never the primary sort for any of these FOUR shelves;
 it's a secondary display field and a tiebreaker only. The three
-odds-band Picks shelves (already built, not touched here) remain the
-place tpe_score IS the primary ranking signal.
+ATTD odds-band shelves (build_odds_band_shelf, added alongside the
+home-shelf-assignment work) are the one place tpe_score IS the primary
+ranking signal — banded by consensus_price_american instead of pillar-
+gated, since there's no single themed pillar to rank a composite-driven
+shelf by.
 
 This module is pure logic over an already-scored `weekly` DataFrame
 (run_pipeline's output) — no I/O, no new pillar math, nothing here
@@ -178,6 +192,41 @@ def _rank_pool(pool: pd.DataFrame, primary_col: str, extra_tiebreak_cols: list =
     return pool.sort_values(cols, ascending=False)
 
 
+def eligible_pool(weekly: pd.DataFrame, primary_col: str, odds_floor: int, position_filter: str = None) -> pd.DataFrame:
+    """
+    The FULL eligible pool for one shelf's own primary signal — ATTD-
+    eligible, has a real primary_col value, restricted to RB/WR/TE
+    (narrowed further to one position when position_filter is given) —
+    BEFORE any completeness-threshold gating or shelf_size truncation.
+
+    Extracted out of _build_shelf and made PUBLIC (no leading
+    underscore), deliberately — added for cross-shelf HOME assignment
+    (see curate_home_shelves.py), which needs the full untruncated pool
+    across all seven shelves, not just each shelf's own already-capped
+    top-6 display list, the same reason MLB's shelf_curation.py needed
+    an analogous eligible/rank split for its own cross-shelf player
+    dedup. This is real, validated business logic (position scoping,
+    ATTD floor) that a companion orchestration module needs to stay in
+    sync with, not a trivial one-liner worth duplicating across modules
+    the way this codebase normally prefers (see shelves.py's own _as_list
+    for that more common pattern) — an explicit, reasoned exception, not
+    a casual reach into an implementation detail. _build_shelf's own
+    behavior is unchanged — it now calls this instead of duplicating the
+    same three-line filter inline; confirmed a strict no-op against the
+    full real historical backfill (test_shelves.py, unchanged pass/fail).
+
+    Position-group scoping matches _build_shelf's own real bug fix
+    (2025 Week 2, Josh Allen/Bo Nix — see _build_shelf's docstring):
+    always RB/WR/TE, never "no restriction at all" just because
+    position_filter is None.
+    """
+    pool = weekly[_attd_eligible(weekly, odds_floor) & weekly[primary_col].notna()].copy()
+    pool = pool[pool["position_group"].isin(["RB", "WR", "TE"])]
+    if position_filter is not None:
+        pool = pool[pool["position_group"] == position_filter]
+    return pool
+
+
 def _build_shelf(
     weekly: pd.DataFrame,
     primary_col: str,
@@ -189,8 +238,8 @@ def _build_shelf(
     extra_tiebreak_cols: list = None,
 ) -> dict:
     """
-    Shared shelf-builder for all four shelves — position_filter="RB"/
-    "WR"/"TE" restricts to one position; None means "every RB/WR/TE"
+    Shared shelf-builder for all four TREND shelves — position_filter=
+    "RB"/"WR"/"TE" restricts to one position; None means "every RB/WR/TE"
     (Red Zone Trends), NOT "no position restriction at all". A real bug
     caught directly in historical validation (2025 Week 2): Josh Allen
     and Bo Nix — both quarterbacks — appeared on Red Zone Trends,
@@ -202,17 +251,14 @@ def _build_shelf(
     meaningful for a receiving/rushing position-group aggregation") —
     Red Zone Trends is no exception, it's just not restricted to ONE of
     the three. Fixed to always require position_group in {RB, WR, TE},
-    with position_filter narrowing further to one of them when given.
+    with position_filter narrowing further to one of them when given
+    (now enforced in eligible_pool, above).
     Returns {"cards": [...], "gated_pool_size": int, "below_gate_pool_size":
     int, "fallback_count": int, "eligible_pool_size": int} — the counts
     validation needs to report honestly (section 4/addendum), not just
     the final card list.
     """
-    pool = weekly[_attd_eligible(weekly, odds_floor) & weekly[primary_col].notna()].copy()
-    pool = pool[pool["position_group"].isin(["RB", "WR", "TE"])]
-    if position_filter is not None:
-        pool = pool[pool["position_group"] == position_filter]
-
+    pool = eligible_pool(weekly, primary_col, odds_floor, position_filter)
     eligible_pool_size = len(pool)
     gated = pool[pool[completeness_col] >= threshold]
     below_gate = pool[pool[completeness_col] < threshold]
@@ -434,15 +480,96 @@ def build_wr_trends(weekly: pd.DataFrame, pbp: pd.DataFrame = None, config: dict
     return result
 
 
-def build_all_shelves(weekly: pd.DataFrame, pbp: pd.DataFrame = None, config: dict = CONFIG) -> dict:
+ODDS_BANDS = [
+    ("ATTD +300-499", 300, 499),
+    ("ATTD +500-699", 500, 699),
+    ("ATTD +700+", 700, None),
+]
+
+
+def odds_band_eligible(weekly: pd.DataFrame, lo: int, hi) -> pd.DataFrame:
     """
-    All four shelves at once. pbp is optional (only needed for WR
-    Trends' target-share extension); omit it to build all four shelves
-    from `weekly` alone.
+    The full eligible pool for one ATTD odds band — RB/WR/TE only
+    (matching every other shelf's own scope), a real tpe_score, and
+    consensus_price_american actually falling in [lo, hi] (hi=None for
+    the open-ended +700+ band, same "no upper bound" convention ODDS_
+    TIERS uses on the MLB side). BANDED, not floored — deliberately
+    different from eligible_pool's own attd_odds_floor (>=300, no
+    upper bound) used by the four trend shelves: a player can be
+    ATTD-eligible for a trend shelf while sitting in exactly one of
+    these three price bands, never more than one.
+    """
+    odds = weekly["consensus_price_american"]
+    in_band = odds.notna() & (odds >= lo) & (hi is None or odds <= hi)
+    pool = weekly[in_band & weekly["position_group"].isin(["RB", "WR", "TE"]) & weekly["tpe_score"].notna()].copy()
+    return pool
+
+
+def _odds_band_story(row: pd.Series) -> dict:
+    """
+    Odds-band shelves are ranked by the final composite (tpe_score), not
+    one themed pillar the way the four trend shelves are — there's no
+    "proven vs. emerging"-style split to draw a specific narrative from
+    here. Cites the real composite score and evidence quality directly
+    rather than inventing a themed storyline these shelves don't have.
     """
     return {
-        "red_zone_trends": build_red_zone_trends(weekly, config),
-        "rb_trends": build_rb_trends(weekly, config),
-        "wr_trends": build_wr_trends(weekly, pbp, config),
-        "te_trends": build_te_trends(weekly, config),
+        "headline": "The model's combined read has him near the top of this price range.",
+        "evidence": f"Universal TPE Score {row['tpe_score']:.0f}/100, evidence quality {row['evidence_quality']:.0f}/100",
     }
+
+
+def _build_odds_band_shelf(weekly: pd.DataFrame, lo: int, hi, shelf_size: int) -> dict:
+    """
+    Shared builder for the three ATTD odds-band shelves (5-7) — ranked
+    straight by tpe_score (the final composite IS the primary signal
+    here, unlike the four trend shelves where it's a tiebreaker only —
+    see module docstring's own principle #3). No completeness-threshold
+    gate / fallback split the way the trend shelves have: there's no
+    single pillar's completeness column that's the natural gate for a
+    composite-ranked shelf, so every real ATTD-eligible RB/WR/TE
+    actually in this odds band is eligible outright, same shape as
+    _build_shelf's own return contract (cards/eligible_pool_size/etc.)
+    so downstream code (home-shelf assignment, card finalization)
+    doesn't need a special case for these three shelves.
+    """
+    pool = odds_band_eligible(weekly, lo, hi)
+    eligible_pool_size = len(pool)
+    pool["_primary_value"] = pool["tpe_score"]
+    pool["_completeness_value"] = pool["evidence_quality"]
+
+    ranked = pool.sort_values(["tpe_score", "evidence_quality"], ascending=False)
+    cards = []
+    for _, row in ranked.iterrows():
+        cards.append({"row": row, "meets_evidence_threshold": True})
+        if len(cards) >= shelf_size:
+            break
+
+    return {
+        "cards": cards, "eligible_pool_size": eligible_pool_size,
+        "gated_pool_size": eligible_pool_size, "below_gate_pool_size": 0, "fallback_count": 0,
+    }
+
+
+def build_odds_band_shelf(weekly: pd.DataFrame, lo: int, hi, config: dict = CONFIG) -> dict:
+    result = _build_odds_band_shelf(weekly, lo, hi, config["shelf_size"])
+    result["cards"] = _finalize_cards(result, _odds_band_story)
+    return result
+
+
+def build_all_shelves(weekly: pd.DataFrame, pbp: pd.DataFrame = None, config: dict = CONFIG) -> dict:
+    """
+    All seven shelves at once, fixed blueprint order: Red Zone Trends,
+    RB Trends, WR Trends, TE Trends, then the three ATTD odds-band
+    shelves. pbp is optional (only needed for WR Trends' target-share
+    extension); omit it to build all seven shelves from `weekly` alone.
+    """
+    shelves = {
+        "Red Zone Trends": build_red_zone_trends(weekly, config),
+        "RB Trends": build_rb_trends(weekly, config),
+        "WR Trends": build_wr_trends(weekly, pbp, config),
+        "TE Trends": build_te_trends(weekly, config),
+    }
+    for label, lo, hi in ODDS_BANDS:
+        shelves[label] = build_odds_band_shelf(weekly, lo, hi, config)
+    return shelves
