@@ -87,6 +87,50 @@ HISTORICAL_CSV = Path(__file__).resolve().parent / "player_redzone_weekly.csv"
 RECONCILED_MARKET_VALUE_COLUMNS = ["market_value_score", "consensus_implied_probability", "best_price"]
 
 
+def week_is_complete(season: int, week: int) -> dict:
+    """
+    Real per-game completeness check — the readiness gate reconcile_week()
+    itself has never had (see this module's own investigation: the only
+    existing guard, `len(reconciled) == 0`, checks "did any real red-zone
+    touch get recorded," not "have all of this week's games finished").
+
+    Reuses backfill_redzone.load_schedules (a thin wrapper around
+    nfl_data_py.import_schedules()) rather than calling import_schedules()
+    a second, redundant way — same data, already imported into this file.
+
+    A game is "final" when BOTH home_score and away_score are non-null —
+    confirmed directly against a real, fully-completed season (2025):
+    0% null rate on both columns. Neither column is ever partially
+    populated in practice (a game reports both scores or neither), but
+    checking both rather than either alone costs nothing and doesn't
+    depend on that always holding.
+
+    total_games == 0 (a week number with no scheduled games at all, e.g.
+    a bye week for the whole league or a nonexistent week) deliberately
+    reports all_final=False, not True — "nothing to check" should never
+    read as "everything's done."
+    """
+    schedules = load_schedules([season])
+    week_games = schedules[schedules["week"] == week]
+    total_games = len(week_games)
+
+    final_mask = week_games["home_score"].notna() & week_games["away_score"].notna()
+    final_games = int(final_mask.sum())
+    pending = week_games[~final_mask]
+
+    return {
+        "season": season,
+        "week": week,
+        "all_final": total_games > 0 and final_games == total_games,
+        "total_games": total_games,
+        "final_games": final_games,
+        "pending_games": [
+            {"home_team": r["home_team"], "away_team": r["away_team"], "gameday": r["gameday"]}
+            for _, r in pending.iterrows()
+        ],
+    }
+
+
 def reconcile_week(
     season: int,
     week: int,

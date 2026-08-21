@@ -77,6 +77,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # never really being installed by Vercel's build even before this file
 # started importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+# nfl/scripts/, so `from reconcile_week import ...` resolves — the poller
+# endpoint above never needed this (market_value.py lives in nfl/ itself),
+# but reconcile_week.py lives in scripts/ alongside backfill_redzone.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from flask import Flask, jsonify, request
 import nfl_data_py as nfl
@@ -90,6 +94,7 @@ from market_value import (
     parse_attd_event,
     snapshot_scoring_inputs,
 )
+from reconcile_week import reconcile_week, week_is_complete
 
 app = Flask(__name__)
 
@@ -296,5 +301,126 @@ def poll_market_value_health_check():
                  "player_anytime_td market. Parses, matches, and scores each event's real quotes "
                  "and forwards the resulting price-history rows to Lovable. Zero books posted for "
                  "an event is a normal result (see events_with_no_market in the response), not an error.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/reconcile-week", methods=["POST"])
+def reconcile_week_endpoint():
+    """
+    POST body: {"season": int, "week": int}.
+
+    AUTH: check_pipeline_secret() (X-Pipeline-Secret / PIPELINE_INCOMING_
+    SECRET) — the SAME mechanism /api/poll-market-value already uses for
+    its own incoming trigger, not HMAC/compute_signature. That distinction
+    matters and was confirmed directly, not assumed: compute_signature/
+    serialize_payload (NFL_PIPELINE_WEBHOOK_SECRET) are this codebase's
+    OUTBOUND signing for a genuinely variable, attacker-shaped body being
+    written TO Lovable (see check_pipeline_secret's own docstring) —
+    reconciliation has no such outbound Lovable write at all (see below),
+    so there's nothing here to sign that way; a small, fixed, Make.com-
+    only incoming trigger is exactly what check_pipeline_secret is for.
+
+    THE HARD SAFETY GATE: week_is_complete() runs FIRST, always, before
+    anything destructive. If any of the week's real games aren't final
+    yet, returns 200 status="not_ready" and reconcile_week() is never
+    called — even if Make.com's own scheduling/filter logic is somehow
+    wrong, this is the backstop that makes running reconciliation against
+    an incomplete week structurally impossible from this endpoint, not
+    just discouraged by convention.
+
+    NO LOVABLE FORWARDING HERE, deliberately — unlike /api/poll-market-
+    value, reconcile_week() only ever writes to a local CSV file
+    (player_redzone_weekly.csv) and archives the stub file; there's no
+    webhook write step to report a lovable_status_code/forward_error
+    for. Using the parts of that endpoint's response convention that
+    actually apply here (structured status, clear error reporting) and
+    skipping the parts that don't, rather than forcing in fields that
+    would always be null.
+
+    SCOPED TO THE TARGET SEASON ONLY (historical_seasons=[season]), not
+    reconcile_week()'s own default (backfill_redzone.SEASONS — ALL of
+    2022/2024/2025 plus the target season, every call). Correctness:
+    add_rolling_windows groups by (player_id, season), so trailing
+    windows already reset at season boundaries — a season's own
+    reconciliation never needs a different season's play-by-play.
+    Performance, measured directly: single-season run_pipeline (2025
+    alone) completes in ~16s locally vs. ~45s for the full 3-season
+    default — roughly a 3x reduction, though this is a LOCAL timing, not
+    a real Vercel benchmark; treat it as directional, not a guarantee
+    against Vercel's actual configured timeout.
+
+    THIS REQUIRED A REAL FIX FIRST, not just a config change — an earlier
+    attempt at this exact scoping crashed (KeyError: 'position', real
+    2025 Week 10 test): redzone._skill_position_depth_chart unconditionally
+    read a "position" column that only exists in the pre-2025 depth-chart
+    schema, and a depth_charts pull scoped to ONLY a 2025+ season has none
+    of that schema's columns at all (confirmed directly: nfl_data_py.
+    import_depth_charts([2025]) alone returns just dt/team/player_name/
+    gsis_id/pos_abb/pos_rank/...) — _combined_depth_chart's old+new-schema
+    concat needs at least one old-schema season actually present in the
+    pull for that column to exist. Fixed at the source in redzone.py
+    (_skill_position_depth_chart returns an empty, correctly-shaped frame
+    when "position" isn't present, instead of raising) — confirmed this
+    is a strict no-op for every existing multi-season call site (0 diff
+    cells across all 107 columns, full historical backfill re-run before
+    vs. after) and confirmed it actually fixes the single-season case
+    (real 2025-only run_pipeline: depth_rank now populated for 84.7% of
+    Week 10 rows, not silently all-NaN). See redzone.py's own docstring
+    for the full investigation.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        season = int(data.get("season"))
+        week = int(data.get("week"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
+
+    readiness = week_is_complete(season, week)
+    if not readiness["all_final"]:
+        reason = f"{readiness['total_games'] - readiness['final_games']} of {readiness['total_games']} games not yet final"
+        print(f"[reconcile-week] season={season} week={week} status=not_ready reason={reason!r}", flush=True)
+        return jsonify({
+            "status": "not_ready",
+            "reason": reason,
+            "pending_games": readiness["pending_games"],
+        }), 200
+
+    print(f"[reconcile-week] season={season} week={week} status=ready -- proceeding to reconcile", flush=True)
+    try:
+        reconciled = reconcile_week(season, week, historical_seasons=[season])
+    except Exception as e:
+        print(f"[reconcile-week] season={season} week={week} status=error error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
+
+    rows_reconciled = len(reconciled)
+    rows_with_market_value = int(reconciled["market_value_score"].notna().sum())
+    print(
+        f"[reconcile-week] season={season} week={week} status=success "
+        f"rows_reconciled={rows_reconciled} rows_with_market_value={rows_with_market_value}",
+        flush=True,
+    )
+    return jsonify({
+        "status": "success",
+        "season": season,
+        "week": week,
+        "rows_reconciled": rows_reconciled,
+        "rows_with_market_value": rows_with_market_value,
+    }), 200
+
+
+@app.route("/api/reconcile-week", methods=["GET"])
+def reconcile_week_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"season\": int, \"week\": int}. Checks week_is_complete() first — if any "
+                 "of that week's real games aren't final yet, returns status=\"not_ready\" and never "
+                 "runs reconciliation. Only calls reconcile_week() (destructive: replaces this week's "
+                 "rows in player_redzone_weekly.csv and archives the stub file) once every game is "
+                 "confirmed final.",
         "deployed_via": "github-auto-deploy",
     })

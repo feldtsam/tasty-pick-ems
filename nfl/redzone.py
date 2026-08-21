@@ -453,7 +453,25 @@ def _skill_position_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
     depth_position, e.g. a 3-WR personnel package listing all three as
     "1"), so this only ever compares a player against his own rank
     history over time, never against teammates at a single point in time.
+
+    A depth_charts pull scoped to ONLY 2025+ season(s) has NONE of this
+    old schema's columns at all — confirmed directly: nfl_data_py.
+    import_depth_charts([2025]) alone returns just dt/team/player_name/
+    gsis_id/pos_abb/pos_rank/... (no "position", "season", "week",
+    "depth_team", "club_code", or "depth_position" column exists to filter
+    on). That's genuinely nothing for THIS schema to parse, not an error —
+    returns an empty, correctly-shaped frame instead of raising, so
+    _combined_depth_chart's concat (and everything downstream) sees "zero
+    old-schema rows", the same honest answer as if an old-schema pull had
+    simply matched nothing. A season/week mix that includes at least one
+    pre-2025 season is completely unaffected — "position" exists there
+    (nfl_data_py's own concat across seasons produces the union of both
+    schemas' columns), so this early return never triggers for any call
+    site already working today.
     """
+    if "position" not in depth_charts.columns:
+        return pd.DataFrame(columns=["gsis_id", "season", "week", "club_code", "depth_position", "depth_rank"])
+
     dc = depth_charts[
         depth_charts["position"].isin(["RB", "WR", "TE"])
         & (depth_charts["depth_position"] == depth_charts["position"])
