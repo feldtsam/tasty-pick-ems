@@ -122,7 +122,7 @@ from shelves import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
 from generate_tasty_six_content import generate_nfl_tasty_six_draft  # noqa: E402
-from nfl_writer_common import nfl_confidence_band_for_score  # noqa: E402
+from nfl_writer_common import nfl_confidence_band_for_score, nfl_regular_row_confidence_band_for_score  # noqa: E402
 
 SHELF_ORDER = [
     "Red Zone Trends", "RB Trends", "WR Trends", "TE Trends",
@@ -467,10 +467,18 @@ _DETERMINISTIC_PILLAR_FOR_SHELF = {
 def _deterministic_why_reasons(row: pd.Series, shelf_name: str, story: dict) -> list:
     """
     Wraps Part A's deterministic single headline+evidence text into the
-    real why_reasons column's {pillar, stars, reason_text, source_fact_
-    keys} array shape — the same shape Part C's LLM writer produces for
-    Tasty Six, so the real column is genuinely consistent across both
-    content paths, not two different types depending on row.
+    real why_reasons column's real inner shape — {pillar, stars, text,
+    citation}, confirmed directly against the live route's Zod schema
+    (NOT {reason_text, source_fact_keys}, the field names an earlier,
+    incomplete investigation assumed — see generate_tasty_six_content.py
+    for where that MLB-inherited naming still lives internally, and
+    shape_content_draft_rows for the translation layer between the two).
+    `citation` is built as an array (same one real column name this
+    reason is grounded in) — the exact real Zod type for `citation`
+    wasn't confirmed beyond "the field is named citation, not source_
+    fact_keys"; an array is the closest faithful carry-over of what this
+    function already tracked, flagged as an assumption pending real-
+    write confirmation, not asserted as verified.
 
     DESIGN CHOICE, reported per explicit instruction rather than just
     silently decided: a SINGLE-ITEM array, not the LLM writer's 2-3 item
@@ -511,8 +519,8 @@ def _deterministic_why_reasons(row: pd.Series, shelf_name: str, story: dict) -> 
     return [{
         "pillar": pillar,
         "stars": stars,
-        "reason_text": story["evidence"],
-        "source_fact_keys": [source_key],
+        "text": story["evidence"],
+        "citation": [source_key],
     }]
 
 
@@ -538,12 +546,25 @@ def shape_content_draft_rows(
 ) -> list:
     """
     One dict per (surviving-the-cap) player-shelf placement, shaped to
-    match the REAL nfl_content_drafts columns exactly (confirmed
-    directly, not the placeholder names this module used before this
-    task): player_id, player_name, event_id, team, opponent, matchup,
-    odds, kickoff_utc, season, week, shelf, rank, is_tasty_six,
-    review_status, title, editorial_sentence, why_reasons,
-    confidence_band.
+    match the REAL nfl_content_drafts write schema exactly — confirmed
+    directly against the live route's own Zod schema (a real, earlier
+    attempt at this shape was REJECTED with a 400 by the real route;
+    this version reflects that real error, not a second guess): player_
+    id, event_id, shelf, writer_type, is_tasty_six, rank, player_name,
+    team, opponent, matchup, odds, kickoff_utc, season, week, title,
+    editorial_sentence, why_reasons ({pillar, stars, text, citation} —
+    NOT {reason_text, source_fact_keys}, an earlier incomplete
+    investigation's assumption), confidence_band, model_name,
+    validation_passed, validation_issues, review_status.
+
+    title, why_reasons, confidence_band, validation_passed are REQUIRED
+    non-null by the real schema — a row with no real content (no
+    anthropic_api_key given, or the Tasty Six writer call never ran) has
+    title=None and would FAIL real validation if written; the caller
+    (see nfl/api/index.py's endpoint) is responsible for filtering those
+    out before calling write_content_draft_rows, not this function —
+    shape_content_draft_rows still reports every real row, content or
+    not, for accurate curation reporting.
 
     event_id = game_id (nflverse's own real per-game identifier, already
     unique, already on every scored row — no new identifier scheme
@@ -556,18 +577,41 @@ def shape_content_draft_rows(
     same "missing input -> honest None, not a guess" fallback as every
     other optional parameter here.
 
+    writer_type: "shelf_card" for regular rows, "tasty_six" for Tasty
+    Six rows — the real DB upsert key includes this field.
+
+    CONFIDENCE_BAND IS REQUIRED, NON-NULL ON EVERY ROW, regular or Tasty
+    Six — a real, direct finding from the live schema (an earlier
+    version left it None for regular rows and got rejected). Two
+    SEPARATE band functions, not one reused across both: nfl_regular_
+    row_confidence_band_for_score() (regular rows — spans the FULL real
+    tpe_score population, always returns a real band, never None) vs.
+    nfl_confidence_band_for_score() (Tasty Six — the approved, narrower
+    tpe_score>=55 thresholds). See nfl_writer_common.py for why these
+    can't share one function: they're calibrated against genuinely
+    different real populations.
+
     CONTENT: regular (non-Tasty-Six) rows get shelves.py's deterministic
-    story generators (Part A), reshaped into the real why_reasons array
+    story generators (Part A), reshaped into the real why_reasons shape
     via _deterministic_why_reasons — real, grounded, no LLM call.
     editorial_sentence stays None for these rows (MLB's own regular-
-    card-has-no-editorial-sentence convention, reused).
+    card-has-no-editorial-sentence convention, reused). writer_type=
+    "shelf_card", model_name=None, validation_passed=True, validation_
+    issues=[] — the deterministic system has no separate pass/fail
+    validation step of its own (it's grounded by construction, not
+    validated after the fact the way LLM output is), so True/[] is the
+    honest default, not a placeholder standing in for a real check.
 
     Tasty Six rows get a REAL call into generate_tasty_six_content.py's
     generate_nfl_tasty_six_draft() (Part C's actual LLM writer) — ONLY
     when `anthropic_api_key` is provided. Omit it (the default) and
-    Tasty Six rows keep title/editorial_sentence/why_reasons/confidence_
-    band as None — the same honest "not generated yet" signal as before
-    this task, not an exception. confidence_band is derived from
+    Tasty Six rows keep title/editorial_sentence/why_reasons as None/[]
+    — the same honest "not generated yet" signal as before this task,
+    not an exception — but STILL get a real confidence_band (required).
+    model_name/validation_passed/validation_issues are threaded straight
+    through from the real draft's own already-computed values (the real
+    citation/numeric-grounding/star-consistency validation Part C's
+    writer performs), never hardcoded. confidence_band is derived from
     tpe_score via nfl_confidence_band_for_score() (now-approved
     thresholds) before the writer call; a tpe_score outside its real
     [55, 100] range (shouldn't happen for a genuine Tasty Six row, which
@@ -604,27 +648,66 @@ def shape_content_draft_rows(
             if pd.notna(ku) and hasattr(ku, "isoformat"):
                 kickoff_utc = ku.isoformat()
 
-        title = editorial_sentence = confidence_band = None
-        why_reasons = None
+        title = editorial_sentence = None
+        why_reasons = []
+        writer_type = "shelf_card"
+        model_name = None
+        validation_passed = True
+        validation_issues = []
 
         if is_tasty_six:
+            writer_type = "tasty_six"
+            # REQUIRED, non-null real string on every written row (found
+            # directly against the live schema) — computed even when no
+            # real LLM content ends up generated below, so a Tasty Six
+            # row missing content (no anthropic_api_key, or a tpe_score
+            # outside the real gated range) still has a real band, not a
+            # blocker for review-queue display. Overwritten by the real
+            # draft's own confidence_band below when a real call happens.
+            confidence_band = nfl_regular_row_confidence_band_for_score(
+                full_row.get("tpe_score") if full_row is not None else None,
+            )
             if full_row is not None and anthropic_api_key:
                 band = nfl_confidence_band_for_score(full_row.get("tpe_score"))
                 if band is not None:
                     draft = generate_nfl_tasty_six_draft(full_row.to_dict(), r["home_shelf"], band, anthropic_api_key)
                     title = draft.get("title")
                     editorial_sentence = draft.get("editorial_sentence")
-                    why_reasons = draft.get("why_reasons")
-                    confidence_band = draft.get("confidence_band")
+                    # Translation layer: Part C's internal shape (reason_
+                    # text/source_fact_keys, matching card_writer_common.
+                    # py's shared validators, which stay untouched) ->
+                    # the real column's shape (text/citation) -- ONLY at
+                    # this write-shaping boundary, not upstream.
+                    raw_reasons = draft.get("why_reasons") or []
+                    why_reasons = [
+                        {
+                            "pillar": wr.get("pillar"),
+                            "stars": wr.get("stars"),
+                            "text": wr.get("reason_text"),
+                            "citation": wr.get("source_fact_keys"),
+                        }
+                        for wr in raw_reasons
+                    ]
+                    confidence_band = draft.get("confidence_band") or confidence_band
+                    model_name = draft.get("model_name")
+                    validation_passed = bool(draft.get("validation_passed", True))
+                    validation_issues = draft.get("validation_issues") or []
         elif full_row is not None:
             story = _story_for_row(full_row, r["home_shelf"])
             title = story["headline"]
             why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
+            confidence_band = nfl_regular_row_confidence_band_for_score(full_row.get("tpe_score"))
+        else:
+            confidence_band = nfl_regular_row_confidence_band_for_score(None)
 
         rows.append({
             "player_id": r["player_id"],
-            "player_name": r["player_name"],
             "event_id": event_id,
+            "shelf": r["home_shelf"],
+            "writer_type": writer_type,
+            "is_tasty_six": is_tasty_six,
+            "rank": int(r["rank"]),
+            "player_name": r["player_name"],
             "team": team,
             "opponent": opponent,
             "matchup": matchup,
@@ -632,14 +715,14 @@ def shape_content_draft_rows(
             "kickoff_utc": kickoff_utc,
             "season": season,
             "week": week,
-            "shelf": r["home_shelf"],
-            "rank": int(r["rank"]),
-            "is_tasty_six": is_tasty_six,
-            "review_status": "pending_review",
             "title": title,
             "editorial_sentence": editorial_sentence,
             "why_reasons": why_reasons,
             "confidence_band": confidence_band,
+            "model_name": model_name,
+            "validation_passed": validation_passed,
+            "validation_issues": validation_issues,
+            "review_status": "pending_review",
         })
     return rows
 

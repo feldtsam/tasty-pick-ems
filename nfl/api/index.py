@@ -552,7 +552,18 @@ def curate_and_write_drafts_endpoint():
     all_rows = _json_safe(result["content_draft_rows"])
     preview_only = bool(data.get("preview_only"))
 
-    rows_to_write = [] if preview_only else all_rows
+    # Real schema requires title (non-empty string), why_reasons must be
+    # a real array (empty is fine per the schema, but a row with no
+    # generated content at all has why_reasons=[] AND title=None, and a
+    # null title alone would fail real validation outright) -- rows with
+    # no real content (no anthropic_api_key given, or the writer call
+    # never produced anything) are never sent, regardless of scoping.
+    # Genuinely reportable in curated_rows either way (see shape_
+    # content_draft_rows) -- just never written incomplete.
+    content_ready_rows = [r for r in all_rows if r.get("title")]
+    rows_without_content = len(all_rows) - len(content_ready_rows)
+
+    rows_to_write = [] if preview_only else content_ready_rows
     if not preview_only:
         if player_ids_to_write:
             rows_to_write = [r for r in rows_to_write if r["player_id"] in set(player_ids_to_write)]
@@ -571,7 +582,8 @@ def curate_and_write_drafts_endpoint():
 
     print(
         f"[curate-and-write-drafts] season={season} week={week} "
-        f"rows_curated={len(all_rows)} rows_written={len(rows_to_write)} "
+        f"rows_curated={len(all_rows)} rows_without_content={rows_without_content} "
+        f"rows_written={len(rows_to_write)} "
         f"tasty_six_curated={sum(1 for r in all_rows if r['is_tasty_six'])} "
         f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
         f"forward_error={forward_result['error']!r} "
@@ -584,6 +596,7 @@ def curate_and_write_drafts_endpoint():
         "week": week,
         "preview_only": preview_only,
         "rows_curated": len(all_rows),
+        "rows_without_content": rows_without_content,
         "curated_rows": all_rows if preview_only else None,
         "rows_written": len(rows_to_write),
         "written_rows": rows_to_write,

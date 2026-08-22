@@ -289,3 +289,50 @@ def nfl_confidence_band_for_score(tpe_score) -> str | None:
         elif lo <= tpe_score < hi:
             return band
     return None
+
+
+# ---------------------------------------------------------------------------
+# REGULAR (non-Tasty-Six, deterministic) row confidence-band thresholds —
+# a SEPARATE set from NFL_CONFIDENCE_BAND_THRESHOLDS above, deliberately.
+# The real nfl_content_drafts schema requires confidence_band as a non-
+# null string on EVERY written row, not just Tasty Six ones (found
+# directly against the live route's real Zod schema) — but NFL_
+# CONFIDENCE_BAND_THRESHOLDS was calibrated only against the narrow
+# tpe_score>=55 Tasty-Six-qualifying slice and returns None below that,
+# which would make most regular rows unwritable (a real George Holani
+# row, tpe_score=36, is nowhere near that range). Regular rows draw from
+# the FULL real tpe_score population instead — grounded in the real
+# full-population distribution (2025/2022/2024 RB/WR/TE rows, n=7090):
+# min=13.2, p25=42.1, p50=46.8, p75=52.9, p90=59.5, p95=63.8, p99=72.4,
+# max=85.7. Boundaries chosen deliberately, not just at round percentile
+# marks: 55 and 65 are the SAME two numbers NFL_CONFIDENCE_BAND_
+# THRESHOLDS already uses as its own quiet/strong and strong/premium
+# seams (55 is literally the Tasty Six gate itself) — a regular row
+# crossing into "strong_setup" here is genuinely approaching Tasty-Six
+# caliber on the same real scale, not a coincidentally similar number.
+# Real population share at these boundaries: quiet_signal 39.3%,
+# developing_angle 41.6%, strong_setup 15.1%, premium_signal 4.0%.
+# ---------------------------------------------------------------------------
+NFL_REGULAR_ROW_CONFIDENCE_BAND_THRESHOLDS = (
+    (0.0, 45.0, "quiet_signal"),
+    (45.0, 55.0, "developing_angle"),
+    (55.0, 65.0, "strong_setup"),
+    (65.0, 100.0, "premium_signal"),
+)
+
+
+def nfl_regular_row_confidence_band_for_score(tpe_score) -> str:
+    """
+    Unlike nfl_confidence_band_for_score() above, this ALWAYS returns a
+    real band string, never None — confidence_band is a required,
+    non-null field on every written row, including regular (deterministic)
+    ones, so there's no "safety net None" option here. A missing/NaN
+    tpe_score defaults to "quiet_signal" — the honest "not much signal
+    here" reading, not a fabricated middle value.
+    """
+    if tpe_score is None or (isinstance(tpe_score, float) and tpe_score != tpe_score):
+        return "quiet_signal"
+    for lo, hi, band in NFL_REGULAR_ROW_CONFIDENCE_BAND_THRESHOLDS[:-1]:
+        if lo <= tpe_score < hi:
+            return band
+    return NFL_REGULAR_ROW_CONFIDENCE_BAND_THRESHOLDS[-1][2]
