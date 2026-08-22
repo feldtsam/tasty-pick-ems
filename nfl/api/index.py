@@ -492,14 +492,19 @@ def curate_and_write_drafts_endpoint():
     "Sensitive" env vars are write-only; `vercel env pull` cannot
     retrieve their real value outside a running deployed function).
 
-    max_rows_to_write / player_ids_to_write: OPTIONAL scoping for the
-    actual write step only — curation still runs against the FULL real
-    stub-week pool either way (so the response always reports the true,
-    complete picture), but only the matching subset of rows is actually
-    sent to Lovable. Built for controlled single-row/small-batch real
-    testing without needing multiple different real weeks of data;
-    omit both to write everything curation produced (the real eventual
-    Make.com Part 3 shape).
+    preview_only: if true, curation still runs in full (including real
+    Tasty Six LLM generation) but NOTHING is written to Lovable — the
+    response's curated_rows carries every real row instead, for
+    inspecting what a real run would produce (and picking specific real
+    player_ids) before committing to an actual write. max_rows_to_write /
+    player_ids_to_write: OPTIONAL scoping for the actual write step
+    only (ignored when preview_only is set) — curation still runs
+    against the FULL real stub-week pool either way, but only the
+    matching subset of rows is actually sent to Lovable. Built for
+    controlled single-row/small-batch real testing without needing
+    multiple different real weeks of data; omit all three to write
+    everything curation produced (the real eventual Make.com Part 3
+    shape).
 
     KNOWN, NOT FIXED HERE: a Tasty Six LLM generation failure (bad key,
     rate limit, Claude API timeout) raises inside shape_content_draft_
@@ -545,20 +550,24 @@ def curate_and_write_drafts_endpoint():
         return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
 
     all_rows = _json_safe(result["content_draft_rows"])
+    preview_only = bool(data.get("preview_only"))
 
-    rows_to_write = all_rows
-    if player_ids_to_write:
-        rows_to_write = [r for r in rows_to_write if r["player_id"] in set(player_ids_to_write)]
-    if isinstance(max_rows_to_write, int):
-        rows_to_write = rows_to_write[:max_rows_to_write]
-
-    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
-    if not secret:
-        return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+    rows_to_write = [] if preview_only else all_rows
+    if not preview_only:
+        if player_ids_to_write:
+            rows_to_write = [r for r in rows_to_write if r["player_id"] in set(player_ids_to_write)]
+        if isinstance(max_rows_to_write, int):
+            rows_to_write = rows_to_write[:max_rows_to_write]
 
     forward_result = {"success": None, "status_code": None, "error": None}
-    if rows_to_write:
-        forward_result = write_content_draft_rows(rows_to_write, secret)
+    if preview_only:
+        pass  # real curation still ran (including real Tasty Six generation) -- just never written to Lovable
+    else:
+        secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+        if not secret:
+            return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+        if rows_to_write:
+            forward_result = write_content_draft_rows(rows_to_write, secret)
 
     print(
         f"[curate-and-write-drafts] season={season} week={week} "
@@ -573,7 +582,9 @@ def curate_and_write_drafts_endpoint():
     return jsonify({
         "season": season,
         "week": week,
+        "preview_only": preview_only,
         "rows_curated": len(all_rows),
+        "curated_rows": all_rows if preview_only else None,
         "rows_written": len(rows_to_write),
         "written_rows": rows_to_write,
         "forwarded": forward_result["success"],
