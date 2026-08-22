@@ -86,6 +86,20 @@ preserved throughout, both for the tiebreak above and for compute_
 tasty_six()'s own downstream ordering dependency — see test_shelf_
 curation.py for the real-data validation.
 
+WITHIN-SHELF PLAYER DEDUPLICATION (_dedupe_by_player), a separate,
+LAYERED-ON-TOP fix, not a replacement for the cross-shelf one above:
+confirmed live (2026-08-20) that a player can have TWO real candidate
+ROWS in the SAME shelf's own eligible pool at once — e.g. Cam Smith
+duplicated in Hot Hitters, one row from game_pk 824155 created
+2026-08-19 (a stale prior-day row), one from game_pk 824153 created
+2026-08-20 (today's real one) — root cause under separate investigation
+(see the shelf_curation README section), but this defensive layer
+doesn't wait on that: assign_shelves() collapses each shelf's own
+eligible pool to one row per player, keeping the higher-shelf_score
+row, BEFORE _resolve_player_conflicts ever runs — which matters because
+that function's own percentile math assumes at most one row per
+(player, shelf) going in.
+
 SHELF SIZE: DEFAULT_SHELF_SIZE=8, proposed from real pool sizes observed
 while building this (150 real scored picks across 9 real games) — see the
 conversation/README for the actual per-shelf counts that informed this
@@ -228,6 +242,40 @@ def _weather_factors_eligible(candidates: list) -> list:
     return eligible
 
 
+def _dedupe_by_player(entries: list) -> list:
+    """
+    Collapses multiple candidate ROWS for the same player WITHIN a
+    single shelf's own eligible pool down to one — keeps the higher-
+    shelf_score row, discards the rest. A different axis than
+    _resolve_player_conflicts below (which handles ONE candidate row
+    being independently eligible for MULTIPLE DIFFERENT shelves, not
+    multiple rows for one player landing in the SAME shelf) — layered
+    on top of it, not a replacement: this runs first, so _resolve_
+    player_conflicts always sees at most one row per (player, shelf)
+    pair, which is the assumption its own percentile math depends on.
+
+    Real production case that motivated this (confirmed live,
+    2026-08-20, reproduced against real data): a player can have two
+    real scored_picks rows on the same day if scored-picks-read returns
+    a stale prior-day row alongside today's real one — Cam Smith had a
+    row from game_pk 824155 (created 2026-08-19) alongside game_pk
+    824153 (created 2026-08-20), both independently eligible for Hot
+    Hitters, both surviving into that shelf's output uncaught by either
+    the per-game cap (different real games, so max_per_game never
+    triggers) or cross-shelf conflict resolution (both rows are in the
+    SAME shelf, so there's no "other" shelf to lose to). This is a
+    defensive layer regardless of why the duplicate row existed
+    upstream — see the shelf_curation README section on the
+    scored-picks-read root cause for that separate investigation.
+    """
+    best_by_player = {}
+    for e in entries:
+        mlbam_id = e["candidate"]["mlbam_id"]
+        if mlbam_id not in best_by_player or e["shelf_score"] > best_by_player[mlbam_id]["shelf_score"]:
+            best_by_player[mlbam_id] = e
+    return list(best_by_player.values())
+
+
 def _percentile_rank(entries: list) -> list:
     """
     Attaches _percentile (0-100, higher = better) to a COPY of each
@@ -347,6 +395,7 @@ def assign_shelves(
     eligible_by_shelf["Cold Pitchers to Attack"] = _cold_pitchers_eligible(candidates, pitcher_form)
     eligible_by_shelf["Weather Factors"] = _weather_factors_eligible(candidates)
 
+    eligible_by_shelf = {name: _dedupe_by_player(entries) for name, entries in eligible_by_shelf.items()}
     resolved = _resolve_player_conflicts(eligible_by_shelf)
 
     shelves = {}

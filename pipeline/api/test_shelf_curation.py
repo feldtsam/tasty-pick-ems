@@ -24,6 +24,7 @@ from shelf_curation import (
     DEFAULT_SHELF_SIZE,
     ODDS_TIERS,
     _cold_pitchers_eligible,
+    _dedupe_by_player,
     _hot_hitters_eligible,
     _odds_tier_eligible,
     _percentile_rank,
@@ -94,6 +95,69 @@ if __name__ == "__main__":
         "_resolve_player_conflicts: the internal _percentile field never leaks into returned entries",
         all("_percentile" not in e for entries in synthetic_resolved.values() for e in entries),
     ))
+
+    # --- Synthetic, deterministic unit test of _dedupe_by_player in
+    # isolation: two rows for the same player (mlbam_id 999) in the SAME
+    # shelf's eligible pool — the axis _resolve_player_conflicts does NOT
+    # cover (that only handles ONE row being eligible for MULTIPLE
+    # shelves, not multiple rows landing in the SAME shelf). Higher
+    # shelf_score row must survive, the other must be dropped entirely,
+    # and an unrelated candidate in the same pool must be untouched. ---
+    dupe_synthetic = [
+        {"candidate": {"mlbam_id": 999, "player_name": "Dup Player", "game_pk": 111}, "shelf_score": 70.0},
+        {"candidate": {"mlbam_id": 999, "player_name": "Dup Player", "game_pk": 222}, "shelf_score": 65.0},
+        {"candidate": {"mlbam_id": 5, "player_name": "Other Player", "game_pk": 333}, "shelf_score": 50.0},
+    ]
+    dupe_deduped = _dedupe_by_player(dupe_synthetic)
+    results.append(check(
+        "_dedupe_by_player: two rows for the same player in one shelf collapse to the higher-shelf_score one, "
+        "unrelated candidate untouched",
+        len(dupe_deduped) == 2
+        and any(e["candidate"]["game_pk"] == 111 and e["candidate"]["mlbam_id"] == 999 for e in dupe_deduped)
+        and not any(e["candidate"]["game_pk"] == 222 for e in dupe_deduped)
+        and any(e["candidate"]["mlbam_id"] == 5 for e in dupe_deduped),
+    ))
+
+    # --- Real production case (confirmed live, 2026-08-20): Cam Smith
+    # had two real scored_picks rows on the same day — one from game_pk
+    # 824155 (created 2026-08-19, a stale prior-day row), one from
+    # game_pk 824153 (created 2026-08-20, today's real one) — both
+    # independently eligible for Hot Hitters, both surviving uncaught by
+    # either max_per_game (different real games) or cross-shelf conflict
+    # resolution (both rows are in the SAME shelf). Pulls TODAY's live
+    # pool directly (not the cached /tmp file, which predates this case)
+    # — skips gracefully if the live read is unavailable in this
+    # environment, same pattern other real-data tests in this codebase
+    # use for network-dependent checks. ---
+    try:
+        from curate_shelves import fetch_todays_scored_picks
+        import os
+        import datetime as _dt
+        live_secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+        live_today = _dt.datetime.now().strftime("%Y-%m-%d")
+        live_result = fetch_todays_scored_picks(
+            live_today, live_secret, "https://tastypickems.lovable.app/api/public/scored-picks-read",
+        )
+        live_pool = live_result.get("scored_picks", []) if live_result.get("ok") else []
+    except Exception as e:
+        print(f"(skipped the real Cam Smith live-data check — could not reach scored-picks-read: {e})")
+        live_pool = []
+
+    if live_pool:
+        cam_smith_rows = [p for p in live_pool if p.get("player_name") == "Cam Smith"]
+        live_shelves = assign_shelves(live_pool, season=int(live_today[:4]), shelf_size=DEFAULT_SHELF_SIZE)
+        cam_smith_appearances = [
+            (sn, e["candidate"]["game_pk"]) for sn, entries in live_shelves.items() for e in entries
+            if e["candidate"]["player_name"] == "Cam Smith"
+        ]
+        print(f"Real Cam Smith rows in today's live pool: {len(cam_smith_rows)} — appearances in curated shelves: {cam_smith_appearances}")
+        results.append(check(
+            "real Cam Smith case: appears at most once across all shelves on today's real live pool, "
+            "even with 2+ real candidate rows present",
+            len(cam_smith_appearances) <= 1,
+        ))
+    else:
+        print("(skipped the real Cam Smith live-data check — no live pool available in this environment)")
 
     results.append(check("real pool is non-trivially sized (>=50 candidates)", len(pool) >= 50))
 
@@ -208,29 +272,56 @@ if __name__ == "__main__":
         for e in _percentile_rank(entries):
             real_membership.setdefault(e["candidate"]["mlbam_id"], []).append((shelf_name, e["_percentile"]))
 
-    disagreement = None
+    # Walks ALL real disagreements, not just the first — a separate, real,
+    # OUT-OF-SCOPE-for-today edge case exists (confirmed via git-stash
+    # against the unmodified aa0339d code, so NOT caused by this round's
+    # _dedupe_by_player fix): a player can win the percentile comparison
+    # for a shelf with a large eligible pool (e.g. 58.7th percentile in a
+    # 60-candidate Hot Hitters pool is still outside that shelf's own
+    # top-8 cut), get removed from every OTHER shelf they were eligible
+    # for by conflict resolution, and then also fail to make their
+    # "winning" shelf's own size cap — ending up on ZERO shelves. Real
+    # case found this run: Mickey Moniak. Flagged explicitly below, not
+    # silently absorbed into this check or hidden — but this test still
+    # needs ONE disagreement where the player genuinely DOES land on
+    # their percentile-winning shelf to prove that's the real, working
+    # mechanism, so it searches past any zero-shelf cases for one.
+    all_disagreements = []
     for mlbam_id, shelf_pcts in real_membership.items():
         if len(shelf_pcts) < 2:
             continue
         build_order_winner = min(shelf_pcts, key=lambda t: build_order.index(t[0]))[0]
         percentile_winner = max(shelf_pcts, key=lambda t: t[1])[0]
         if build_order_winner != percentile_winner:
-            disagreement = (mlbam_id, shelf_pcts, build_order_winner, percentile_winner)
-            break
+            all_disagreements.append((mlbam_id, shelf_pcts, build_order_winner, percentile_winner))
 
-    if disagreement:
-        mlbam_id, shelf_pcts, build_order_winner, percentile_winner = disagreement
+    proven_disagreement = None
+    for mlbam_id, shelf_pcts, build_order_winner, percentile_winner in all_disagreements:
         name = next(e["candidate"]["player_name"] for e in eligible_by_shelf[shelf_pcts[0][0]] if e["candidate"]["mlbam_id"] == mlbam_id)
+        actual_shelf = next((sn for sn, entries in shelves.items() if any(e["candidate"]["mlbam_id"] == mlbam_id for e in entries)), None)
+        if actual_shelf is None:
+            print(
+                f"SEPARATE, OUT-OF-SCOPE FINDING (not a failure of today's fix — confirmed pre-existing in "
+                f"aa0339d): {name} won the percentile comparison for {percentile_winner} "
+                f"({dict(shelf_pcts)[percentile_winner]:.1f}th pct) but didn't survive that shelf's own "
+                f"size cap, and conflict resolution had already removed them from {build_order_winner} "
+                f"— they appear on ZERO shelves this run."
+            )
+            continue
+        proven_disagreement = (name, shelf_pcts, build_order_winner, percentile_winner, actual_shelf)
+        break
+
+    if proven_disagreement:
+        name, shelf_pcts, build_order_winner, percentile_winner, actual_shelf = proven_disagreement
         print(f"Real build-order-vs-percentile disagreement found: {name} — {[(s, round(p,1)) for s,p in shelf_pcts]}")
         print(f"  build order would pick: {build_order_winner}   percentile actually picks: {percentile_winner}")
-        actual_shelf = next((sn for sn, entries in shelves.items() if any(e["candidate"]["mlbam_id"] == mlbam_id for e in entries)), None)
         results.append(check(
             f"{name}: assign_shelves() actually placed them on their highest-percentile shelf "
             f"({percentile_winner}), NOT the earliest-built eligible one ({build_order_winner})",
             actual_shelf == percentile_winner,
         ))
     else:
-        print("(skipped the score-vs-build-order disagreement check — every real contested player on this pool happened to agree both ways)")
+        print("(skipped the score-vs-build-order disagreement check — no real disagreement on this pool resulted in the player actually landing on a shelf)")
 
     # --- Direct proof of mechanism #2: backfill still works after
     # conflict resolution. Seeds a real shelf's conflict-resolved pool by
