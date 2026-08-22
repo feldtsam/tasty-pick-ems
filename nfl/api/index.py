@@ -88,7 +88,7 @@ import numpy as np
 import pandas as pd
 
 from curate_home_shelves import curate_nfl_shelves, write_content_draft_rows
-from lovable_forward import forward_to_lovable, resolve_url_env
+from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
 from market_value import (
     PRICE_HISTORY_COLUMNS,
     match_attd_players,
@@ -264,13 +264,14 @@ def poll_market_value_endpoint():
     if rows:
         forward_result = forward_to_lovable(rows, secret, write_url)
 
-    # forward_result['error']/['response_body'] are logged here (truncated
-    # the same as they are in forward_to_lovable's return value, and never
-    # containing the secret or signature) because until now they only ever
-    # reached the caller (Make.com) inside the HTTP JSON response — Vercel's
-    # own function logs showed just the status code, not Lovable's actual
-    # response text, which made this print statement useless for debugging
-    # a forwarding failure without also having Make.com's run history open.
+    # forward_result['error']/['response_body'] are now FULL/untruncated
+    # (see forward_to_lovable's own docstring for the real bug that fix
+    # closes) — truncate_for_log() applies the same bound this print
+    # statement always relied on, right here at the actual print site,
+    # so Vercel's own function logs (which otherwise show just a bare
+    # status code, not Lovable's actual response text) stay just as
+    # readable/bounded as before, without capping the value every OTHER
+    # caller of forward_to_lovable also receives.
     print(
         f"[poll-market-value] events_received={len(events)} "
         f"events_with_no_market={len(events_with_no_market)} "
@@ -278,8 +279,8 @@ def poll_market_value_endpoint():
         f"by_issue_type={match_summary['by_issue_type']} "
         f"rows_written={len(rows)} "
         f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
-        f"forward_error={forward_result['error']!r} "
-        f"forward_response_body={forward_result.get('response_body')!r}",
+        f"forward_error={truncate_for_log(forward_result['error'], 500)!r} "
+        f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r}",
         flush=True,
     )
 
@@ -586,8 +587,8 @@ def curate_and_write_drafts_endpoint():
         f"rows_written={len(rows_to_write)} "
         f"tasty_six_curated={sum(1 for r in all_rows if r['is_tasty_six'])} "
         f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
-        f"forward_error={forward_result['error']!r} "
-        f"forward_response_body={forward_result.get('response_body')!r}",
+        f"forward_error={truncate_for_log(forward_result['error'], 500)!r} "
+        f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r}",
         flush=True,
     )
 

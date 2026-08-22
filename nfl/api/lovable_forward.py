@@ -79,6 +79,21 @@ def resolve_url_env(name: str, default: str) -> str:
     return value
 
 
+def truncate_for_log(text, limit: int = 2000):
+    """
+    The truncation forward_to_lovable() used to do internally, moved
+    here so a caller can apply it ONLY at the point something is
+    actually printed/logged for a human — never to a value that gets
+    parsed programmatically (see forward_to_lovable's own docstring for
+    the real bug this split fixes). Not exported as anything fancier
+    than a plain slice: this is exactly what a print site needs, no
+    more.
+    """
+    if text is None:
+        return None
+    return text[:limit]
+
+
 def serialize_payload(rows: list) -> str:
     """
     The exact JSON string that gets both signed and sent — built once, used
@@ -101,9 +116,32 @@ def forward_to_lovable(rows: list, secret: str, url: str) -> dict:
 
     `response_body` is captured on EVERY response, not just failures, so a
     caller can surface Lovable's own real received/upserted/deduped counts
-    on success, not just an opaque "success: true". Truncated the same as
-    the error text, for the same reason: never let one webhook response
-    balloon the caller's own response body.
+    on success, not just an opaque "success: true".
+
+    FULL, UNTRUNCATED — a real, confirmed production bug this used to be
+    truncated to 2000 chars right here, which broke read_shelf_signal_
+    history() (api/curate_home_shelves.py): it json.loads()'s this exact
+    field, and a real week's worth of rows (confirmed: as few as 9 real
+    shelf-signal rows) already exceeds 2000 characters, silently handing
+    it a truncated, invalid JSON string every time. Truncating a value
+    BEFORE something downstream parses it as JSON is wrong regardless of
+    where the size threshold is set — raising the cap only delays the
+    same failure at a slightly larger real data volume, it doesn't fix
+    it. `error` is untruncated for the same reason: nothing here can
+    know in advance whether a caller needs the full text (debugging a
+    truncated-mid-sentence error message is its own real annoyance) or
+    just a preview.
+
+    The ORIGINAL reason a cap existed at all (confirmed via api/index.py's
+    own comment on this, at its poll-market-value endpoint's print site):
+    keeping this project's own Vercel function logs bounded and readable,
+    since Vercel's logs otherwise only show a bare status code, not
+    Lovable's actual response text. That's a real, legitimate concern —
+    just the wrong LAYER to solve it at. It belongs at the point
+    something is actually printed/logged for a human, not baked into the
+    one shared function every programmatic caller (including one that
+    parses the result as real JSON) also depends on. See api/index.py's
+    print sites for where that truncation now actually happens.
     """
     payload_str = serialize_payload(rows)
     signature = compute_signature(secret, payload_str)
@@ -122,11 +160,11 @@ def forward_to_lovable(rows: list, secret: str, url: str) -> dict:
         return {"success": False, "status_code": None, "error": f"{type(e).__name__}: {e}", "response_body": None}
 
     if 200 <= response.status_code < 300:
-        return {"success": True, "status_code": response.status_code, "error": None, "response_body": response.text[:2000]}
+        return {"success": True, "status_code": response.status_code, "error": None, "response_body": response.text}
 
     return {
         "success": False,
         "status_code": response.status_code,
-        "error": response.text[:500],  # truncated, for debugging — never contains our secret
-        "response_body": response.text[:2000],
+        "error": response.text,  # never contains our secret — the signature/secret are never echoed by Lovable's own response
+        "response_body": response.text,
     }
