@@ -46,6 +46,8 @@ live multi-week Intelligence data actually accumulates is expected, not
 optional.
 """
 
+import math
+
 # ---------------------------------------------------------------------------
 # Real per-family (per-signal) thresholds — the real 75th-percentile
 # absolute week-over-week delta of each family's own real historical
@@ -109,6 +111,22 @@ BASELINE_WINDOW = 3
 CONFIRM_STREAK = 2
 ACTIVE_APPEARANCE_COUNT = 3
 ARCHIVE_MISS_COUNT = 2
+
+
+def _safe_float(value):
+    """
+    float(value), but a non-convertible value (None, a string, etc. —
+    the same real malformation intelligence_sanity.sanity_check_story
+    would flag) becomes NaN rather than raising. Used only for history-
+    row audit fields (see apply_lifecycle) — this module always wants
+    to WRITE the real, honest bad value (or NaN standing in for "not a
+    real number at all") for the audit trail, never crash while trying
+    to record that something was wrong.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def entity_key_for(entity: dict) -> str:
@@ -183,6 +201,24 @@ def _compute_lifecycle_state(
     threshold by the time a directional move has had time to confirm at
     all).
 
+    SANITY-FAILED READINGS (current_value is NaN/inf — the exact thing
+    intelligence_sanity.sanity_check_story's finiteness check catches):
+    per the approved design, this identity still gets a real appearance
+    counted (appearance_count increments below) — a sanity-failed story
+    is a real detection that happened, just one whose number can't be
+    trusted, not a no-show. But an undefined number can't support a
+    directional claim (no "Strengthening"/"Weakening" this week — there
+    is nothing there to compare), so direction is forced to None here
+    explicitly, rather than relying on the fact that a NaN comparison
+    happens to evaluate False in Python either side of the threshold
+    check below (true, but an accident of IEEE-754 semantics this
+    codebase's own house style doesn't rely on unstated elsewhere,  and
+    a future reader/maintainer could plausibly "fix" as a bug). The
+    other half of this same protection — keeping the bad value OUT of
+    recent_values so it can never poison a FUTURE week's baseline — is
+    the caller's (apply_lifecycle's) job, since this function doesn't
+    own that list.
+
     Returns {"lifecycle_state": str, "pending_direction": str|None,
     "streak_count": int, "appearance_count": int, "miss_count": 0} —
     miss_count always resets to 0 here; this function is only ever
@@ -192,15 +228,18 @@ def _compute_lifecycle_state(
         return {"lifecycle_state": "Detected", "pending_direction": None, "streak_count": 0, "appearance_count": 1, "miss_count": 0}
 
     appearance_count = prior_appearance_count + 1
-    baseline = sum(recent_values) / len(recent_values)
-    delta = current_value - baseline
 
-    if delta >= threshold:
-        direction = "Strengthening"
-    elif delta <= -threshold:
-        direction = "Weakening"
-    else:
+    if not math.isfinite(current_value):
         direction = None
+    else:
+        baseline = sum(recent_values) / len(recent_values)
+        delta = current_value - baseline
+        if delta >= threshold:
+            direction = "Strengthening"
+        elif delta <= -threshold:
+            direction = "Weakening"
+        else:
+            direction = None
 
     if direction is not None:
         streak_count = (prior_streak_count + 1) if prior_pending_direction == direction else 1
@@ -306,7 +345,10 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
 
         prior = history.get(identity)
         threshold = FAMILY_SIGNAL_THRESHOLDS[signal_name]
-        current_value = float(story["trend_strength"])
+        try:
+            current_value = float(story["trend_strength"])
+        except (TypeError, ValueError):
+            current_value = float("nan")  # same "unusable, not absent" treatment as a real NaN below
 
         if prior is None:
             result = _compute_lifecycle_state(current_value, [], None, None, 0, 0, threshold)
@@ -316,8 +358,20 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
                 prior["streak_count"], prior["appearance_count"], threshold,
             )
 
-        recent_values = (prior["recent_values"] if prior else []) + [current_value]
-        recent_values = recent_values[-BASELINE_WINDOW:]
+        # A sanity-failed (NaN/inf) current_value is deliberately NOT
+        # appended here — the one real fix this task's NaN-in-lifecycle
+        # investigation required. _compute_lifecycle_state already keeps
+        # a bad THIS-week reading from producing a false directional
+        # claim (see its own docstring); this is the other half: keeping
+        # it out of the rolling window so it can never corrupt a FUTURE
+        # week's baseline/delta either. recent_values simply carries
+        # forward unchanged this week — mechanically identical to "no
+        # new information," not a fabricated substitute value.
+        prior_recent_values = prior["recent_values"] if prior else []
+        if math.isfinite(current_value):
+            recent_values = (prior_recent_values + [current_value])[-BASELINE_WINDOW:]
+        else:
+            recent_values = prior_recent_values
 
         updated_history[identity] = {**result, "recent_values": recent_values}
         history_rows.append({
@@ -327,7 +381,7 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
             "season": season,
             "week": week,
             "trend_strength": current_value,
-            "primary_signal_value": float(story["primary_signal"]["value"]),
+            "primary_signal_value": _safe_float(story["primary_signal"].get("value")),
             "lifecycle_state": result["lifecycle_state"],
             "streak_count": result["streak_count"],
             "miss_count": result["miss_count"],

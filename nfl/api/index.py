@@ -88,6 +88,7 @@ import numpy as np
 import pandas as pd
 
 from curate_home_shelves import curate_nfl_shelves, write_content_draft_rows
+from intelligence_write import process_family, write_intelligence_rows
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
 from market_value import (
     PRICE_HISTORY_COLUMNS,
@@ -618,5 +619,129 @@ def curate_and_write_drafts_health_check():
                  "Claude call for Tasty Six rows) and writes the result to nfl_content_drafts. "
                  "max_rows_to_write/player_ids_to_write scope the actual write only; curation always "
                  "runs against the full real pool.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/write-intelligence", methods=["POST"])
+def write_intelligence_endpoint():
+    """
+    POST body: {"family": str, "season": int, "week": int, "stories":
+    [...] (real 13-field story dicts — see intelligence_schema.py),
+    "prior_history": [[[family, entity_key, signal_name], {...}], ...]
+    (optional, default [] — a JSON-safe encoding of apply_lifecycle's
+    own {tuple: dict} history shape, since JSON has no tuple-keyed
+    object; reconstructed into real tuple keys below),
+    "lifecycle_eligible": bool (optional, default true — pass false for
+    Market Intelligence stories, per the approved deferral),
+    "preview_only": bool (optional)}.
+
+    AUTH: check_pipeline_secret() — same small-fixed-trigger reasoning
+    as /api/curate-and-write-drafts.
+
+    EXISTS SPECIFICALLY so NFL_PIPELINE_WEBHOOK_SECRET (a Vercel
+    "Sensitive" env var, confirmed write-only outside a running deployed
+    function — see /api/curate-and-write-drafts's own docstring on this
+    exact constraint) can actually be exercised for a real single-row/
+    small-batch write test, the same reason that endpoint had to exist
+    as a real deployment rather than being tested locally.
+
+    Does NOT fetch or curate anything itself — this is the write-
+    connection's own wiring (intelligence_write.process_family +
+    write_intelligence_rows), not a curation trigger. Real story dicts
+    are built LOCALLY (from real historical data, via each family's own
+    already-tested build_*_stories()) and sent in as this request's
+    `stories`, exactly the same "curate for real first, then submit a
+    controlled real subset to the deployed write path" pattern the
+    Picks write-connection task established (there via preview_only +
+    player_ids_to_write against curate_nfl_shelves' own internal data
+    source; here via directly supplying the already-built real story
+    dicts, since there's no equivalent single internal data source this
+    endpoint could fetch on its own — Market Intelligence needs a live
+    odds snapshot, the other three families need real reconciled
+    historical data, on two different real cadences).
+
+    KNOWN GAP, not fixed here: prior_history has no real read-back
+    source yet (nfl_intelligence_story_history has no confirmed read
+    route, unlike nfl_shelf_signal_history's read route for stickiness)
+    — every real call through this endpoint today necessarily runs with
+    whatever prior_history the caller supplies (empty, for a genuinely
+    first real test). A live multi-week production run needs that read
+    connection built as a real follow-up; this endpoint's own job (the
+    write half) is unaffected by when that happens.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    family = data.get("family")
+    try:
+        season = int(data.get("season"))
+        week = int(data.get("week"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Expected {\"family\": str, \"season\": int, \"week\": int, \"stories\": [...]} in the request body."}), 400
+    stories = data.get("stories") or []
+    if not family or not isinstance(stories, list):
+        return jsonify({"error": "Expected {\"family\": str, \"season\": int, \"week\": int, \"stories\": [...]} in the request body."}), 400
+
+    prior_history = {}
+    for pair in (data.get("prior_history") or []):
+        key, value = pair
+        prior_history[tuple(key)] = value
+
+    lifecycle_eligible = data.get("lifecycle_eligible", True)
+    preview_only = bool(data.get("preview_only"))
+
+    try:
+        result = process_family(family, stories, prior_history, season, week, lifecycle_eligible=bool(lifecycle_eligible))
+    except Exception as e:
+        print(f"[write-intelligence] family={family} season={season} week={week} status=error error={e!r}", flush=True)
+        return jsonify({"status": "error", "family": family, "season": season, "week": week, "error": str(e)}), 500
+
+    story_rows = _json_safe(result["story_rows"])
+    history_rows = _json_safe(result["history_rows"])
+
+    forward_result = {"success": None, "status_code": None, "error": None}
+    if not preview_only:
+        secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+        if not secret:
+            return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+        forward_result = write_intelligence_rows(story_rows, history_rows, secret)
+
+    print(
+        f"[write-intelligence] family={family} season={season} week={week} "
+        f"stories_in={len(stories)} story_rows={len(story_rows)} history_rows={len(history_rows)} "
+        f"sanity_failures={sum(1 for r in story_rows if not r['sanity_check_passed'])} "
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
+        f"forward_error={truncate_for_log(forward_result['error'], 500)!r} "
+        f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r}",
+        flush=True,
+    )
+
+    return jsonify({
+        "family": family,
+        "season": season,
+        "week": week,
+        "preview_only": preview_only,
+        "story_rows": story_rows,
+        "history_rows": history_rows,
+        "forwarded": forward_result["success"],
+        "lovable_status_code": forward_result["status_code"],
+        "forward_error": forward_result["error"],
+        "forward_response_body": forward_result.get("response_body"),
+    }), (502 if forward_result["success"] is False else 200)
+
+
+@app.route("/api/write-intelligence", methods=["GET"])
+def write_intelligence_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"family\": str, \"season\": int, \"week\": int, \"stories\": [...], "
+                 "\"prior_history\": [[[family, entity_key, signal_name], {...}], ...] (optional), "
+                 "\"lifecycle_eligible\": bool (optional, default true), \"preview_only\": bool (optional)}. "
+                 "Sanity-checks each story, applies lifecycle (unless lifecycle_eligible=false, for Market "
+                 "Intelligence), and writes both story rows and history rows to nfl_intelligence_stories / "
+                 "nfl_intelligence_story_history via one combined signed call.",
         "deployed_via": "github-auto-deploy",
     })
