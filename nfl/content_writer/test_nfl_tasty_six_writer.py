@@ -24,8 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "pipeline" / "api" / "content_writer"))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "pipeline" / "api" / "content_writer" / "voice"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
 import numpy as np
 import pandas as pd

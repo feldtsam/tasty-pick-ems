@@ -39,13 +39,28 @@ MLB's own three-tier odds structure (sweet spot -> bigger swing -> long
 shot with real teeth) translated to anytime-touchdown framing instead of
 home-run framing.
 """
-import sys
-from pathlib import Path
+from typing import NamedTuple
 
-_PIPELINE_VOICE = Path(__file__).resolve().parent.parent.parent.parent / "pipeline" / "api" / "content_writer" / "voice"
-sys.path.insert(0, str(_PIPELINE_VOICE))
 
-from shelf_personalities import ShelfPersonality  # noqa: E402 -- shape reused, content is NFL's own below
+class ShelfPersonality(NamedTuple):
+    """
+    Duplicated from pipeline/api/content_writer/voice/shelf_
+    personalities.py's own definition, not cross-imported — this Vercel
+    project's Root Directory is `nfl`, so a sys.path insert into sibling
+    pipeline/ 404s once deployed (see card_writer_common.py's header,
+    nfl/content_writer/, for the full story). A trivial 4-field
+    NamedTuple, so duplicated outright rather than vendoring MLB's whole
+    shelf_personalities.py file just for this one shape — the normal
+    "duplicate rather than cross-import" treatment this codebase already
+    gives every genuinely trivial piece, unlike the larger real logic in
+    card_writer_common.py/banned_language.py/principles.py/emotional_
+    intensity.py, which got vendored as full-file copies instead because
+    they're real, tested logic, not a one-line shape.
+    """
+    description: str
+    subject_is_batter: bool
+    imagery_pool: tuple
+    avoid: tuple
 
 NFL_SHELF_PERSONALITIES = {
     "Red Zone Trends": ShelfPersonality(

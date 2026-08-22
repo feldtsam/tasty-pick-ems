@@ -30,7 +30,9 @@ generic 2-3-item-array contract, no NFL-specific reason to diverge.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "pipeline" / "api" / "content_writer"))
+# LOCAL, vendored copy, not a cross-import into sibling pipeline/ — see
+# card_writer_common.py's own header (this same directory) for why.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from card_writer_common import MAX_WHY_REASONS, MIN_WHY_REASONS, WHY_REASONS_ARRAY_SCHEMA  # noqa: E402
 
 from nfl_writer_common import NFL_PILLAR_NAMES  # noqa: E402

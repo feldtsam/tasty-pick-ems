@@ -285,6 +285,36 @@ def add_opponent(weekly: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
     return weekly.drop(columns=["home_team", "away_team"])
 
 
+def add_kickoff_utc(weekly: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attach each row's real game kickoff timestamp, in UTC, onto weekly by
+    game_id — extracted out of _new_schema_depth_chart's own week/season
+    derivation (see that function's docstring for the real Kansas City
+    2025 bug this exact computation already fixed there: gameday alone,
+    without gametime, defaults to midnight UTC and silently misclassifies
+    a same-day pre-kickoff snapshot into the wrong week). Reused here
+    unmodified, not rebuilt — same two-line computation, now a public,
+    standalone attacher (mirrors add_opponent/add_environment_data's own
+    shape: schedules in, one real column merged onto weekly by game_id).
+
+    Built for NFL Content Generation's write-connection task, which needs
+    a real kickoff_utc value per row for nfl_content_drafts — the ONE
+    field in that table's real schema with no existing source anywhere
+    on the already-scored `weekly` table (unlike opponent/environment,
+    which score_situation already needs and therefore already pulls from
+    schedules earlier in the pipeline). Deliberately kept as its own
+    attacher, not folded into add_opponent/add_environment_data, since
+    those run unconditionally for every scoring pass and this is only
+    needed by a caller that specifically wants kickoff_utc downstream —
+    same "don't merge on data nothing yet asks for" discipline as this
+    module's other attachers.
+    """
+    sched = schedules[["game_id", "gameday", "gametime"]].drop_duplicates().copy()
+    kickoff_et = pd.to_datetime(sched["gameday"] + " " + sched["gametime"]).dt.tz_localize("America/New_York")
+    sched["kickoff_utc"] = kickoff_et.dt.tz_convert("UTC")
+    return weekly.merge(sched[["game_id", "kickoff_utc"]], on="game_id", how="left")
+
+
 def add_environment_data(weekly: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
     """
     Attach roof/temp/wind onto weekly by game_id — a plain data join, no

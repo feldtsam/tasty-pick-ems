@@ -84,8 +84,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from flask import Flask, jsonify, request
 import nfl_data_py as nfl
+import numpy as np
 import pandas as pd
 
+from curate_home_shelves import curate_nfl_shelves, write_content_draft_rows
 from lovable_forward import forward_to_lovable, resolve_url_env
 from market_value import (
     PRICE_HISTORY_COLUMNS,
@@ -422,5 +424,174 @@ def reconcile_week_health_check():
                  "runs reconciliation. Only calls reconcile_week() (destructive: replaces this week's "
                  "rows in player_redzone_weekly.csv and archives the stub file) once every game is "
                  "confirmed final.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+STUB_WEEKS_DIR = Path(__file__).resolve().parent.parent / "data" / "stub_weeks"
+
+
+def _json_safe(obj):
+    """
+    Recursively converts numpy/pandas scalar types to plain Python so
+    both this endpoint's own jsonify() response AND write_content_draft_
+    rows()'s underlying serialize_payload (a plain json.dumps with no
+    numpy-aware default) don't crash on a numpy.float64/int64/bool_ that
+    curate_nfl_shelves' output can genuinely contain (values sourced from
+    pandas Series columns throughout the curation pipeline). Applied
+    once, right after shape_content_draft_rows produces rows, so both
+    consumers see the same already-safe Python-native values — never a
+    silent, separate re-serialization that could drift from what was
+    actually reported back in this endpoint's own response.
+    """
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return None if np.isnan(obj) else float(obj)
+    if isinstance(obj, float) and pd.isna(obj):
+        return None
+    return obj
+
+
+@app.route("/api/curate-and-write-drafts", methods=["POST"])
+def curate_and_write_drafts_endpoint():
+    """
+    POST body: {"season": int, "week": int, "max_rows_to_write": int
+    (optional), "player_ids_to_write": [str, ...] (optional)}.
+
+    AUTH: check_pipeline_secret() — same mechanism /api/reconcile-week
+    already uses for its own incoming trigger, same reasoning (a small,
+    fixed, Make.com-only trigger with no attacker-shaped body worth
+    HMAC-signing — see check_pipeline_secret's own docstring).
+
+    DATA SOURCE: nfl/data/stub_weeks/{season}_wk{week}.csv — the real,
+    live, pre-game scored data Phase 1 (build_stub_week.py) and Phase 2
+    (poll_market_value_for_stub.py, the live odds poller) already
+    produce for the CURRENT upcoming week. This is deliberately NOT
+    player_redzone_weekly.csv (the historical, already-reconciled
+    table) — curation is a pre-game, upcoming-picks feature; the stub
+    file is the only real source with live ATTD odds on it at all
+    before a week goes final and gets reconciled away.
+
+    Runs the full pipeline (curate_nfl_shelves: eligibility -> home-
+    shelf assignment -> cap -> Tasty Six -> content shaping, INCLUDING a
+    real Part C LLM call for Tasty Six rows whenever ANTHROPIC_API_KEY
+    is configured) and writes the result to nfl_content_drafts via
+    write_content_draft_rows() — inside this deployed function,
+    ANTHROPIC_API_KEY / NFL_PIPELINE_WEBHOOK_SECRET / LOVABLE_NFL_
+    CONTENT_DRAFTS_WRITE_URL all resolve correctly via os.environ.get(),
+    the same way every other secret already does for the existing
+    endpoints above — this was the whole reason this endpoint needed to
+    exist as a real deployment rather than being tested locally (Vercel
+    "Sensitive" env vars are write-only; `vercel env pull` cannot
+    retrieve their real value outside a running deployed function).
+
+    max_rows_to_write / player_ids_to_write: OPTIONAL scoping for the
+    actual write step only — curation still runs against the FULL real
+    stub-week pool either way (so the response always reports the true,
+    complete picture), but only the matching subset of rows is actually
+    sent to Lovable. Built for controlled single-row/small-batch real
+    testing without needing multiple different real weeks of data;
+    omit both to write everything curation produced (the real eventual
+    Make.com Part 3 shape).
+
+    KNOWN, NOT FIXED HERE: a Tasty Six LLM generation failure (bad key,
+    rate limit, Claude API timeout) raises inside shape_content_draft_
+    rows() and aborts curation entirely for this request, including
+    every correctly-generated deterministic regular-row card in the
+    same batch — flagged directly in the response as a 500 if it
+    happens, not silently retried. A real, contained follow-up (partial-
+    failure handling), not addressed as part of this task's scope.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        season = int(data.get("season"))
+        week = int(data.get("week"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
+    max_rows_to_write = data.get("max_rows_to_write")
+    player_ids_to_write = data.get("player_ids_to_write")
+
+    stub_path = STUB_WEEKS_DIR / f"{season}_wk{week}.csv"
+    if not stub_path.exists():
+        return jsonify({
+            "error": f"No stub file for season={season} week={week} at {stub_path} — "
+                     f"build_stub_week.py hasn't run for this week yet.",
+        }), 404
+    weekly = pd.read_csv(stub_path)
+
+    try:
+        schedules = nfl.import_schedules([season])
+    except Exception as e:
+        print(f"[curate-and-write-drafts] season={season} week={week} schedules_fetch_failed error={e!r}", flush=True)
+        schedules = None  # kickoff_utc stays None for every row -- honest gap, not a hard failure
+
+    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    try:
+        result = curate_nfl_shelves(weekly, season, week, schedules=schedules, anthropic_api_key=anthropic_api_key)
+    except Exception as e:
+        print(f"[curate-and-write-drafts] season={season} week={week} status=error error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
+
+    all_rows = _json_safe(result["content_draft_rows"])
+
+    rows_to_write = all_rows
+    if player_ids_to_write:
+        rows_to_write = [r for r in rows_to_write if r["player_id"] in set(player_ids_to_write)]
+    if isinstance(max_rows_to_write, int):
+        rows_to_write = rows_to_write[:max_rows_to_write]
+
+    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+
+    forward_result = {"success": None, "status_code": None, "error": None}
+    if rows_to_write:
+        forward_result = write_content_draft_rows(rows_to_write, secret)
+
+    print(
+        f"[curate-and-write-drafts] season={season} week={week} "
+        f"rows_curated={len(all_rows)} rows_written={len(rows_to_write)} "
+        f"tasty_six_curated={sum(1 for r in all_rows if r['is_tasty_six'])} "
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
+        f"forward_error={forward_result['error']!r} "
+        f"forward_response_body={forward_result.get('response_body')!r}",
+        flush=True,
+    )
+
+    return jsonify({
+        "season": season,
+        "week": week,
+        "rows_curated": len(all_rows),
+        "rows_written": len(rows_to_write),
+        "written_rows": rows_to_write,
+        "forwarded": forward_result["success"],
+        "lovable_status_code": forward_result["status_code"],
+        "forward_error": forward_result["error"],
+        "forward_response_body": forward_result.get("response_body"),
+    }), (502 if forward_result["success"] is False else 200)
+
+
+@app.route("/api/curate-and-write-drafts", methods=["GET"])
+def curate_and_write_drafts_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"season\": int, \"week\": int, \"max_rows_to_write\": int (optional), "
+                 "\"player_ids_to_write\": [str, ...] (optional)}. Curates the given week's real "
+                 "stub-week data (home-shelf assignment, Tasty Six, real content — including a real "
+                 "Claude call for Tasty Six rows) and writes the result to nfl_content_drafts. "
+                 "max_rows_to_write/player_ids_to_write scope the actual write only; curation always "
+                 "runs against the full real pool.",
         "deployed_via": "github-auto-deploy",
     })

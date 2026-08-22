@@ -38,16 +38,25 @@ per explicit instruction. draft_for_write() below is shaped to match
 that assumption and is easy to adjust once confirmed.
 
 NEVER auto-approves or publishes anything -- same reasoning as MLB's
-version. review_status is set mechanically from validation_passed. Does
-NOT itself write to nfl_content_drafts -- explicitly out of scope for
-this task (a separate, not-yet-built write connection).
+version. review_status is set mechanically from validation_passed.
+
+WRITE CONNECTION (write-connection task): now actually called by nfl/
+api/curate_home_shelves.py's shape_content_draft_rows() for real Tasty
+Six rows, when an anthropic_api_key is provided -- no longer "not
+called anywhere."
+
+card_writer_common.py/banned_language.py below are LOCAL, vendored
+copies of pipeline/'s files, not cross-imports -- see card_writer_
+common.py's own header (in this same directory) for why: this Vercel
+project's Root Directory is `nfl`, so a sys.path insert pointing at
+sibling pipeline/ works locally but 404/ImportErrors once actually
+deployed. Found and fixed while building the write-connection endpoint.
 """
 import sys
 from pathlib import Path
 
-_PIPELINE_CONTENT_WRITER = Path(__file__).resolve().parent.parent.parent / "pipeline" / "api" / "content_writer"
-sys.path.insert(0, str(_PIPELINE_CONTENT_WRITER))
-sys.path.insert(0, str(_PIPELINE_CONTENT_WRITER / "voice"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
 from banned_language import find_banned_phrases  # noqa: E402 -- reused unmodified
 from card_writer_common import (  # noqa: E402

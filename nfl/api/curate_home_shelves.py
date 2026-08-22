@@ -60,45 +60,46 @@ was written, see the conversation this was designed and approved in):
    explicitly provisional, flagged for validation against real weekly
    data once the season is live — not treated as final on paper.
 
-CONTENT GENERATION — Part A reconnected (this update), Part C still not
-built. Investigation (a separate cycle, before this update) confirmed
-the "adapted MLB Content Voice Engine already exists and works for NFL"
-premise did not hold: pipeline/api/content_writer's PILLAR_NAMES was
-(and still is) hardcoded to MLB's own four pillars, and no NFL-specific
-LLM writer exists anywhere in nfl/ — that's real, separate work (Part C)
-with its own approved design, not built in this module.
+CONTENT GENERATION — Parts A, B, and C all reconnected here (this
+update, the write-connection task). Regular (non-Tasty-Six) rows get
+nfl/shelves.py's deterministic, non-LLM headline+evidence generator
+(red_zone_story/position_story/odds_band_story — Part A), wrapped into
+the real why_reasons array shape via _deterministic_why_reasons below
+(a single-item array, not the LLM's 2-3 item array — a real, reported
+design choice, see that function's own docstring). Tasty Six rows get a
+real call into nfl/content_writer/generate_tasty_six_content.py's
+generate_nfl_tasty_six_draft() (Part C's actual LLM writer, cross-
+imported) — ONLY when a real anthropic_api_key is passed through to
+shape_content_draft_rows/curate_nfl_shelves; omit it (the default) and
+Tasty Six rows keep title/editorial_sentence/why_reasons/confidence_band
+as None, the same honest "not generated yet" signal as before this
+task, rather than raising. confidence_band is derived from tpe_score via
+nfl_writer_common.nfl_confidence_band_for_score() — the previously-
+pending thresholds are now approved (see that function's own docstring
+for the real distribution they're grounded in) and hardcoded there.
 
-What Part A DOES reconnect: nfl/shelves.py already has a deterministic,
-non-LLM headline+evidence generator (red_zone_story/position_story/
-odds_band_story, now public — see shelves.py) wired into all seven
-shelves, real and already debugged against real historical bugs. This
-module previously discarded that entirely and wrote headline/why_its_
-tasty as None unconditionally. shape_content_draft_rows() below now
-calls those same story generators directly on every REGULAR (non-Tasty-
-Six) home-assigned row — not via a build_all_shelves() lookup, which has
-a real population gap (see _story_for_row's own docstring: shelves.py's
-own top-N ranking for a shelf and this module's home-assigned population
-for that shelf are genuinely different sets, so a lookup keyed by
-(shelf, player_id) silently misses real rows). is_tasty_six=True rows
-are deliberately EXCLUDED from this path and keep headline/why_its_tasty
-as None — they're reserved for Part C's LLM writer, not this
-deterministic system, per the approved architecture. editorial_content
-stays None for every row at this stage (no source, deterministic or
-LLM, produces it yet — see Part C).
+REAL COLUMN NAMES, confirmed directly against the live nfl_content_
+drafts schema (not the placeholder names this module used before):
+event_id (= game_id — nflverse's own real per-game identifier, already
+unique, already on every scored row — no new identifier scheme
+invented), team (= posteam), opponent (= defteam), matchup (parsed
+directly from game_id's own "{season}_{week}_{away}_{home}" convention,
+formatted "{away} @ {home}" — the exact same convention MLB's own
+candidate shape already uses, confirmed by checking pipeline/api/
+content_writer's own TOP_LEVEL_CITABLE_FIELDS fixture data, not
+invented fresh), odds (= consensus_price_american), kickoff_utc (a real
+column with NO existing source anywhere on the scored weekly table —
+see redzone.add_kickoff_utc, extracted from the depth-chart week-
+derivation logic that already computes this exact value; requires a
+`schedules` DataFrame passed through to shape_content_draft_rows/
+curate_nfl_shelves — optional, same "omit it, get None for this one
+field" fallback as anthropic_api_key).
 
-NOT BUILT HERE EITHER: an actual HTTP write to nfl_content_drafts. The
-shaping function (shape_content_draft_rows) produces exactly the rows a
-write would need, and write_content_draft_rows() below is structured to
-send them (reusing lovable_forward.py's existing signed-POST machinery,
-same convention as every other NFL webhook write) — but isn't wired to
-a confirmed real endpoint (same "URL naming convention documented, not
-guessed at" pattern nfl/api/index.py's own DEFAULT_NFL_PRICE_HISTORY_
-WRITE_URL already established for exactly this "target isn't live yet"
-situation), and wasn't exercised against anything real in this task:
-writing incomplete rows (null headline/why_its_tasty) into a real
-production content-drafts table is exactly the kind of hard-to-reverse
-action worth Sam's explicit go-ahead first, not something to fire off
-as a side effect of validating selection logic.
+write_content_draft_rows() below now points at the real endpoint via
+the LOVABLE_NFL_CONTENT_DRAFTS_WRITE_URL env var (resolve_url_env, same
+established pattern as LOVABLE_NFL_PRICE_HISTORY_WRITE_URL in nfl/api/
+index.py) — the DEFAULT_ constant below is kept only as resolve_url_env's
+required fallback argument, not the real source of truth.
 """
 import sys
 from pathlib import Path
@@ -112,11 +113,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 
 from normalize import build_reference_scale, fill_neutral, percentile_lookup
+from redzone import add_kickoff_utc
 from shelves import CONFIG as SHELVES_CONFIG
 from shelves import (
     ODDS_BANDS, add_red_zone_trend_windows, eligible_pool, odds_band_eligible,
     odds_band_story, position_story, red_zone_story,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
+from generate_tasty_six_content import generate_nfl_tasty_six_draft  # noqa: E402
+from nfl_writer_common import nfl_confidence_band_for_score  # noqa: E402
 
 SHELF_ORDER = [
     "Red Zone Trends", "RB Trends", "WR Trends", "TE Trends",
@@ -429,7 +435,7 @@ def _story_for_row(row: pd.Series, shelf_name: str) -> dict:
 
     Requires add_red_zone_trend_windows() already applied upstream when
     shelf_name == "Red Zone Trends" — see shape_content_draft_rows'
-    weekly_story_lookup construction, the only caller.
+    weekly_lookup construction, the only caller.
     """
     if shelf_name == "Red Zone Trends":
         return red_zone_story(row)
@@ -438,90 +444,220 @@ def _story_for_row(row: pd.Series, shelf_name: str) -> dict:
     return odds_band_story(row)
 
 
+# {shelf_name: (why_reasons pillar tag, real column to cite as the sole
+# source_fact_key)} — the deterministic path's own pillar mapping, used
+# by _deterministic_why_reasons below. Odds-band shelves map to
+# "market_value" as the closest available real pillar name (see that
+# function's own docstring for why this is a deliberate approximation,
+# not a literal match: odds_band_story's real citation is tpe_score, the
+# COMPOSITE score, not market_value_score specifically — there's no
+# "composite" option in the real 5-pillar enum, and market_value is the
+# closest conceptual fit for an odds-driven shelf).
+_DETERMINISTIC_PILLAR_FOR_SHELF = {
+    "Red Zone Trends": ("td_opportunity", "td_opportunity"),
+    "RB Trends": ("role_momentum", "role_momentum"),
+    "WR Trends": ("role_momentum", "role_momentum"),
+    "TE Trends": ("role_momentum", "role_momentum"),
+    "ATTD +300-499": ("market_value", "tpe_score"),
+    "ATTD +500-699": ("market_value", "tpe_score"),
+    "ATTD +700+": ("market_value", "tpe_score"),
+}
+
+
+def _deterministic_why_reasons(row: pd.Series, shelf_name: str, story: dict) -> list:
+    """
+    Wraps Part A's deterministic single headline+evidence text into the
+    real why_reasons column's {pillar, stars, reason_text, source_fact_
+    keys} array shape — the same shape Part C's LLM writer produces for
+    Tasty Six, so the real column is genuinely consistent across both
+    content paths, not two different types depending on row.
+
+    DESIGN CHOICE, reported per explicit instruction rather than just
+    silently decided: a SINGLE-ITEM array, not the LLM writer's 2-3 item
+    array. Two real options existed: (a) reshape the deterministic
+    story's prose into multiple itemized reasons, which would mean
+    retrofitting a citation-tracking system shelves.py's story functions
+    were never built to produce (they generate one grounded narrative
+    per card, by construction, not itemized claims each traceable to a
+    specific fact — inventing that after the fact risks OVER-claiming
+    citations the deterministic system never actually validated per-
+    item); (b) one honest item, citing the single real pillar column the
+    story is actually built from. Chose (b) — it's exactly as grounded
+    as the deterministic system already is (no new claims), and matches
+    the schema's real minItems=1 requirement without fabricating
+    structure that isn't there.
+
+    `stars`: no existing star rating from the deterministic system (it
+    was never built to produce one) — derived here from the SAME real
+    pillar value that determined this shelf/story, banded the same rough
+    way card_writer_common._expected_star_range works (a sanity range,
+    collapsed to one representative value per band since `stars` must be
+    a single int here, not a range).
+    """
+    pillar, source_key = _DETERMINISTIC_PILLAR_FOR_SHELF[shelf_name]
+    real_score = row.get(source_key)
+    if real_score is None or pd.isna(real_score):
+        stars = 3
+    elif real_score >= 75:
+        stars = 5
+    elif real_score >= 60:
+        stars = 4
+    elif real_score >= 40:
+        stars = 3
+    elif real_score >= 25:
+        stars = 2
+    else:
+        stars = 1
+    return [{
+        "pillar": pillar,
+        "stars": stars,
+        "reason_text": story["evidence"],
+        "source_fact_keys": [source_key],
+    }]
+
+
+def _matchup_from_game_id(game_id) -> str | None:
+    """"{away} @ {home}", parsed directly from nflverse's own game_id
+    convention ("{season}_{week}_{away}_{home}") — no schedules lookup
+    needed, since game_id already encodes this and is already on every
+    scored row. Matches MLB's own real candidate shape's "matchup"
+    convention exactly (confirmed against pipeline/api/content_writer's
+    own real fixture data, e.g. "AZ @ PIT") — reused, not invented."""
+    if not isinstance(game_id, str):
+        return None
+    parts = game_id.split("_")
+    if len(parts) != 4:
+        return None
+    _, _, away, home = parts
+    return f"{away} @ {home}"
+
+
 def shape_content_draft_rows(
-    capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int, weekly: pd.DataFrame = None,
+    capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int,
+    weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
 ) -> list:
     """
-    One dict per (surviving-the-cap) player-shelf placement, shaped for
-    an eventual nfl_content_drafts write. Every field this task's own
-    selection/ranking logic actually owns is real.
+    One dict per (surviving-the-cap) player-shelf placement, shaped to
+    match the REAL nfl_content_drafts columns exactly (confirmed
+    directly, not the placeholder names this module used before this
+    task): player_id, player_name, event_id, team, opponent, matchup,
+    odds, kickoff_utc, season, week, shelf, rank, is_tasty_six,
+    review_status, title, editorial_sentence, why_reasons,
+    confidence_band.
 
-    RECONNECTED (Part A): headline/why_its_tasty now come from shelves.
-    py's own deterministic, already-validated story generators (see
-    _story_for_row) for every REGULAR (non-Tasty-Six) row — real,
-    grounded template text, not an LLM call. `weekly` is the same
-    already-scored table assign_home_shelves() was built from; pass it
-    here (or through curate_nfl_shelves, which threads it automatically)
-    to populate real content. Omit it (the old behavior, still supported
-    for callers that only need the selection/ranking fields) and every
-    row's headline/why_its_tasty fall back to None, same as before this
-    task.
+    event_id = game_id (nflverse's own real per-game identifier, already
+    unique, already on every scored row — no new identifier scheme
+    invented). team = posteam. opponent = defteam. matchup is parsed
+    from game_id directly (_matchup_from_game_id) — no schedules
+    dependency for this one. odds = consensus_price_american.
+    kickoff_utc has NO existing source on `weekly` at all — requires
+    `schedules` passed in (redzone.add_kickoff_utc merges it on by
+    game_id); omit `schedules` and kickoff_utc stays None for every row,
+    same "missing input -> honest None, not a guess" fallback as every
+    other optional parameter here.
 
-    TASTY SIX ROWS ARE DELIBERATELY EXCLUDED from this deterministic
-    path — is_tasty_six=True rows keep headline/why_its_tasty as None
-    here regardless of whether `weekly` was passed, per the approved
-    architecture: Tasty Six gets its own LLM writer (Part C, not yet
-    built), not shelves.py's per-shelf template text. Writing the
-    deterministic version in first would mean a real risk of a
-    half-upgraded card shipping if Part C is delayed — None is the
-    honest "not written yet" signal, same discipline as leaving these
-    fields None entirely before this task.
+    CONTENT: regular (non-Tasty-Six) rows get shelves.py's deterministic
+    story generators (Part A), reshaped into the real why_reasons array
+    via _deterministic_why_reasons — real, grounded, no LLM call.
+    editorial_sentence stays None for these rows (MLB's own regular-
+    card-has-no-editorial-sentence convention, reused).
 
-    editorial_content stays None for every row, Tasty Six or not — no
-    deterministic or LLM source for it exists yet at either tier (see
-    module docstring; Part C is scoped to add it for Tasty Six only,
-    matching MLB's own regular-card-has-no-editorial-sentence split).
+    Tasty Six rows get a REAL call into generate_tasty_six_content.py's
+    generate_nfl_tasty_six_draft() (Part C's actual LLM writer) — ONLY
+    when `anthropic_api_key` is provided. Omit it (the default) and
+    Tasty Six rows keep title/editorial_sentence/why_reasons/confidence_
+    band as None — the same honest "not generated yet" signal as before
+    this task, not an exception. confidence_band is derived from
+    tpe_score via nfl_confidence_band_for_score() (now-approved
+    thresholds) before the writer call; a tpe_score outside its real
+    [55, 100] range (shouldn't happen for a genuine Tasty Six row, which
+    is gated at >=55 by construction) skips the writer call entirely
+    rather than forcing a default band.
 
     review_status is always "pending_review" — never auto-approved, per
-    explicit instruction; nothing in this task ever sets it to anything
-    else.
+    explicit instruction; nothing here ever sets it to anything else.
     """
     if len(capped_assignments) == 0:
         return []
     tasty_lookup = {shelf: (row["player_id"] if row is not None else None) for shelf, row in tasty_six.items()}
 
-    story_lookup = {}
+    weekly_lookup = {}
     if weekly is not None and len(weekly) > 0:
         prepped = add_red_zone_trend_windows(weekly)
-        story_lookup = {row["player_id"]: row for _, row in prepped.iterrows()}
+        if schedules is not None and len(schedules) > 0:
+            prepped = add_kickoff_utc(prepped, schedules)
+        weekly_lookup = {row["player_id"]: row for _, row in prepped.iterrows()}
 
     rows = []
     for _, r in capped_assignments[~capped_assignments["capped"]].iterrows():
         is_tasty_six = tasty_lookup.get(r["home_shelf"]) == r["player_id"]
+        full_row = weekly_lookup.get(r["player_id"])
 
-        headline, why_its_tasty = None, None
-        if not is_tasty_six and r["player_id"] in story_lookup:
-            story = _story_for_row(story_lookup[r["player_id"]], r["home_shelf"])
-            headline, why_its_tasty = story["headline"], story["evidence"]
+        event_id = team = opponent = matchup = kickoff_utc = None
+        if full_row is not None:
+            game_id = full_row.get("game_id")
+            event_id = game_id
+            team = full_row.get("posteam")
+            opponent = full_row.get("defteam")
+            matchup = _matchup_from_game_id(game_id)
+            ku = full_row.get("kickoff_utc")
+            if pd.notna(ku) and hasattr(ku, "isoformat"):
+                kickoff_utc = ku.isoformat()
+
+        title = editorial_sentence = confidence_band = None
+        why_reasons = None
+
+        if is_tasty_six:
+            if full_row is not None and anthropic_api_key:
+                band = nfl_confidence_band_for_score(full_row.get("tpe_score"))
+                if band is not None:
+                    draft = generate_nfl_tasty_six_draft(full_row.to_dict(), r["home_shelf"], band, anthropic_api_key)
+                    title = draft.get("title")
+                    editorial_sentence = draft.get("editorial_sentence")
+                    why_reasons = draft.get("why_reasons")
+                    confidence_band = draft.get("confidence_band")
+        elif full_row is not None:
+            story = _story_for_row(full_row, r["home_shelf"])
+            title = story["headline"]
+            why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
 
         rows.append({
             "player_id": r["player_id"],
             "player_name": r["player_name"],
+            "event_id": event_id,
+            "team": team,
+            "opponent": opponent,
+            "matchup": matchup,
+            "odds": r.get("consensus_price_american"),
+            "kickoff_utc": kickoff_utc,
             "season": season,
             "week": week,
             "shelf": r["home_shelf"],
             "rank": int(r["rank"]),
             "is_tasty_six": is_tasty_six,
             "review_status": "pending_review",
-            "tpe_score": r.get("tpe_score"),
-            "evidence_quality": r.get("evidence_quality"),
-            "consensus_price_american": r.get("consensus_price_american"),
-            "headline": headline,
-            "why_its_tasty": why_its_tasty,
-            "editorial_content": None,
+            "title": title,
+            "editorial_sentence": editorial_sentence,
+            "why_reasons": why_reasons,
+            "confidence_band": confidence_band,
         })
     return rows
 
 
 def curate_nfl_shelves(
     weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG, shelves_config: dict = SHELVES_CONFIG,
+    schedules: pd.DataFrame = None, anthropic_api_key: str = None,
 ) -> dict:
     """
-    The full pipeline, steps 1-5 + shaping (step 7 minus content, per
-    this module's own docstring): eligibility -> home-shelf assignment
-    -> max-6 cap -> Tasty Six -> content_drafts row shaping. Does NOT
-    write anywhere — see write_content_draft_rows for that, and its own
-    docstring for why this task stops short of actually calling it.
+    The full pipeline, steps 1-7: eligibility -> home-shelf assignment
+    -> max-6 cap -> Tasty Six -> content_drafts row shaping (real
+    content included — see shape_content_draft_rows). Does NOT write
+    anywhere — see write_content_draft_rows for that.
+
+    `schedules`/`anthropic_api_key` thread straight through to shape_
+    content_draft_rows — see its own docstring for what each unlocks
+    (kickoff_utc; real Tasty Six LLM content) and what happens when
+    either is omitted (honest None, not a guess or a skipped row).
 
     Returns {"home_assignments": DataFrame, "capped": DataFrame,
     "tasty_six": dict, "content_draft_rows": list}.
@@ -529,7 +665,9 @@ def curate_nfl_shelves(
     home_assignments = assign_home_shelves(weekly, config, shelves_config)
     capped = apply_shelf_cap(home_assignments, config)
     tasty_six = select_tasty_six(capped, config)
-    content_draft_rows = shape_content_draft_rows(capped, tasty_six, season, week, weekly=weekly)
+    content_draft_rows = shape_content_draft_rows(
+        capped, tasty_six, season, week, weekly=weekly, schedules=schedules, anthropic_api_key=anthropic_api_key,
+    )
     return {
         "home_assignments": home_assignments,
         "capped": capped,
@@ -538,24 +676,27 @@ def curate_nfl_shelves(
     }
 
 
+# Fallback only for resolve_url_env — the real value comes from the
+# LOVABLE_NFL_CONTENT_DRAFTS_WRITE_URL Vercel env var (confirmed real,
+# same established pattern as LOVABLE_NFL_PRICE_HISTORY_WRITE_URL in
+# nfl/api/index.py), not this constant. Kept only as resolve_url_env's
+# required fallback argument.
 DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/nfl-content-drafts-write"
 
 
 def write_content_draft_rows(rows: list, secret: str, write_url: str = None):
     """
-    NOT CALLED anywhere in this task — see module docstring. Reuses
-    lovable_forward.py's existing signed-POST machinery (the same
+    Reuses lovable_forward.py's existing signed-POST machinery (the same
     HMAC/X-Signature pattern every other NFL webhook write already
-    uses), rather than a new mechanism. write_url follows the same
-    "documented naming convention, not a confirmed real route" pattern
-    as DEFAULT_NFL_PRICE_HISTORY_WRITE_URL in nfl/api/index.py — will
-    404/502 harmlessly, not silently succeed, until the real endpoint
-    and env var are confirmed and set.
+    uses). `write_url`, if not passed explicitly, resolves from the real
+    LOVABLE_NFL_CONTENT_DRAFTS_WRITE_URL env var via resolve_url_env
+    (same pattern as every other confirmed-real NFL write route) rather
+    than the DEFAULT_ constant above.
     """
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from lovable_forward import forward_to_lovable
+    from lovable_forward import forward_to_lovable, resolve_url_env
 
-    url = write_url or DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL
+    url = write_url or resolve_url_env("LOVABLE_NFL_CONTENT_DRAFTS_WRITE_URL", DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL)
     return forward_to_lovable(rows, secret, url)

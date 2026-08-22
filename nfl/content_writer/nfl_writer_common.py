@@ -38,10 +38,11 @@ which is already flat-column-shaped by construction.
 import sys
 from pathlib import Path
 
-# pipeline/api/content_writer, sibling repo directory — see module
-# docstring for why this cross-imports rather than forking.
-_PIPELINE_CONTENT_WRITER = Path(__file__).resolve().parent.parent.parent / "pipeline" / "api" / "content_writer"
-sys.path.insert(0, str(_PIPELINE_CONTENT_WRITER))
+# This file's own directory — card_writer_common.py is a LOCAL, vendored
+# copy (see its own header for why: this Vercel project's Root Directory
+# is `nfl`, so a cross-import into sibling pipeline/ 404s once deployed;
+# found and fixed while building the write-connection endpoint).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from card_writer_common import EXACT_TOLERANCE, ROUNDING_TOLERANCE  # noqa: E402
 
@@ -244,3 +245,47 @@ def build_nfl_writer_candidate(row: dict) -> dict:
     statuses = _as_list(c.get("ahead_injury_statuses"))
     c["teammates_ahead_injury_status"] = ", ".join(statuses) if statuses else None
     return c
+
+
+# ---------------------------------------------------------------------------
+# Confidence-band thresholds — APPROVED (write-connection task), built
+# here now that they're no longer pending. Grounded in tpe_score's real
+# distribution among the ONLY population this ever runs against (real
+# Tasty-Six-qualifying rows, tpe_score>=55 by the already-approved gate):
+# full historical backfill, n=1118, min=55.0 (the gate itself), p25=57.4,
+# p50=60.5, p75=64.8, p90=70.4, p95=73.2, p99=78.3, max=85.7 — NOT MLB's
+# 25-90 range, which tpe_score never approaches (see the conversation
+# this was investigated and proposed in). Band NAMES reused unmodified
+# from MLB's emotional_intensity.py (cross-imported, not redefined) —
+# only these NFL-specific cutoffs are new.
+# ---------------------------------------------------------------------------
+NFL_CONFIDENCE_BAND_THRESHOLDS = (
+    (55.0, 60.0, "quiet_signal"),
+    (60.0, 65.0, "developing_angle"),
+    (65.0, 75.0, "strong_setup"),
+    (75.0, 100.0, "premium_signal"),
+)
+
+
+def nfl_confidence_band_for_score(tpe_score) -> str | None:
+    """
+    NFL's own version of MLB's principles.confidence_band_for_score() —
+    same fail-safe shape (None outside the real range, half-open bands
+    except the top one, which stays upper-inclusive), different cutoffs
+    (see NFL_CONFIDENCE_BAND_THRESHOLDS above for why). None below 55 is
+    a genuine safety net, not an expected path: 55 is the Tasty Six gate
+    itself, so nothing calling this with a real Tasty Six row's tpe_score
+    should ever actually hit it — a None here signals this was called on
+    a row that shouldn't have reached the LLM writer at all, not a
+    legitimate low-confidence case needing quiet_signal.
+    """
+    if tpe_score is None:
+        return None
+    last_index = len(NFL_CONFIDENCE_BAND_THRESHOLDS) - 1
+    for i, (lo, hi, band) in enumerate(NFL_CONFIDENCE_BAND_THRESHOLDS):
+        if i == last_index:
+            if lo <= tpe_score <= hi:
+                return band
+        elif lo <= tpe_score < hi:
+            return band
+    return None

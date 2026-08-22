@@ -49,13 +49,13 @@ import json
 import sys
 from pathlib import Path
 
-_PIPELINE_VOICE = Path(__file__).resolve().parent.parent.parent / "pipeline" / "api" / "content_writer" / "voice"
-sys.path.insert(0, str(_PIPELINE_VOICE))
+# LOCAL, vendored copies (this file's own voice/ subdirectory), not
+# cross-imports into sibling pipeline/ — see voice/banned_language.py's
+# own header for why.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
 from banned_language import GUARANTEE_LANGUAGE, LITERAL_BETTING_SLANG  # noqa: E402 -- reused unmodified
 from emotional_intensity import intensity_for_band  # noqa: E402 -- reused unmodified
-
-sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 from nfl_shelf_personalities import personality_for_shelf  # noqa: E402 -- NFL's own
 
 
