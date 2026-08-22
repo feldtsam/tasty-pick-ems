@@ -101,6 +101,7 @@ established pattern as LOVABLE_NFL_PRICE_HISTORY_WRITE_URL in nfl/api/
 index.py) — the DEFAULT_ constant below is kept only as resolve_url_env's
 required fallback argument, not the real source of truth.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -261,6 +262,84 @@ def _trend_percentiles(shelf_pools: dict) -> dict:
     return percentiles
 
 
+STICKINESS_MARGIN = 20.0
+
+
+def _compute_sticky_assignment(
+    candidate_shelf: str, candidate_signal: float,
+    current_home_shelf: str, current_signal,
+    prior_pending_shelf, prior_pending_run_count: int,
+    margin: float = STICKINESS_MARGIN,
+) -> dict:
+    """
+    Pure state-transition function for Proposal 2's approved stickiness
+    rule (20-point margin, 2 consecutive weekly curation runs) — isolated
+    from all I/O so it's directly unit-testable against hand-built and
+    real historical cases, independent of the read/write plumbing around
+    it.
+
+    `candidate_shelf`/`candidate_signal`: THIS week's fresh, non-sticky
+    pick — exactly what assign_home_shelves' own existing trend-priority
+    + percentile-tiebreak logic already computes, unchanged. `current_
+    home_shelf`: the player's real prior-week home shelf. `current_
+    signal`: THIS week's fresh signal value for current_home_shelf — NOT
+    a historical value; the margin comparison always uses live, current-
+    week numbers for BOTH shelves, per the approved design (only WHICH
+    shelf was already pending, not the raw comparison itself, is
+    historical). None specifically means the player no longer qualifies
+    for current_home_shelf AT ALL this week — its real signal is simply
+    absent, not low.
+
+    RAW SIGNAL VALUES, NOT PERCENTILE — a deliberate, considered choice,
+    not an oversight: Proposal 2's own approved language is "the current
+    shelf's underlying signal SCORE" and "a 20-point margin... on the
+    0-100 scale", written before this session's later percentile fix to
+    the (separate) initial trend-vs-trend tiebreak — and that fix was
+    explicitly confirmed at the time to leave "trend-vs-odds priority
+    and first-appearance assignment... provably untouched". Stickiness
+    is a third, separate mechanism nothing has approved applying that
+    fix to. Implemented literally as approved. Flagged here because the
+    SAME cross-shelf raw-scale bias that motivated the percentile fix
+    (td_opportunity running structurally higher than role_momentum for
+    the same real players) applies in principle to this comparison too
+    — worth a real second look with Sam, not silently assumed fine.
+
+    current_signal=None (the player's PRIOR home shelf isn't something
+    they qualify for AT ALL this week) is NOT explicitly covered by the
+    approved rules — those addressed the PENDING shelf disappearing
+    (resets the streak), not the CURRENT shelf disappearing. Extended
+    here by the same underlying principle: there's no valid "current"
+    shelf left to be sticky about, so this week's fresh candidate
+    becomes the new home shelf immediately, no 2-week wait required —
+    a real interpretive extension of the approved design, not something
+    explicitly signed off, flagged as such rather than silently assumed.
+
+    Returns {"home_shelf": str, "pending_shelf": str|None,
+    "pending_run_count": int} — the real new state to both use for this
+    week's output AND persist to nfl_shelf_signal_history for next week.
+    """
+    if current_signal is None:
+        return {"home_shelf": candidate_shelf, "pending_shelf": None, "pending_run_count": 0}
+
+    if candidate_shelf == current_home_shelf:
+        # The fresh, non-sticky pick already agrees with the real current
+        # shelf — nothing being challenged, nothing pending.
+        return {"home_shelf": current_home_shelf, "pending_shelf": None, "pending_run_count": 0}
+
+    if candidate_signal - current_signal >= margin:
+        new_count = (prior_pending_run_count + 1) if candidate_shelf == prior_pending_shelf else 1
+        if new_count >= 2:
+            # Reassignment fires — nothing pending against the NEW home
+            # shelf going forward (a fresh baseline, per the approved
+            # design: "nothing pending immediately after a successful
+            # reassignment").
+            return {"home_shelf": candidate_shelf, "pending_shelf": None, "pending_run_count": 0}
+        return {"home_shelf": current_home_shelf, "pending_shelf": candidate_shelf, "pending_run_count": new_count}
+
+    # Margin not met this week — approved rule: reset, don't partial-credit.
+    return {"home_shelf": current_home_shelf, "pending_shelf": None, "pending_run_count": 0}
+
+
 def assign_home_shelves(
     weekly: pd.DataFrame, config: dict = CONFIG, shelves_config: dict = SHELVES_CONFIG,
     prior_assignments: dict = None,
@@ -271,22 +350,31 @@ def assign_home_shelves(
     player_id, player_name, posteam, position_group, home_shelf,
     home_shelf_signal_value, tpe_score, evidence_quality, consensus_
     price_american, qualifying_shelves (every OTHER shelf this player
-    also qualifies for — the "secondary qualifications become tags"
-    data build step 3 needs).
+    also qualifies for), qualifying_signals (EVERY shelf's real raw
+    signal value this player qualifies for this week — the full real
+    picture nfl_shelf_signal_history needs, not just the winning
+    shelf's), pending_shelf, pending_run_count (this week's REAL,
+    updated stickiness state — see _compute_sticky_assignment).
 
-    prior_assignments: {player_id: {"shelf": str, "run_count": int}},
-    reserved for the real stickiness comparison (Proposal 2) — accepted
-    here but NOT YET USED (always None-equivalent behavior regardless
-    of what's passed) until nfl_content_drafts' real history-retention
-    is confirmed. Threading the parameter through now, unused, means
-    wiring in the real comparison later only touches this function's
-    body, not every caller's signature.
+    prior_assignments: {player_id: {"home_shelf": str, "pending_shelf":
+    str|None, "pending_run_count": int}} — real prior-week (or walked-
+    back further, for a bye gap — see build_prior_state_with_walkback)
+    state, as read from nfl_shelf_signal_history. None (the default,
+    still fully supported) means every player is treated as a first
+    appearance — the exact behavior this function always had before
+    stickiness was wired in, not a regression: home_shelf is always
+    just this week's fresh candidate, pending_shelf/pending_run_count
+    always None/0. A player with no entry in prior_assignments (even
+    when prior_assignments itself is non-None for OTHER players) is
+    ALSO treated as first-appearance individually — the same "no prior
+    row -> no comparison" rule the approved design already specifies.
     """
     overall_pool = weekly[_attd_eligible_overall(weekly, config["attd_odds_floor"])].drop_duplicates(subset=["player_id"]).copy()
     columns = [
         "player_id", "player_name", "posteam", "position_group", "home_shelf",
         "home_shelf_signal_value", "tpe_score", "evidence_quality",
         "consensus_price_american", "qualifying_shelves",
+        "qualifying_signals", "pending_shelf", "pending_run_count",
     ]
     if len(overall_pool) == 0:
         return pd.DataFrame(columns=columns)
@@ -325,12 +413,30 @@ def assign_home_shelves(
             # of odds-shelf eligibility). Trend-vs-trend itself is now
             # resolved by PERCENTILE rank within each shelf's own
             # population, not raw score — see _trend_percentiles.
-            home_shelf = max(qualifying_trend, key=lambda s: trend_percentiles[s][pid])
+            candidate_shelf = max(qualifying_trend, key=lambda s: trend_percentiles[s][pid])
         else:
             # Fallback: whichever odds band matches their current price
             # — ODDS_BANDS are non-overlapping by construction, so this
             # is always exactly one shelf when it's reached at all.
-            home_shelf = next(iter(qualifying_odds))
+            candidate_shelf = next(iter(qualifying_odds))
+
+        prior = prior_assignments.get(pid) if prior_assignments else None
+        if prior is None:
+            # First appearance (or stickiness not wired in by this
+            # caller at all) — exact prior behavior, unchanged: this
+            # week's fresh candidate IS the home shelf, nothing pending.
+            home_shelf = candidate_shelf
+            pending_shelf, pending_run_count = None, 0
+        else:
+            current_home_shelf = prior.get("home_shelf")
+            current_signal = player_shelves.get(current_home_shelf)
+            sticky = _compute_sticky_assignment(
+                candidate_shelf, player_shelves[candidate_shelf],
+                current_home_shelf, current_signal,
+                prior.get("pending_shelf"), prior.get("pending_run_count") or 0,
+            )
+            home_shelf = sticky["home_shelf"]
+            pending_shelf, pending_run_count = sticky["pending_shelf"], sticky["pending_run_count"]
 
         rows.append({
             "player_id": pid,
@@ -343,6 +449,9 @@ def assign_home_shelves(
             "evidence_quality": prow.get("evidence_quality"),
             "consensus_price_american": prow.get("consensus_price_american"),
             "qualifying_shelves": sorted(s for s in player_shelves if s != home_shelf),
+            "qualifying_signals": dict(player_shelves),
+            "pending_shelf": pending_shelf,
+            "pending_run_count": pending_run_count,
         })
 
     return pd.DataFrame(rows, columns=columns)
@@ -729,33 +838,48 @@ def shape_content_draft_rows(
 
 def curate_nfl_shelves(
     weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG, shelves_config: dict = SHELVES_CONFIG,
-    schedules: pd.DataFrame = None, anthropic_api_key: str = None,
+    schedules: pd.DataFrame = None, anthropic_api_key: str = None, prior_assignments: dict = None,
 ) -> dict:
     """
     The full pipeline, steps 1-7: eligibility -> home-shelf assignment
-    -> max-6 cap -> Tasty Six -> content_drafts row shaping (real
-    content included — see shape_content_draft_rows). Does NOT write
-    anywhere — see write_content_draft_rows for that.
+    (real stickiness applied when prior_assignments is provided — see
+    assign_home_shelves/_compute_sticky_assignment) -> max-6 cap ->
+    Tasty Six -> content_drafts row shaping (real content included —
+    see shape_content_draft_rows). Does NOT write anywhere — see
+    write_content_draft_rows/write_shelf_signal_history_rows for that.
 
     `schedules`/`anthropic_api_key` thread straight through to shape_
     content_draft_rows — see its own docstring for what each unlocks
     (kickoff_utc; real Tasty Six LLM content) and what happens when
     either is omitted (honest None, not a guess or a skipped row).
 
+    `prior_assignments`: the real, walked-back prior-week stickiness
+    state (see build_prior_state_with_walkback) — omit it (the default)
+    for the exact prior, non-sticky behavior (every player treated as
+    first appearance).
+
     Returns {"home_assignments": DataFrame, "capped": DataFrame,
-    "tasty_six": dict, "content_draft_rows": list}.
+    "tasty_six": dict, "content_draft_rows": list,
+    "shelf_signal_history_rows": list} — the last one is this week's
+    real updated stickiness state, shaped and ready for write_shelf_
+    signal_history_rows, covering every real home-assigned player (not
+    just the ones with a written content-drafts row — next week's
+    comparison needs every real qualifying signal, not just what made
+    the cap).
     """
-    home_assignments = assign_home_shelves(weekly, config, shelves_config)
+    home_assignments = assign_home_shelves(weekly, config, shelves_config, prior_assignments=prior_assignments)
     capped = apply_shelf_cap(home_assignments, config)
     tasty_six = select_tasty_six(capped, config)
     content_draft_rows = shape_content_draft_rows(
         capped, tasty_six, season, week, weekly=weekly, schedules=schedules, anthropic_api_key=anthropic_api_key,
     )
+    shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
     return {
         "home_assignments": home_assignments,
         "capped": capped,
         "tasty_six": tasty_six,
         "content_draft_rows": content_draft_rows,
+        "shelf_signal_history_rows": shelf_signal_history_rows,
     }
 
 
@@ -763,8 +887,13 @@ def curate_nfl_shelves(
 # LOVABLE_NFL_CONTENT_DRAFTS_WRITE_URL Vercel env var (confirmed real,
 # same established pattern as LOVABLE_NFL_PRICE_HISTORY_WRITE_URL in
 # nfl/api/index.py), not this constant. Kept only as resolve_url_env's
-# required fallback argument.
-DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/nfl-content-drafts-write"
+# required fallback argument. Drive-by fix: corrected to the real
+# confirmed production domain (tastypickems.com, not the stale
+# .lovable.app placeholder this constant was originally written with,
+# before the real domain was confirmed during the write-connection task)
+# — cosmetic only, since resolve_url_env's real env-var value already
+# overrides this in practice.
+DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL = "https://tastypickems.com/api/public/nfl-content-drafts-write"
 
 
 def write_content_draft_rows(rows: list, secret: str, write_url: str = None):
@@ -783,3 +912,150 @@ def write_content_draft_rows(rows: list, secret: str, write_url: str = None):
 
     url = write_url or resolve_url_env("LOVABLE_NFL_CONTENT_DRAFTS_WRITE_URL", DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL)
     return forward_to_lovable(rows, secret, url)
+
+
+# ---------------------------------------------------------------------------
+# Stickiness state persistence (nfl_shelf_signal_history) — Proposal 2's
+# real read/write plumbing, confirmed real infrastructure (built by
+# Lovable): player_id/season/week/home_shelf/qualifying_signals (jsonb)/
+# pending_shelf/pending_run_count, unique on (player_id, season, week).
+# ---------------------------------------------------------------------------
+
+DEFAULT_NFL_SHELF_SIGNAL_HISTORY_WRITE_URL = "https://tastypickems.com/api/public/nfl-shelf-signal-history-write"
+DEFAULT_NFL_SHELF_SIGNAL_HISTORY_READ_URL = "https://tastypickems.com/api/public/nfl-shelf-signal-history-read"
+
+
+def shape_shelf_signal_history_rows(home_assignments: pd.DataFrame, season: int, week: int) -> list:
+    """
+    One row per home-assigned player (every ATTD-eligible qualifying
+    player, capped or not — this table tracks ALL real qualifying
+    signals, not just what survives shape_content_draft_rows' cap/
+    content filtering, since next week's stickiness comparison needs
+    every real candidate shelf's signal, not just the ones that got a
+    written content-drafts row this week).
+    """
+    if len(home_assignments) == 0:
+        return []
+    rows = []
+    for _, r in home_assignments.iterrows():
+        rows.append({
+            "player_id": r["player_id"],
+            "season": season,
+            "week": week,
+            "home_shelf": r["home_shelf"],
+            "qualifying_signals": r["qualifying_signals"],
+            "pending_shelf": r.get("pending_shelf"),
+            "pending_run_count": int(r.get("pending_run_count") or 0),
+        })
+    return rows
+
+
+def write_shelf_signal_history_rows(rows: list, secret: str, write_url: str = None):
+    """Same real signed-POST mechanism as write_content_draft_rows —
+    see its own docstring."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = write_url or resolve_url_env("LOVABLE_NFL_SHELF_SIGNAL_HISTORY_WRITE_URL", DEFAULT_NFL_SHELF_SIGNAL_HISTORY_WRITE_URL)
+    return forward_to_lovable(rows, secret, url)
+
+
+def read_shelf_signal_history(season: int, week: int, secret: str, read_url: str = None) -> dict:
+    """
+    One signed POST (body {"season": season, "week": week}), returns
+    {"ok": bool, "error": str|None, "status_code": int|None, "rows":
+    {player_id: {"home_shelf", "qualifying_signals", "pending_shelf",
+    "pending_run_count"}}} for the ENTIRE real (season, week) — a real
+    "no rows for this week" response (e.g. a week before this mechanism
+    existed, or before any curation has run for it yet) is a genuine,
+    valid outcome (rows={}), not an error.
+
+    Reuses forward_to_lovable's exact sign+POST+capture-response
+    mechanism for this READ call too, despite its "forward rows to
+    write" naming — a deliberate reuse, not a misuse: the function is
+    already fully generic (any JSON-serializable payload, list or dict
+    — nothing inside it is actually list-specific at runtime), and this
+    read route uses the IDENTICAL sign-the-raw-body-then-POST mechanic
+    every write route already does. Building a second, near-duplicate
+    function just to rename "rows" to "query" would be pure churn for
+    zero real behavior difference.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = read_url or resolve_url_env("LOVABLE_NFL_SHELF_SIGNAL_HISTORY_READ_URL", DEFAULT_NFL_SHELF_SIGNAL_HISTORY_READ_URL)
+    result = forward_to_lovable({"season": season, "week": week}, secret, url)
+    if not result["success"]:
+        return {"ok": False, "error": result["error"], "status_code": result["status_code"], "rows": {}}
+    try:
+        body = json.loads(result["response_body"])
+    except (json.JSONDecodeError, TypeError):
+        return {
+            "ok": False, "error": f"non-JSON response body: {result['response_body']!r}",
+            "status_code": result["status_code"], "rows": {},
+        }
+    rows_by_player = {row["player_id"]: row for row in body.get("shelf_signal_history", [])}
+    return {"ok": True, "error": None, "status_code": result["status_code"], "rows": rows_by_player}
+
+
+def build_prior_state_with_walkback(
+    season: int, week: int, eligible_player_ids, secret: str, max_lookback: int = 3, read_url: str = None,
+) -> dict:
+    """
+    Real bye-week handling, approved: "pause, don't reset" — a player
+    with no row for the immediately prior week (a bye, or simply wasn't
+    ATTD-eligible that week) should have their pending_shelf/pending_
+    run_count carried forward from their MOST RECENT real row, not
+    treated as first-appearance.
+
+    APPROACH CHOSEN: bulk, WEEK-scoped iterative walk-back, not per-
+    player round trips. The real read route only ever returns a whole
+    week's data in one call (no player_id filtering exists) — so
+    "walking back per player" here means walking back per WEEK instead,
+    merging each week's bulk response into a growing lookup and keeping
+    only the FIRST (=most recent) row found for each player_id, never
+    letting an older week's find overwrite a more-recent one already
+    located.
+
+    EARLY-STOP OPTIMIZATION: stops as soon as every player in
+    `eligible_player_ids` has been located — in the overwhelming normal
+    case (no bye-affected players in this week's eligible pool at all),
+    that's satisfied by the SINGLE week-1 call, zero extra round trips.
+    Only players genuinely missing from week-1 (a real bye, or a gap)
+    cost additional calls, and only up to max_lookback of them.
+
+    BOUNDED at max_lookback=3 real weeks back and at week<=1 (a real
+    season boundary, not an arbitrary cutoff) — generous enough to
+    bridge a single real bye (NFL byes are always exactly one missed
+    week, never back-to-back) with margin to spare, without scanning
+    arbitrarily far back for a player with no real prior history at all
+    (a rookie's first real game, e.g.), which would only ever find
+    nothing at the cost of real extra calls every single week for every
+    first-appearance player.
+
+    Returns {player_id: {"home_shelf", "qualifying_signals",
+    "pending_shelf", "pending_run_count", "found_at_week": int}} —
+    found_at_week is real, exposed diagnostic info (how many real weeks
+    back this player's row actually came from), not consumed by
+    assign_home_shelves' own logic, useful for real validation/
+    debugging (e.g. confirming a bye-gap case actually walked back
+    correctly, not just landed on week-1 by coincidence).
+    """
+    merged = {}
+    remaining = set(eligible_player_ids)
+    lookback_week = week - 1
+    attempts = 0
+    while lookback_week >= 1 and attempts < max_lookback and remaining:
+        result = read_shelf_signal_history(season, lookback_week, secret, read_url)
+        if result["ok"]:
+            for pid, row in result["rows"].items():
+                if pid in remaining:
+                    merged[pid] = {**row, "found_at_week": lookback_week}
+                    remaining.discard(pid)
+        lookback_week -= 1
+        attempts += 1
+    return merged

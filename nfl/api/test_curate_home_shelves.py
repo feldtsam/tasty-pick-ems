@@ -183,34 +183,57 @@ if __name__ == "__main__":
     results.append(check("every row has a real shelf, rank, and player_id", all(r["shelf"] and r["rank"] and r["player_id"] for r in draft_rows)))
 
     # ============================================================
-    # Part A reconnection — regular (non-Tasty-Six) rows get real
-    # deterministic content from shelves.py's own story generators;
-    # Tasty-Six rows are deliberately excluded (reserved for Part C's
-    # LLM writer); editorial_content stays None for everyone at this
-    # stage (stale assumption from before Part A corrected here, not
-    # left silently green — the old assertion claimed EVERY row's
-    # headline/why_its_tasty was None, which is no longer true).
+    # Real write-schema shape (confirmed against the live Lovable
+    # route, not the earlier placeholder field names): title/why_
+    # reasons, not headline/why_its_tasty -- stale assertions from
+    # before that fix updated here, not left silently crashing (the
+    # old assertions referenced fields that no longer exist at all).
+    # Regular (non-Tasty-Six) rows get real deterministic content from
+    # shelves.py's own story generators, reshaped into the real why_
+    # reasons array; Tasty-Six rows without a real anthropic_api_key
+    # stay content-less (None/[]) but STILL get a required, real
+    # confidence_band (see nfl_writer_common.py).
     # ============================================================
     regular_rows = [r for r in draft_rows if not r["is_tasty_six"]]
     tasty_rows = [r for r in draft_rows if r["is_tasty_six"]]
     results.append(check(
-        f"every real regular (non-Tasty-Six) row has a real, non-empty headline and why_its_tasty "
+        f"every real regular (non-Tasty-Six) row has a real, non-empty title and a real why_reasons array "
         f"({len(regular_rows)} rows checked)",
         len(regular_rows) > 0 and all(
-            isinstance(r["headline"], str) and r["headline"] and isinstance(r["why_its_tasty"], str) and r["why_its_tasty"]
+            isinstance(r["title"], str) and r["title"] and isinstance(r["why_reasons"], list) and len(r["why_reasons"]) > 0
             for r in regular_rows
         ),
     ))
     results.append(check(
-        f"every real Tasty-Six row still has headline/why_its_tasty=None (reserved for Part C's LLM writer, "
-        f"not this deterministic system) ({len(tasty_rows)} rows checked)",
-        all(r["headline"] is None and r["why_its_tasty"] is None for r in tasty_rows) if tasty_rows else True,
+        "every real regular row's why_reasons uses the real inner shape (pillar/stars/text/citation)",
+        all(
+            set(wr.keys()) == {"pillar", "stars", "text", "citation"}
+            for r in regular_rows for wr in r["why_reasons"]
+        ),
+    ))
+    results.append(check(
+        f"every real Tasty-Six row still has title=None/why_reasons=[] (no anthropic_api_key given this run "
+        f"-- reserved for Part C's real LLM writer, not this deterministic system) ({len(tasty_rows)} rows checked)",
+        all(r["title"] is None and r["why_reasons"] == [] for r in tasty_rows) if tasty_rows else True,
     ))
     if not tasty_rows:
         print("(no real Tasty-Six content_draft_row this run to check the exclusion against — see the Tasty Six sparsity check above)")
     results.append(check(
-        "editorial_content is None for every row (Tasty Six or not) -- no source produces it yet",
-        all(r["editorial_content"] is None for r in draft_rows),
+        "editorial_sentence is None for every regular row (MLB's own regular-card-has-no-editorial-sentence convention, reused)",
+        all(r["editorial_sentence"] is None for r in regular_rows),
+    ))
+    results.append(check(
+        "confidence_band is a real, non-null string on EVERY row, regular or Tasty Six (required by the real schema)",
+        all(isinstance(r["confidence_band"], str) and r["confidence_band"] for r in draft_rows),
+    ))
+    results.append(check(
+        "writer_type is 'shelf_card' for every regular row, 'tasty_six' for every Tasty Six row",
+        all(r["writer_type"] == "shelf_card" for r in regular_rows)
+        and all(r["writer_type"] == "tasty_six" for r in tasty_rows),
+    ))
+    results.append(check(
+        "validation_passed/validation_issues are real, non-null on every row (True/[] for the deterministic path, never hardcoded for Tasty Six)",
+        all(isinstance(r["validation_passed"], bool) and isinstance(r["validation_issues"], list) for r in draft_rows),
     ))
 
     print("\nReal reconnected content, spot-check across multiple real players/shelves:")
@@ -219,9 +242,9 @@ if __name__ == "__main__":
         if r["shelf"] in seen_shelves:
             continue
         seen_shelves.add(r["shelf"])
-        print(f"  [{r['shelf']}] {r['player_name']}")
-        print(f"    headline: {r['headline']}")
-        print(f"    why_its_tasty: {r['why_its_tasty']}")
+        print(f"  [{r['shelf']}] {r['player_name']} (confidence_band={r['confidence_band']})")
+        print(f"    title: {r['title']}")
+        print(f"    why_reasons: {r['why_reasons']}")
     print()
 
     # ============================================================
