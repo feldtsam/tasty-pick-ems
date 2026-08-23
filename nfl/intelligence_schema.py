@@ -20,8 +20,8 @@ FIELD SEMANTICS (family-agnostic; Market Intelligence's specific
 interpretation of each is documented in market_intelligence.py):
 
   intelligence_family   short slug identifying which family produced
-                         this story (e.g. "market") — not a display
-                         label.
+                         this story (e.g. "market_intelligence") — not
+                         a display label.
   entity                dict, {"type": ..., ...} — the subject of the
                          story. Market Intelligence's entity is always
                          a player; Defensive Trends' will presumably be

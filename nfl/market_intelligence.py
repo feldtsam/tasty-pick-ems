@@ -220,7 +220,7 @@ def build_market_intelligence_stories(
         )
 
         stories.append(build_story(
-            intelligence_family="market",
+            intelligence_family="market_intelligence",
             entity={
                 "type": "player", "player_id": row["player_id"], "player_name": row["player_name_raw"],
                 "team": row["team"], "position_group": row.get("position_group"),

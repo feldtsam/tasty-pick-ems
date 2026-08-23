@@ -121,13 +121,13 @@ if __name__ == "__main__":
 
     # Market Intelligence (lifecycle_eligible=False): real content row, lifecycle_state always None, zero history rows.
     market_story = build_story(
-        intelligence_family="market", entity={"type": "player", "player_id": "00-2222222", "player_name": "Test WR", "team": "TST", "position_group": "WR"},
+        intelligence_family="market_intelligence", entity={"type": "player", "player_id": "00-2222222", "player_name": "Test WR", "team": "TST", "position_group": "WR"},
         headline="Test WR is drawing real anytime-TD money.", story="Test story text.",
         primary_signal={"name": "market_value_score", "value": 72.0}, supporting_evidence=["ev"],
         trend_direction="strong-standing", trend_strength=72.0, sample_size=5, completeness=80.0, confidence=80.0,
         time_window="Single live snapshot, TST @ OPP, kickoff 2099-09-08T17:00:00Z", related_players=[],
     )
-    result_market = process_family("market", [market_story], {}, 2099, 1, lifecycle_eligible=False)
+    result_market = process_family("market_intelligence", [market_story], {}, 2099, 1, lifecycle_eligible=False)
     results.append(check(
         f"Market Intelligence: real content row written with lifecycle_state=None, zero history rows (got lifecycle_state={result_market['story_rows'][0]['lifecycle_state']}, history_rows={len(result_market['history_rows'])})",
         result_market["story_rows"][0]["lifecycle_state"] is None and result_market["history_rows"] == [],
