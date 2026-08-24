@@ -44,6 +44,7 @@ docstring: nothing calls apply_lifecycle() for Market Intelligence;
 there's no "lifecycle_state: null" branch to build inside apply_
 lifecycle itself, because its stories never enter that module's world).
 """
+import json
 import math
 import sys
 from pathlib import Path
@@ -105,13 +106,46 @@ def _entity_key_for_row(entity) -> tuple:
         return fallback, f"entity_key could not be computed ({type(e).__name__}: {e}) — used fallback key {fallback!r}"
 
 
+# The v2 Universal Card write path -- every row shaped from this point
+# forward carries this, regardless of family or whether that family's
+# own writer populates any of the new v2 fields yet (only Defensive
+# Trends does, as of this task). This is a marker of which SHAPE OF
+# WRITE PATH produced the row, not "this row's v2 fields are fully
+# populated" -- a Role/Coaching/Market row written today is still a
+# real v2 row (hero_metric etc. simply null), not a v1 row. Existing,
+# already-written rows from before this change are untouched and stay
+# whatever a reader infers for their own missing card_schema_version.
+CARD_SCHEMA_VERSION = 2
+
+
+def _json_safe_hero_metric(hero_metric):
+    """
+    Same wire-boundary NaN/inf -> null sanitizing _json_safe_float
+    already does for trend_strength/completeness/confidence, applied to
+    hero_metric's own numeric sub-fields -- defense-in-depth (real
+    td_agrees-gated source data should already be finite) against
+    exactly the class of bug this session already found and fixed once
+    for intelligence_lifecycle.py's own numeric fields.
+    """
+    if hero_metric is None:
+        return None
+    safe = dict(hero_metric)
+    for field in ("before_value", "after_value", "delta_value"):
+        if field in safe:
+            safe[field] = _json_safe_float(safe[field])
+    return safe
+
+
 def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, lifecycle_state) -> dict:
     """
     Maps ONE real story dict (the 13-field schema — intelligence_
-    schema.STORY_FIELDS) plus this run's own findings (sanity issues,
-    this identity's real lifecycle_state, if any) into the real nfl_
-    intelligence_stories column shape. Pure — no I/O, no signing; see
-    write_intelligence_rows for that.
+    schema.STORY_FIELDS — plus Defensive Trends' new, OPTIONAL v2
+    fields: hero_metric/signal_direction/what_changed/evidence_
+    classification, all absent/None for the other three families until
+    their own writers are updated) plus this run's own findings (sanity
+    issues, this identity's real lifecycle_state, if any) into the real
+    nfl_intelligence_stories column shape. Pure — no I/O, no signing;
+    see write_intelligence_rows for that.
     """
     entity_key, entity_key_issue = _entity_key_for_row(story.get("entity"))
     issues = list(sanity_issues) + ([entity_key_issue] if entity_key_issue else [])
@@ -139,6 +173,11 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
         "is_visible": passed,
         "sanity_check_passed": passed,
         "sanity_check_issues": issues or None,
+        "card_schema_version": CARD_SCHEMA_VERSION,
+        "hero_metric": _json_safe_hero_metric(story.get("hero_metric")),
+        "signal_direction": story.get("signal_direction"),
+        "what_changed": story.get("what_changed"),
+        "evidence_classification": story.get("evidence_classification"),
     }
 
 
@@ -240,3 +279,41 @@ def write_intelligence_rows(story_rows: list, history_rows: list, secret: str, w
 
     url = write_url or resolve_url_env("LOVABLE_NFL_INTELLIGENCE_WRITE_URL", DEFAULT_NFL_INTELLIGENCE_WRITE_URL)
     return forward_to_lovable({"stories": story_rows, "history": history_rows}, secret, url)
+
+
+DEFAULT_NFL_INTELLIGENCE_READ_URL = "https://tastypickems.com/api/public/nfl-intelligence-read"
+
+
+def read_intelligence_stories(season: int, week: int, secret: str, read_url: str = None) -> dict:
+    """
+    One signed POST (body {"season": season, "week": week}), returns
+    {"ok": bool, "error": str|None, "status_code": int|None, "rows":
+    [...]} for the ENTIRE real (season, week) across every family — the
+    real nfl_intelligence_stories read route. Same real sign+POST+
+    capture-response reuse of forward_to_lovable every other read route
+    in this codebase already uses (see curate_home_shelves.read_shelf_
+    signal_history's own docstring for why that's a deliberate reuse,
+    not a misuse).
+
+    Response body's real story-list key ("stories") and each row's real
+    DB-generated fields (id, created_at, updated_at — id, not story_id;
+    confirmed directly against a real round-tripped row, not guessed)
+    were confirmed empirically against the live route, not assumed.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = read_url or resolve_url_env("LOVABLE_NFL_INTELLIGENCE_READ_URL", DEFAULT_NFL_INTELLIGENCE_READ_URL)
+    result = forward_to_lovable({"season": season, "week": week}, secret, url)
+    if not result["success"]:
+        return {"ok": False, "error": result["error"], "status_code": result["status_code"], "rows": []}
+    try:
+        body = json.loads(result["response_body"])
+    except (json.JSONDecodeError, TypeError):
+        return {
+            "ok": False, "error": f"non-JSON response body: {result['response_body']!r}",
+            "status_code": result["status_code"], "rows": [],
+        }
+    return {"ok": True, "error": None, "status_code": result["status_code"], "rows": body.get("stories") or []}

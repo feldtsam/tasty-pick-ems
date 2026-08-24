@@ -114,6 +114,20 @@ CONFIG = {
     # qualified reference population for percentile ranking).
     "thin_completeness": 60.0,
     "related_players_limit": 5,
+    # evidence_classification (Universal Card v2) -- the REAL formula,
+    # confirmed directly from Lovable's own trustIndicator(): score =
+    # (confidence + completeness) / 2 (both 0-1 fractions there; this
+    # module keeps confidence/completeness on their existing 0-100
+    # scale throughout, so the same real formula is applied here in
+    # 0-100 space instead -- mathematically identical, just consistent
+    # with every other threshold in this file already being 0-100).
+    # STRONG >= 80, MODERATE >= 60, else LIMITED. Confirmed: sample_size
+    # plays NO role in the real classification at all (it only ever
+    # appears in the frontend's own display detail string) -- the
+    # thresholds below replace an earlier provisional version that
+    # DID use sample_size, before the real formula was available.
+    "evidence_strong_threshold": 80.0,
+    "evidence_moderate_threshold": 60.0,
 }
 
 
@@ -249,6 +263,126 @@ def _headline_and_story(row: pd.Series, direction: str, thin_completeness: bool)
     return headline, story, td_agrees
 
 
+# ============================================================
+# Universal Card v2 fields (Sam's "implement Defensive Trends first"
+# task) -- new, on top of the already-shipped 13-field STORY_FIELDS
+# contract. Deliberately NOT threaded through build_story()/STORY_
+# FIELDS itself (that stays a hard, closed 13-field contract shared
+# unchanged by all four families — adding a required field there would
+# immediately break Role Changes/Coaching Trends/Market Intelligence's
+# own already-shipped build_story() calls, which this task explicitly
+# says not to touch yet). Instead these are attached directly onto the
+# dict build_story() returns, AFTER construction — see build_defensive_
+# trends_stories' own final loop. shape_story_row (intelligence_write.py)
+# reads them via story.get(...), so the other three families' stories
+# (which never set these keys) safely default to None on write.
+# ============================================================
+
+def _signal_direction_for_row(direction: str) -> str:
+    """
+    Framed from the real product's real audience -- Tasty Pick 'Ems is
+    an anytime-TD prop pick site; every other real signal in this
+    codebase (Role Changes' "opportunity-driven", Market Intelligence's
+    whole "what is the market telling a bettor" framing) is already
+    told from the BETTOR's opportunity, not the defense's own
+    performance. A defense trending "growing-vulnerability" is bad for
+    the defense but genuinely FAVORABLE for this story's own related_
+    players (the real offensive players facing this defense, per
+    _related_players) -- that's the real audience this field needs to
+    serve, confirmed against Sam's own stated interpretation before
+    hardcoding this mapping, not assumed silently.
+
+    Only two real trend_direction values exist for this family
+    ("growing-vulnerability"/"growing-resistance"), and both are
+    genuinely one-sided given the real data shape here -- "neutral"/
+    "mixed" never fire for Defensive Trends under this logic. That's
+    expected, not a gap: those values exist in the shared enum for
+    other families where real ambiguity is more likely, not because
+    every family needs to exercise every value.
+    """
+    return "favorable" if direction == "growing-vulnerability" else "unfavorable"
+
+
+def _hero_metric_for_row(row: pd.Series, direction: str, td_agrees: bool, config: dict) -> dict | None:
+    """
+    NULLABLE by design, per the approved v2 decision -- populated ONLY
+    when the real td_agrees honesty check (see _headline_and_story's
+    own docstring) already passed, meaning the real last3/season_avg
+    numbers genuinely support the direction being claimed. This is the
+    SAME check that already gates whether the raw TD-rate number gets
+    cited in the story text itself -- reused directly, not a separate/
+    looser gate that could disagree with it. Never relaxed or bypassed
+    to force a hero number in when the real numbers don't clearly back
+    the story.
+    """
+    if not td_agrees:
+        return None
+    last3, season_avg = float(row["allowed_rz_tds_last3"]), float(row["allowed_rz_tds_season_avg"])
+    return {
+        "label": f"{row['position_group']} Red-Zone TDs Allowed",
+        "before_value": round(season_avg, 1),
+        "after_value": round(last3, 1),
+        "unit": "TD/G",
+        "value_format": "decimal_1",
+        "delta_display_mode": "absolute",
+        "delta_value": round(last3 - season_avg, 1),
+        # A real defense-quality metric's own semantics (fewer TDs
+        # allowed is objectively better defense), independent of which
+        # way THIS story is framed for a bettor -- signal_direction is
+        # the separate field carrying that framing.
+        "lower_is_better": True,
+        "period_before_label": "SEASON",
+        "period_after_label": "LAST 3",
+    }
+
+
+def _what_changed_for_row(row: pd.Series, direction: str, td_agrees: bool, thin_completeness: bool, config: dict) -> list:
+    """
+    NEW, real editorial content -- deliberately NOT a mechanical reshape
+    of supporting_evidence (that list cites raw internal field names
+    directly, e.g. "defensive_matchup_vulnerability 80/100" -- correct
+    for supporting_evidence's own backend/hidden-by-default role, but a
+    real violation of what_changed's "plain editorial language, no
+    internal field names" requirement if reused verbatim). Grounded in
+    the exact same real numbers and the exact same td_agrees honesty
+    gate as the story text itself, just written as short, plain labels
+    a real user should see. Max 3 items, per the approved schema.
+    """
+    verb = "climbing" if direction == "growing-vulnerability" else "tightening"
+    items = [{
+        "label": f"Red-zone defense {verb}",
+        "observation": f"This defense's real red-zone vulnerability score has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+    }]
+    if td_agrees:
+        last3, season_avg = float(row["allowed_rz_tds_last3"]), float(row["allowed_rz_tds_season_avg"])
+        items.append({
+            "label": "Red-zone TDs allowed",
+            "observation": f"Allowing {last3:.1f} red-zone TDs per game over its last 3, up from a {season_avg:.1f} season average." if direction == "growing-vulnerability"
+            else f"Allowing just {last3:.1f} red-zone TDs per game over its last 3, down from a {season_avg:.1f} season average.",
+        })
+    items.append({
+        "label": "Sample size",
+        "observation": f"Based on {int(row['_games_played'])} real games this season" + (" — still a developing read." if thin_completeness else ", an established, well-populated read."),
+    })
+    return items[:3]
+
+
+def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
+    """
+    The REAL formula, confirmed directly from Lovable's own
+    trustIndicator() (not a placeholder — see CONFIG's own comment).
+    sample_size deliberately plays no role here, confirmed: it's a
+    real, separate signal that only ever reaches the frontend's own
+    display detail string, never this classification.
+    """
+    score = (confidence + completeness) / 2
+    if score >= config["evidence_strong_threshold"]:
+        return "strong"
+    if score >= config["evidence_moderate_threshold"]:
+        return "moderate"
+    return "limited"
+
+
 def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
     """
     weekly: the full multi-week player_redzone_weekly table (scoring.
@@ -287,7 +421,7 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
                 f"(season average {row['allowed_rz_tds_season_avg']:.1f})"
             ))
 
-        stories.append(build_story(
+        story = build_story(
             intelligence_family="defensive_trends",
             entity={"type": "defense", "team": row["defteam"], "position_group": row["position_group"]},
             headline=headline,
@@ -301,6 +435,14 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
             confidence=float(row["defensive_matchup_completeness"]),
             time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
             related_players=_related_players(weekly, season, week, row["defteam"], row["position_group"], config),
-        ))
+        )
+        # Universal Card v2 fields -- attached after build_story(), not
+        # part of its own hard STORY_FIELDS contract (see the block
+        # comment above these helper functions for why).
+        story["hero_metric"] = _hero_metric_for_row(row, direction, td_agrees, config)
+        story["signal_direction"] = _signal_direction_for_row(direction)
+        story["what_changed"] = _what_changed_for_row(row, direction, td_agrees, thin_completeness, config)
+        story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        stories.append(story)
 
     return stories

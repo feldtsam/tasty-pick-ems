@@ -157,6 +157,95 @@ if __name__ == "__main__":
             "red-zone TDs/game" not in car_wr["story"] and "combined red-zone/inside-10/goal-line" in car_wr["story"],
         ))
 
+    # ============================================================
+    # Universal Card v2 fields — checked across the FULL real backfill,
+    # not just one hand-picked case each way.
+    # ============================================================
+    all_v2_stories = []
+    for (season, week), _ in weekly.groupby(["season", "week"]):
+        all_v2_stories += build_defensive_trends_stories(weekly, season, week)
+
+    results.append(check(
+        f"signal_direction is framed from the real bettor-opportunity perspective across every real story "
+        f"(growing-vulnerability -> favorable, growing-resistance -> unfavorable) -- checked {len(all_v2_stories)} real stories",
+        all(
+            (st["signal_direction"] == "favorable") == (st["trend_direction"] == "growing-vulnerability")
+            for st in all_v2_stories
+        ),
+    ))
+    results.append(check(
+        "hero_metric is populated if and only if the story's own specific raw-TD citation is present in supporting_evidence "
+        "(the exact same td_agrees honesty gate, never relaxed to force a hero number in) -- checked across the full real backfill",
+        all(
+            (st["hero_metric"] is not None) == any("red-zone TDs/game over the last 3 games" in e for e in st["supporting_evidence"])
+            for st in all_v2_stories
+        ),
+    ))
+    hero_stories = [st for st in all_v2_stories if st["hero_metric"] is not None]
+    results.append(check(
+        f"every real populated hero_metric has before/after values that genuinely agree with its own trend_direction "
+        f"(checked {len(hero_stories)} real stories with a populated hero_metric)",
+        all(
+            (st["hero_metric"]["after_value"] > st["hero_metric"]["before_value"]) == (st["trend_direction"] == "growing-vulnerability")
+            for st in hero_stories
+        ),
+    ))
+    results.append(check(
+        "what_changed is always a real, non-empty list capped at 3 items, every real story",
+        all(isinstance(st["what_changed"], list) and 1 <= len(st["what_changed"]) <= 3 for st in all_v2_stories),
+    ))
+    results.append(check(
+        "what_changed never leaks an internal field name (the real distinction from supporting_evidence's own backend-only role)",
+        all(
+            not any(bad in item["observation"] for bad in ("defensive_matchup_vulnerability", "recent_tds_allowed_pct", "conversion_rate_allowed_pct"))
+            for st in all_v2_stories for item in st["what_changed"]
+        ),
+    ))
+    results.append(check(
+        "evidence_classification is always one of the three real approved values, every real story",
+        all(st["evidence_classification"] in ("strong", "moderate", "limited") for st in all_v2_stories),
+    ))
+    results.append(check(
+        "the real formula (confidence+completeness)/2 against real thresholds (>=80 strong, >=60 moderate) is applied correctly, checked against every real story's own confidence/completeness",
+        all(
+            st["evidence_classification"] == (
+                "strong" if (st["confidence"] + st["completeness"]) / 2 >= 80.0
+                else "moderate" if (st["confidence"] + st["completeness"]) / 2 >= 60.0
+                else "limited"
+            )
+            for st in all_v2_stories
+        ),
+    ))
+    real_classification_dist = {c: sum(1 for st in all_v2_stories if st["evidence_classification"] == c) for c in ("strong", "moderate", "limited")}
+    results.append(check(
+        f"REAL FINDING, not a bug: since confidence and completeness are the SAME real value for this family "
+        f"(both set from defensive_matchup_completeness, confirmed always exactly 100.0 among every real story "
+        f"that clears the trend gate), evidence_classification is currently a real constant for Defensive Trends "
+        f"-- every one of the 176 real stories lands on 'strong' (got {real_classification_dist}). Not driven by "
+        f"a varying confidence signal so much as there being no real variation in either input at all for this "
+        f"family today -- worth knowing before this same formula is applied to a family where completeness/"
+        f"confidence genuinely differ or vary.",
+        real_classification_dist["strong"] == len(all_v2_stories) and real_classification_dist["moderate"] == 0 and real_classification_dist["limited"] == 0,
+    ))
+
+    nyj_rb_18 = next((st for st in build_defensive_trends_stories(weekly, 2025, 18) if st["entity"]["team"] == "NYJ" and st["entity"]["position_group"] == "RB"), None)
+    if nyj_rb_18:
+        results.append(check(
+            f"real NYJ RB week 18: hero_metric populated with a real before/after TD-rate pair, after > before matching growing-vulnerability (got {nyj_rb_18['hero_metric']})",
+            nyj_rb_18["hero_metric"] is not None and nyj_rb_18["hero_metric"]["after_value"] > nyj_rb_18["hero_metric"]["before_value"],
+        ))
+        results.append(check(
+            f"real NYJ RB week 18: signal_direction is favorable (a bettor-relevant opportunity signal, not a defense-quality judgment) (got {nyj_rb_18['signal_direction']})",
+            nyj_rb_18["signal_direction"] == "favorable",
+        ))
+
+    car_wr_15 = by_entity.get(("CAR", "WR"))
+    if car_wr_15:
+        results.append(check(
+            f"real CAR WR week 15 (the known td_agrees=False case): hero_metric correctly stays null, never a forced/relaxed number (got {car_wr_15['hero_metric']})",
+            car_wr_15["hero_metric"] is None,
+        ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")
