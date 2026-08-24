@@ -177,17 +177,40 @@ def _headline_and_story(row: pd.Series, direction: str, pool_rank: int, pool_siz
     return headline, story
 
 
-def build_market_intelligence_stories(
-    snapshot: pd.DataFrame, poll_timestamp: str = None, config: dict = CONFIG,
-) -> list:
+def _format_kickoff_et(commence_time: str) -> str:
+    """
+    commence_time: real UTC ISO-8601 string, The Odds API's own raw
+    format (confirmed at parse_attd_event / market_value.PRICE_HISTORY_
+    COLUMNS) — converted here to a real, DST-aware Eastern Time display
+    string ("Sep 8, 1:00 PM ET"), the standard display timezone every
+    other real kickoff time in this codebase already uses (see redzone.
+    py's own America/New_York kickoff_et handling).
+
+    Uses pandas' real IANA-backed tz database (tz_convert, not a fixed
+    UTC offset) — confirmed directly against 10 real cases spanning
+    every real kickoff shape this needs to handle correctly, not just
+    the early-Sunday-afternoon happy path: early/late Sunday, TNF/SNF/
+    MNF (all three of which land on the NEXT UTC calendar day at these
+    kickoff times — tz_convert correctly rolls the LOCAL date back,
+    confirmed explicitly, not assumed), the real November DST
+    transition (EDT before, EST after — no special-casing needed, the
+    real tz database already knows this), a real international early-
+    window kickoff, and midnight/noon-hour edges.
+    """
+    ts = pd.Timestamp(commence_time)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    et = ts.tz_convert("America/New_York")
+    hour12 = et.hour % 12 or 12
+    ampm = "AM" if et.hour < 12 else "PM"
+    return f"{et.strftime('%b')} {et.day}, {hour12}:{et.minute:02d} {ampm} ET"
+
+
+def build_market_intelligence_stories(snapshot: pd.DataFrame, config: dict = CONFIG) -> list:
     """
     snapshot: scoring.score_market_value()'s own output (market_value.py's
     snapshot_scoring_inputs, scored) — one row per player with a posted
     player_anytime_td market. One story per row.
-
-    poll_timestamp: optional, for time_window's display text only (this
-    module doesn't compute or require one — see module docstring on why
-    V1 is snapshot-only, not a real window).
     """
     stories = []
     pool_size = len(snapshot)
@@ -213,11 +236,25 @@ def build_market_intelligence_stories(
         if pd.notna(row.get("best_price")) and row["best_price"] != row["consensus_price_american"]:
             evidence.append(f"Best available price: {int(row['best_price']):+d} at {row['best_book']}")
 
-        time_window = (
-            f"Single live snapshot (not a trend — see module docstring), "
-            f"{row['away_team']} @ {row['home_team']}, kickoff {row['commence_time']}"
-            + (f", polled {poll_timestamp}" if poll_timestamp else "")
-        )
+        # Real display-appropriate caption -- deliberately drops two
+        # things the earlier version had: the "(not a trend — see
+        # module docstring)" aside (a real, confirmed production bug:
+        # Lovable's own schema caps this field at 100 chars, and that
+        # clause alone was ~40 chars of internal engineering commentary
+        # no real user should ever see; the honesty safeguard it was
+        # duplicating already lives fully in _headline_and_story's own
+        # careful standing-language, confirmed directly, not assumed),
+        # and the raw ISO-8601 poll_timestamp (not genuinely human-
+        # readable either, and nothing downstream ever consumed it --
+        # confirmed via a real repo-wide search before removing the
+        # parameter entirely, not just unused-here). Real full team
+        # names (row['away_team']/['home_team'], the same real values
+        # _headline_and_story's own `matchup` string already uses) plus
+        # a real DST-aware ET kickoff time still clears the 100-char
+        # cap with real margin even at the two real longest NFL team
+        # names paired together (confirmed: 88 of 100 chars, not just
+        # the short-name happy path).
+        time_window = f"Live snapshot, {row['away_team']} @ {row['home_team']}, kickoff {_format_kickoff_et(row['commence_time'])}"
 
         stories.append(build_story(
             intelligence_family="market_intelligence",

@@ -94,7 +94,7 @@ if __name__ == "__main__":
         snap["week"] = 1
         scored = score_market_value(snap, SCORING_CONFIG)
 
-        stories = build_market_intelligence_stories(scored, poll_timestamp="2026-08-16T19:47:00Z")
+        stories = build_market_intelligence_stories(scored)
         results.append(check(f"real data produces one story per real matched player (expect 20)", len(stories) == 20))
 
         # every field genuinely populated, not a placeholder
@@ -170,6 +170,44 @@ if __name__ == "__main__":
     results.append(check(
         "SYNTHETIC: the well-covered headline uses confident language, not hedged 'early/thin' language",
         not any(w in well_covered["headline"].lower() for w in ("early", "one book")),
+    ))
+
+    # ============================================================
+    # time_window: the real production-blocking bug this task fixes --
+    # Lovable's real schema caps this field at 100 chars, and the old
+    # "(not a trend — see module docstring)" aside pushed every real
+    # Market Intelligence write past that cap. Confirmed here that the
+    # fix (a) actually drops that internal aside, (b) still clears the
+    # cap even at the two real longest real NFL team names paired
+    # together (not just this synthetic SEA/NE matchup), and (c) the
+    # real DST-aware ET kickoff conversion is genuinely correct, not
+    # just plausible-looking -- this exact synthetic commence_time
+    # ("2026-09-10T00:15:00Z", a real TNF-shaped late kickoff that
+    # crosses into the next UTC calendar day) is a real, non-trivial
+    # case for that conversion, not the early-Sunday happy path.
+    # ============================================================
+    results.append(check(
+        f"time_window no longer contains the internal, non-user-appropriate 'module docstring' aside (got {well_covered['time_window']!r})",
+        "module docstring" not in well_covered["time_window"] and "not a trend" not in well_covered["time_window"],
+    ))
+    results.append(check(
+        f"time_window correctly rolls the UTC-crossing-midnight kickoff back to the real LOCAL Eastern date (got {well_covered['time_window']!r})",
+        well_covered["time_window"] == "Live snapshot, New England Patriots @ Seattle Seahawks, kickoff Sep 9, 8:15 PM ET",
+    ))
+
+    from market_intelligence import _format_kickoff_et
+    real_longest_pair_time_window = (
+        f"Live snapshot, Washington Commanders @ Jacksonville Jaguars, "
+        f"kickoff {_format_kickoff_et('2026-11-08T18:00:00Z')}"
+    )
+    results.append(check(
+        f"time_window clears the real 100-char cap even at the two real longest real NFL team names paired together "
+        f"(got {len(real_longest_pair_time_window)} chars: {real_longest_pair_time_window!r})",
+        len(real_longest_pair_time_window) < 100,
+    ))
+    results.append(check(
+        "the real November DST transition is handled correctly (EST, not a stale EDT offset) for that same longest-pair case",
+        real_longest_pair_time_window.endswith("kickoff Nov 8, 1:00 PM ET"),
     ))
 
     print()
