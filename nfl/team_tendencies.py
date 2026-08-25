@@ -168,6 +168,12 @@ CONFIG = {
     # so genuinely early-season stories still read as hedged.
     "thin_pace_games": 8,
     "related_players_limit": 3,
+    # evidence_classification (Universal Card v2) -- the REAL formula,
+    # confirmed directly from Lovable's own trustIndicator() (same
+    # thresholds already confirmed and shipped for Defensive Trends and
+    # Role Changes).
+    "evidence_strong_threshold": 80.0,
+    "evidence_moderate_threshold": 60.0,
 }
 
 
@@ -609,6 +615,208 @@ def _headline_and_story_pace(row: pd.Series, direction: str, thin: bool) -> tupl
     return headline, story, agrees
 
 
+# ============================================================
+# Universal Card v2 fields — same "attach after build_story(), not
+# threaded through STORY_FIELDS" approach Defensive Trends and Role
+# Changes already established. Deliberately THREE separate signal-
+# specific implementations per field below, not one shared helper
+# across the three detectors -- matches this module's own existing,
+# explicit precedent (its own docstring: "THREE INDEPENDENT AGGREGATION
+# FUNCTIONS, deliberately not a shared generic helper... a premature
+# shared abstraction now would likely be wrong for [signals] later").
+# The same reasoning applies here: the three signals' real hero_metric
+# shapes and signal_direction logic genuinely differ (see each
+# function's own docstring for why), not just superficially.
+# ============================================================
+
+def _signal_direction_redzone() -> str:
+    """
+    REAL FINDING, confirmed against this signal's own related_players
+    function before hardcoding: unlike fourth_down/pace below,
+    redzone_run_tendency's related_players are DIRECTIONAL — the top
+    red-zone RUSHERS when growing-run-heavy, the top red-zone TARGETS
+    when growing-pass-heavy (see _related_players_redzone). The story's
+    own related_players are, by construction, always the group
+    positioned to benefit from whichever direction actually fired —
+    the same "favorable for this story's own related_players"
+    reasoning Defensive Trends already established, but here it's a
+    real constant BECAUSE the beneficiary group itself flips with
+    direction, not despite it varying.
+    """
+    return "favorable"
+
+
+def _signal_direction_fourth_down(direction: str) -> str:
+    """
+    REAL FINDING, genuinely different shape from redzone_run_tendency
+    above: fourth_down_aggressiveness's related_players are team-wide,
+    ranked by td_opportunity, and do NOT change based on direction (see
+    _related_players_team_wide) — the SAME group is cited whether the
+    team is growing more or less aggressive. That's exactly Defensive
+    Trends' own shape (one fixed related_players group, a real
+    bidirectional trend_direction) — a more aggressive team keeps more
+    drives alive for everyone on that same list (favorable); a more
+    conservative team ends drives sooner (unfavorable).
+    """
+    return "favorable" if direction == "growing-aggressive" else "unfavorable"
+
+
+def _signal_direction_pace(direction: str) -> str:
+    """
+    Same real shape as fourth_down_aggressiveness, confirmed
+    independently rather than assumed to match just because both are
+    "team-wide": pace's related_players are also team-wide (ranked by
+    snap_share) and don't change with direction (see _related_players_
+    team_wide) — more real plays run mechanically means more real
+    volume for that same group (growing-faster -> favorable); fewer
+    plays means less (growing-slower -> unfavorable).
+    """
+    return "favorable" if direction == "growing-faster" else "unfavorable"
+
+
+def _hero_metric_for_redzone_row(row: pd.Series, agrees: bool) -> dict | None:
+    """
+    NULLABLE, same principle as every other family: populated only when
+    the real agrees honesty check (the same one already gating whether
+    the specific rush-rate line appears in supporting_evidence) says
+    the real numbers back the claim. lower_is_better is deliberately
+    left False here — a rush rate has no inherent "lower number is
+    objectively better" quality the way TDs-allowed or depth_rank do;
+    it's a real, neutral rate, not a defense-quality or role-quality
+    metric.
+    """
+    if not agrees:
+        return None
+    before = round(float(row["rz_rush_attempts_season_avg"]) / float(row["rz_plays_season_avg"]) * 100, 1)
+    after = round(float(row["rz_rush_attempts_last3"]) / float(row["rz_plays_last3"]) * 100, 1)
+    return {
+        "label": "Red-Zone Rush Rate", "before_value": before, "after_value": after,
+        "unit": "%", "value_format": "percent", "delta_display_mode": "percentage_points",
+        "delta_value": round(after - before, 1), "lower_is_better": False,
+        "period_before_label": "SEASON", "period_after_label": "LAST 3",
+    }
+
+
+def _hero_metric_for_fourth_down_row(row: pd.Series, agrees: bool) -> dict | None:
+    """Same real agrees gate as the go-for-it-rate evidence line. lower_is_better=False for the same "neutral rate, no inherent quality direction" reason as redzone above."""
+    if not agrees:
+        return None
+    before = round(float(row["go_attempts_season_avg"]) / float(row["fourth_down_decisions_season_avg"]) * 100, 1)
+    after = round(float(row["go_attempts_last3"]) / float(row["fourth_down_decisions_last3"]) * 100, 1)
+    return {
+        "label": "4th-Down Go-For-It Rate", "before_value": before, "after_value": after,
+        "unit": "%", "value_format": "percent", "delta_display_mode": "percentage_points",
+        "delta_value": round(after - before, 1), "lower_is_better": False,
+        "period_before_label": "SEASON", "period_after_label": "LAST 3",
+    }
+
+
+def _hero_metric_for_pace_row(row: pd.Series, agrees: bool) -> dict | None:
+    """
+    Same real agrees gate as the seconds-per-play evidence line. REAL
+    INVERSION, confirmed directly against _headline_and_story_pace's
+    own docstring before writing this: pace_score is inverted relative
+    to seconds_per_play (higher score = faster = LOWER seconds) — this
+    function reports the real seconds_per_play values directly (what a
+    person actually reads as "pace"), not the inverted 0-100 score, so
+    before/after here move in the real, intuitive direction regardless
+    of which way pace_score itself moved. value_format="seconds_per_play"
+    is a real, new format value (added to the documented v2 enum
+    specifically for this — no raw-seconds format existed before this
+    family needed one). lower_is_better=False: faster isn't objectively
+    "better" than slower on its own, unlike a real defense- or role-
+    quality metric.
+    """
+    if not agrees:
+        return None
+    before, after = round(float(row["seconds_per_play_season_avg"]), 1), round(float(row["seconds_per_play_last3"]), 1)
+    return {
+        "label": "Seconds Per Play", "before_value": before, "after_value": after,
+        "unit": "sec", "value_format": "seconds_per_play", "delta_display_mode": "absolute",
+        "delta_value": round(after - before, 1), "lower_is_better": False,
+        "period_before_label": "SEASON", "period_after_label": "LAST 3",
+    }
+
+
+def _what_changed_for_redzone_row(row: pd.Series, direction: str, agrees: bool, completeness: float, config: dict) -> list:
+    """
+    Real NEW editorial content — the primary evidence line here cites a
+    raw internal field name ("redzone_run_tendency 80/100..."), the
+    same real reason Defensive Trends needed fresh text rather than
+    Role Changes' direct reuse; written fresh for consistency here too,
+    including the agrees-gated rate line (already plain text in
+    supporting_evidence, rewritten in the same voice as the primary
+    item rather than mixed reuse-vs-rewrite within one story).
+    """
+    verb = "leaning more run-heavy" if direction == "growing-run-heavy" else "leaning more pass-heavy"
+    items = [{
+        "label": f"Red-zone play-calling {verb}",
+        "observation": f"This team's real red-zone run/pass tendency has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+    }]
+    if agrees:
+        recent_rate = row["rz_rush_attempts_last3"] / row["rz_plays_last3"] * 100
+        season_rate = row["rz_rush_attempts_season_avg"] / row["rz_plays_season_avg"] * 100
+        items.append({
+            "label": "Rush rate inside the 10",
+            "observation": f"Running on {recent_rate:.0f}% of red-zone plays over its last 3 games, {'up' if direction == 'growing-run-heavy' else 'down'} from a {season_rate:.0f}% season rate.",
+        })
+    items.append({
+        "label": "Sample size",
+        "observation": f"Based on {int(row['_cum_rz_plays'])} real red-zone plays this season" + (" — still a developing sample." if completeness < 100 else ", a well-established read."),
+    })
+    return items[:3]
+
+
+def _what_changed_for_fourth_down_row(row: pd.Series, direction: str, agrees: bool, completeness: float, config: dict) -> list:
+    """Same real reasoning as redzone's own what_changed — fresh text, same real agrees gate."""
+    verb = "getting more aggressive" if direction == "growing-aggressive" else "getting more conservative"
+    items = [{
+        "label": f"4th-down approach {verb}",
+        "observation": f"This team's real 4th-down aggressiveness has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+    }]
+    if agrees:
+        recent_rate = row["go_attempts_last3"] / row["fourth_down_decisions_last3"] * 100
+        season_rate = row["go_attempts_season_avg"] / row["fourth_down_decisions_season_avg"] * 100
+        items.append({
+            "label": "Go-for-it rate",
+            "observation": f"Going for it on {recent_rate:.0f}% of realistic 4th-down decisions over its last 3 games, {'up' if direction == 'growing-aggressive' else 'down'} from a {season_rate:.0f}% season rate.",
+        })
+    items.append({
+        "label": "Sample size",
+        "observation": f"Based on {int(row['_cum_decisions'])} real realistic 4th-down decisions this season" + (" — still a developing sample." if completeness < 100 else ", a well-established read."),
+    })
+    return items[:3]
+
+
+def _what_changed_for_pace_row(row: pd.Series, direction: str, agrees: bool, thin: bool, config: dict) -> list:
+    """Same real reasoning as the other two -- fresh text, same real agrees gate. Sample-size language uses real games_played (pace's own real completeness basis), not cumulative play/decision volume like the other two signals."""
+    verb = "speeding up" if direction == "growing-faster" else "slowing down"
+    items = [{
+        "label": f"Tempo {verb}",
+        "observation": f"This team's real pace score has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+    }]
+    if agrees:
+        items.append({
+            "label": "Seconds per play",
+            "observation": f"Averaging {row['seconds_per_play_last3']:.1f} seconds per play over its last 3 games, {'down' if direction == 'growing-faster' else 'up'} from a {row['seconds_per_play_season_avg']:.1f}-second season average.",
+        })
+    items.append({
+        "label": "Sample size",
+        "observation": f"Based on {int(row['_games_played'])} real games this season" + (" — still a developing read." if thin else ", an established, well-populated read."),
+    })
+    return items[:3]
+
+
+def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
+    """Same real formula as Defensive Trends and Role Changes, confirmed directly from Lovable's own trustIndicator(): score = (confidence+completeness)/2, strong >= 80, moderate >= 60, else limited."""
+    score = (confidence + completeness) / 2
+    if score >= config["evidence_strong_threshold"]:
+        return "strong"
+    if score >= config["evidence_moderate_threshold"]:
+        return "moderate"
+    return "limited"
+
+
 def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
     """One story per team whose red-zone run/pass tendency clears the structural volume gate AND the trend materiality threshold."""
     tw = _score_redzone_play_calling(aggregate_redzone_play_calling(pbp), config)
@@ -634,7 +842,7 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
             season_rate = row["rz_rush_attempts_season_avg"] / row["rz_plays_season_avg"]
             evidence.insert(1, f"Rush rate inside the 10: {recent_rate*100:.0f}% (last 3 games) vs. {season_rate*100:.0f}% (season)")
 
-        stories.append(build_story(
+        story = build_story(
             intelligence_family="coaching_trends",
             entity={"type": "team", "team": row["team"]},
             headline=headline,
@@ -648,7 +856,14 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
             confidence=completeness,
             time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
             related_players=_related_players_redzone(weekly, season, week, row["team"], direction, config),
-        ))
+        )
+        # Universal Card v2 fields -- attached after build_story(), not
+        # part of its own hard STORY_FIELDS contract.
+        story["hero_metric"] = _hero_metric_for_redzone_row(row, agrees)
+        story["signal_direction"] = _signal_direction_redzone()
+        story["what_changed"] = _what_changed_for_redzone_row(row, direction, agrees, completeness, config)
+        story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        stories.append(story)
 
     return stories
 
@@ -678,7 +893,7 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
             season_rate = row["go_attempts_season_avg"] / row["fourth_down_decisions_season_avg"]
             evidence.insert(1, f"Go-for-it rate: {recent_rate*100:.0f}% (last 3 games) vs. {season_rate*100:.0f}% (season)")
 
-        stories.append(build_story(
+        story = build_story(
             intelligence_family="coaching_trends",
             entity={"type": "team", "team": row["team"]},
             headline=headline,
@@ -692,7 +907,12 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
             confidence=completeness,
             time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
             related_players=_related_players_team_wide(weekly, season, week, row["team"], "td_opportunity", "benefits_from_sustained_drives", config),
-        ))
+        )
+        story["hero_metric"] = _hero_metric_for_fourth_down_row(row, agrees)
+        story["signal_direction"] = _signal_direction_fourth_down(direction)
+        story["what_changed"] = _what_changed_for_fourth_down_row(row, direction, agrees, completeness, config)
+        story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        stories.append(story)
 
     return stories
 
@@ -727,7 +947,7 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
         if agrees:
             evidence.insert(1, f"Seconds per play: {row['seconds_per_play_last3']:.1f} (last 3 games) vs. {row['seconds_per_play_season_avg']:.1f} (season)")
 
-        stories.append(build_story(
+        story = build_story(
             intelligence_family="coaching_trends",
             entity={"type": "team", "team": row["team"]},
             headline=headline,
@@ -741,7 +961,12 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
             confidence=completeness,
             time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
             related_players=_related_players_team_wide(weekly, season, week, row["team"], "snap_share", "benefits_from_play_volume", config),
-        ))
+        )
+        story["hero_metric"] = _hero_metric_for_pace_row(row, agrees)
+        story["signal_direction"] = _signal_direction_pace(direction)
+        story["what_changed"] = _what_changed_for_pace_row(row, direction, agrees, thin, config)
+        story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        stories.append(story)
 
     return stories
 

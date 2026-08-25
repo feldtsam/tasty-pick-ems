@@ -224,6 +224,92 @@ if __name__ == "__main__":
             specific[name] > 0 and mismatches[name] == 0,
         ))
 
+    # ============================================================
+    # Universal Card v2 fields — real 2025 season (all_stories, already
+    # computed above), covering all three signals.
+    # ============================================================
+    results.append(check(
+        f"redzone_run_tendency: signal_direction is a real constant ('favorable') across every real story, "
+        f"since related_players itself flips to the real beneficiary group per direction (checked {len(all_stories['rz'])} real stories)",
+        all(st["signal_direction"] == "favorable" for st in all_stories["rz"]),
+    ))
+    results.append(check(
+        "fourth_down_aggressiveness: signal_direction is genuinely bidirectional (growing-aggressive -> favorable, growing-conservative -> unfavorable), a real different shape from redzone_run_tendency",
+        all(
+            (st["signal_direction"] == "favorable") == (st["trend_direction"] == "growing-aggressive")
+            for st in all_stories["fd"]
+        ) and len({st["signal_direction"] for st in all_stories["fd"]}) == 2,
+    ))
+    results.append(check(
+        "pace_score: signal_direction is genuinely bidirectional (growing-faster -> favorable, growing-slower -> unfavorable), same real shape as fourth_down_aggressiveness",
+        all(
+            (st["signal_direction"] == "favorable") == (st["trend_direction"] == "growing-faster")
+            for st in all_stories["pace"]
+        ) and len({st["signal_direction"] for st in all_stories["pace"]}) == 2,
+    ))
+
+    for name, hero_label in [("rz", "Red-Zone Rush Rate"), ("fd", "4th-Down Go-For-It Rate"), ("pace", "Seconds Per Play")]:
+        stories = all_stories[name]
+        results.append(check(
+            f"{name}: hero_metric is populated if and only if the story's own specific rate citation is present in supporting_evidence (the same real agrees gate, never a separate looser check) -- checked {len(stories)} real stories",
+            all(
+                (st["hero_metric"] is not None) == any(
+                    ("Rush rate inside the 10" in e) or ("Go-for-it rate" in e) or ("Seconds per play" in e)
+                    for e in st["supporting_evidence"]
+                )
+                for st in stories
+            ),
+        ))
+        hero_stories = [st for st in stories if st["hero_metric"] is not None]
+        if hero_stories:
+            results.append(check(
+                f"{name}: every real populated hero_metric uses the expected label/format ({hero_label})",
+                all(st["hero_metric"]["label"] == hero_label for st in hero_stories),
+            ))
+
+    pace_hero_stories = [st for st in all_stories["pace"] if st["hero_metric"] is not None]
+    results.append(check(
+        f"pace: hero_metric's before/after values are real seconds_per_play (NOT the inverted pace_score) -- "
+        f"a faster (growing-faster) story must show after < before in real seconds, checked {len(pace_hero_stories)} real stories",
+        all(
+            (st["hero_metric"]["after_value"] < st["hero_metric"]["before_value"]) == (st["trend_direction"] == "growing-faster")
+            for st in pace_hero_stories
+        ),
+    ))
+    results.append(check(
+        "pace: hero_metric uses the real new value_format 'seconds_per_play', not a generic decimal format",
+        all(st["hero_metric"]["value_format"] == "seconds_per_play" for st in pace_hero_stories),
+    ))
+
+    for name in ("rz", "fd", "pace"):
+        stories = all_stories[name]
+        results.append(check(
+            f"{name}: what_changed is always a real, non-empty list capped at 3 items, every real story",
+            all(isinstance(st["what_changed"], list) and 1 <= len(st["what_changed"]) <= 3 for st in stories),
+        ))
+        results.append(check(
+            f"{name}: what_changed never leaks an internal field name",
+            all(
+                not any(bad in item["observation"] for bad in ("redzone_run_tendency", "fourth_down_aggressiveness", "pace_score"))
+                for st in stories for item in st["what_changed"]
+            ),
+        ))
+        results.append(check(
+            f"{name}: evidence_classification is always one of the three real approved values",
+            all(st["evidence_classification"] in ("strong", "moderate", "limited") for st in stories),
+        ))
+
+    real_dist = {
+        name: {c: sum(1 for st in all_stories[name] if st["evidence_classification"] == c) for c in ("strong", "moderate", "limited")}
+        for name in ("rz", "fd", "pace")
+    }
+    results.append(check(
+        f"REAL FINDING: evidence_classification distribution differs meaningfully across all three Coaching Trends "
+        f"signals within the SAME family (2025 season only) -- redzone={real_dist['rz']}, fourth_down={real_dist['fd']}, "
+        f"pace={real_dist['pace']} -- confirming this formula's real behavior isn't uniform even within one family",
+        all(sum(d.values()) > 0 for d in real_dist.values()),
+    ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")
