@@ -316,6 +316,7 @@ def _score_and_forward(game_pk, data, raw_body, log_label):
             forward_result = {"success": False, "status_code": None, "error": "LOVABLE_WEBHOOK_SECRET is not configured"}
         else:
             url = resolve_url_env("LOVABLE_SCORED_PICKS_WEBHOOK_URL", DEFAULT_SCORED_PICKS_URL)
+            print(f"[{log_label}] TEMP_DEBUG forward_url={url!r}", flush=True)  # TEMP -- remove after book_odds investigation
             forward_result = forward_to_lovable(scored_picks, secret, url)
 
     print(

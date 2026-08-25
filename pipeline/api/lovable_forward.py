@@ -116,6 +116,14 @@ def forward_to_lovable(rows: list, secret: str, url: str) -> dict:
     payload_str = serialize_payload(rows)
     signature = compute_signature(secret, payload_str)
 
+    # TEMP -- remove after book_odds investigation
+    print(
+        f"[forward_to_lovable] TEMP_DEBUG url={url!r} rows={len(rows)} "
+        f"payload_len={len(payload_str)} 'book_odds' substring in payload={'book_odds' in payload_str!r} "
+        f"first_row_keys={sorted(rows[0].keys()) if rows else None}",
+        flush=True,
+    )
+
     try:
         response = requests.post(
             url,
