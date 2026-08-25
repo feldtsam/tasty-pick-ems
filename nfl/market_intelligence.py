@@ -119,6 +119,22 @@ def _related_players(snapshot: pd.DataFrame, event_id, team, player_id, limit: i
     team are already columns), no extension needed. Capped at `limit`
     (ranked by market_value_score) rather than dumping an entire
     roster's worth of entries into every story.
+
+    Universal Card v2 shape (confirmed against real data before
+    assuming, per every other family's own v2 pass): every real entry
+    this function has ever produced is a real player (entity_type is
+    always "player" — there's no group/team-level related entity this
+    function could produce today). direction_indicator is "none" for
+    every entry here, a real, considered choice, not an oversight: a
+    market-comparison teammate isn't a causal beneficiary or victim of
+    THIS story's own trend the way Defensive/Coaching/Role's related
+    players are (see those modules' own reasoning) — they're relevant
+    CONTEXT (who else has real money on them this same market), with no
+    real up/down claim this module has evidence for. note reuses the
+    same real per-teammate fields already available on this same
+    DataFrame (not new numbers) — market_value_score plus their own
+    real consensus price, the same two real facts the main entity's own
+    story already cites for itself.
     """
     teammates = snapshot[
         (snapshot["event_id"] == event_id) & (snapshot["team"] == team) & (snapshot["player_id"] != player_id)
@@ -126,8 +142,11 @@ def _related_players(snapshot: pd.DataFrame, event_id, team, player_id, limit: i
     teammates = teammates.sort_values("market_value_score", ascending=False).head(limit)
     return [
         {
-            "player_id": r["player_id"], "player_name": r["player_name_raw"],
-            "team": r["team"], "market_value_score": r["market_value_score"],
+            "player_id": r["player_id"],
+            "display_label": r["player_name_raw"],
+            "entity_type": "player",
+            "direction_indicator": "none",
+            "note": f"Market value score {r['market_value_score']:.0f}/100 · {int(r['consensus_price_american']):+d} ({r['consensus_implied_probability']*100:.1f}% implied)",
         }
         for _, r in teammates.iterrows()
     ]

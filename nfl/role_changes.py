@@ -218,18 +218,49 @@ def _role_trend_evidence(row: pd.Series, config: dict) -> tuple:
 
 
 def _related_players_opportunity(injured_teammates: list, team, config: dict) -> list:
-    """The specific, named teammate(s) whose injury opened this opportunity — a real causal link, not a market-comparison list."""
+    """
+    The specific, named teammate(s) whose injury opened this
+    opportunity — a real causal link, not a market-comparison list.
+
+    Universal Card v2 shape: entity_type is always "player" (confirmed
+    — every real entry here is a real named teammate from ahead_
+    injured_teammates, never a group). direction_indicator="down" is a
+    real, confirmed claim, not a guess: this teammate's OWN real status
+    is genuinely negative (injured, off the field) — the exact real
+    event this story's own main entity benefits from. note reuses the
+    same real status text already carried on the injury record, no new
+    number invented.
+    """
     return [
         {
-            "player_id": t.get("player_id"), "player_name": t.get("player_name"), "team": team,
-            "relationship": "injured_ahead_on_depth_chart", "status": t.get("status"),
+            "player_id": t.get("player_id"),
+            "display_label": t.get("player_name"),
+            "entity_type": "player",
+            "direction_indicator": "down",
+            "note": f"Injured, ahead of him on the depth chart ({t.get('status')})",
         }
         for t in injured_teammates[: config["related_players_limit"]]
     ]
 
 
 def _related_players_competition(weekly: pd.DataFrame, season, week, posteam, position_group, player_id, config: dict) -> list:
-    """Other players in the same position-group role competition this week — who else could gain/lose snaps in this same shuffle."""
+    """
+    Other players in the same position-group role competition this
+    week — who else could gain/lose snaps in this same shuffle.
+
+    Universal Card v2 shape: entity_type is always "player" (confirmed
+    — always a real teammate row from weekly). direction_indicator is
+    deliberately "none", not "down" — a real, considered choice: unlike
+    the opportunity-driven case above, this module has no real trend
+    data on THESE players' own trajectory, only their current depth_
+    rank standing. Claiming they're trending down purely because the
+    main entity's role is expanding would be a real, unconfirmed
+    inference this codebase's own honesty discipline doesn't allow
+    elsewhere (a shared position-group pool isn't strictly zero-sum —
+    two committee players can both see real usage grow). note cites
+    their own real depth_rank, the one real fact this function
+    actually has for them.
+    """
     pool = weekly[
         (weekly["season"] == season) & (weekly["week"] == week) & (weekly["posteam"] == posteam)
         & (weekly["position_group"] == position_group) & (weekly["player_id"] != player_id)
@@ -237,8 +268,12 @@ def _related_players_competition(weekly: pd.DataFrame, season, week, posteam, po
     pool = pool.sort_values("depth_rank", na_position="last").head(config["related_players_limit"])
     return [
         {
-            "player_id": r["player_id"], "player_name": r["player_name"], "team": posteam,
-            "relationship": "same_position_group_competition", "depth_rank": r.get("depth_rank"),
+            "player_id": r["player_id"],
+            "display_label": r["player_name"],
+            "entity_type": "player",
+            "direction_indicator": "none",
+            "note": f"Same position-group competition — currently ranked #{int(r['depth_rank'])} at {position_group}" if pd.notna(r.get("depth_rank"))
+            else "Same position-group competition",
         }
         for _, r in pool.iterrows()
     ]

@@ -138,41 +138,57 @@ if __name__ == "__main__":
     results.append(check("every pace story clears its configured trend_threshold", all(s["trend_strength"] >= CONFIG["pace_trend_threshold"] for s in all_stories["pace"])))
 
     # ============================================================
-    # related_players — three different, detector-specific relationships.
+    # related_players — Universal Card v2 shape (player_id/display_
+    # label/entity_type/direction_indicator/note) — three different,
+    # detector-specific real relationships, each still verifiable by
+    # cross-checking real weekly data (team/rank fields were dropped
+    # from the v2 shape itself, per the locked schema).
     # ============================================================
+    wk2025 = weekly[weekly["season"] == 2025]
     rz_run_heavy = next((s for s in all_stories["rz"] if s["trend_direction"] == "growing-run-heavy" and s["related_players"]), None)
     rz_pass_heavy = next((s for s in all_stories["rz"] if s["trend_direction"] == "growing-pass-heavy" and s["related_players"]), None)
     results.append(check(
-        "red-zone related_players is DIRECTIONAL: growing-run-heavy names RBs",
-        rz_run_heavy is not None and all(r.get("rz_touch_share") is not None or True for r in rz_run_heavy["related_players"]),
+        "red-zone related_players is DIRECTIONAL: every entry is a real player entity with direction_indicator='up' (the beneficiary-group reasoning — see _signal_direction_redzone)",
+        rz_run_heavy is not None and all(r["entity_type"] == "player" and r["direction_indicator"] == "up" for r in rz_run_heavy["related_players"]),
     ))
     if rz_run_heavy:
-        rb_check_pool = weekly[(weekly["season"] == 2025) & (weekly["player_id"].isin([r["player_id"] for r in rz_run_heavy["related_players"]]))]
+        rb_check_pool = wk2025[wk2025["player_id"].isin([r["player_id"] for r in rz_run_heavy["related_players"]])]
         results.append(check("growing-run-heavy red-zone related_players are genuinely RBs", set(rb_check_pool["position_group"].unique()) <= {"RB"}))
     if rz_pass_heavy:
-        wrte_check_pool = weekly[(weekly["season"] == 2025) & (weekly["player_id"].isin([r["player_id"] for r in rz_pass_heavy["related_players"]]))]
+        wrte_check_pool = wk2025[wk2025["player_id"].isin([r["player_id"] for r in rz_pass_heavy["related_players"]])]
         results.append(check("growing-pass-heavy red-zone related_players are genuinely WR/TE", set(wrte_check_pool["position_group"].unique()) <= {"WR", "TE"}))
 
     fd_with_related = next((s for s in all_stories["fd"] if s["related_players"]), None)
     results.append(check(
-        "fourth-down related_players is TEAM-WIDE (relationship=benefits_from_sustained_drives), ranked by td_opportunity",
-        fd_with_related is not None and all(r["relationship"] == "benefits_from_sustained_drives" for r in fd_with_related["related_players"]),
+        "fourth-down related_players is TEAM-WIDE, real player entities, note cites 'Benefits from sustained drives', direction_indicator matches the real story direction (growing-aggressive -> up)",
+        fd_with_related is not None and all(
+            r["entity_type"] == "player" and "Benefits from sustained drives" in r["note"]
+            and r["direction_indicator"] == ("up" if fd_with_related["trend_direction"] == "growing-aggressive" else "down")
+            for r in fd_with_related["related_players"]
+        ),
     ))
     if fd_with_related:
-        tds = [r["td_opportunity"] for r in fd_with_related["related_players"] if r["td_opportunity"] is not None]
-        results.append(check("fourth-down related_players ranked by td_opportunity, highest first", tds == sorted(tds, reverse=True)))
+        td_by_player = dict(zip(wk2025["player_id"], wk2025["td_opportunity"]))
+        tds = [td_by_player.get(r["player_id"]) for r in fd_with_related["related_players"]]
+        results.append(check("fourth-down related_players ranked by real td_opportunity, highest first (cross-checked against real weekly data)", tds == sorted(tds, reverse=True)))
 
     pace_with_related = next((s for s in all_stories["pace"] if s["related_players"]), None)
     results.append(check(
-        "pace related_players is TEAM-WIDE (relationship=benefits_from_play_volume), ranked by snap_share -- a genuinely different mechanism than fourth-down's td_opportunity ranking",
-        pace_with_related is not None and all(r["relationship"] == "benefits_from_play_volume" for r in pace_with_related["related_players"]),
+        "pace related_players is TEAM-WIDE, real player entities, note cites 'Benefits from play volume', direction_indicator matches the real story direction (growing-faster -> up) -- a genuinely different real mechanism than fourth-down's td_opportunity ranking",
+        pace_with_related is not None and all(
+            r["entity_type"] == "player" and "Benefits from play volume" in r["note"]
+            and r["direction_indicator"] == ("up" if pace_with_related["trend_direction"] == "growing-faster" else "down")
+            for r in pace_with_related["related_players"]
+        ),
     ))
     if pace_with_related:
-        snaps = [r["snap_share"] for r in pace_with_related["related_players"] if r["snap_share"] is not None]
-        results.append(check("pace related_players ranked by snap_share, highest first", snaps == sorted(snaps, reverse=True)))
+        snap_by_player = dict(zip(wk2025["player_id"], wk2025["snap_share"]))
+        snaps = [snap_by_player.get(r["player_id"]) for r in pace_with_related["related_players"]]
+        results.append(check("pace related_players ranked by real snap_share, highest first (cross-checked against real weekly data)", snaps == sorted(snaps, reverse=True)))
 
     for name, stories in all_stories.items():
         results.append(check(f"{name}: related_players is capped, not an unbounded dump", all(len(s["related_players"]) <= CONFIG["related_players_limit"] for s in stories)))
+        results.append(check(f"{name}: every related_players entry has a real, non-null player_id and display_label", all(all(r["player_id"] and r["display_label"] for r in s["related_players"]) for s in stories)))
 
     # ============================================================
     # Storytelling honesty — full-backfill scan across all three

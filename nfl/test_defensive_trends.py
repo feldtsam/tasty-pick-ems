@@ -107,19 +107,35 @@ if __name__ == "__main__":
     # ============================================================
     # related_players — REVERSED direction vs. the first two families
     # (defense -> offensive players, not player -> teammates/market).
+    # Universal Card v2 shape: player_id/display_label/entity_type/
+    # direction_indicator/note.
     # ============================================================
     if nyj_rb:
+        wk15_2025 = weekly[(weekly["season"] == 2025) & (weekly["week"] == 15)]
+        posteam_by_player = dict(zip(wk15_2025["player_id"], wk15_2025["posteam"]))
         results.append(check(
-            "related_players are real offensive players, on the OPPOSING (offensive) team, not the defense's own team",
-            len(nyj_rb["related_players"]) > 0 and all(r["team"] != "NYJ" for r in nyj_rb["related_players"]),
+            "related_players are real offensive players, on the OPPOSING (offensive) team, not the defense's own team (cross-checked against real weekly posteam, since related_players itself no longer carries a team field)",
+            len(nyj_rb["related_players"]) > 0 and all(posteam_by_player.get(r["player_id"]) != "NYJ" for r in nyj_rb["related_players"]),
         ))
         results.append(check(
-            "related_players share the entity's own position_group (RB) and use the faces_this_defense relationship",
-            all(r["relationship"] == "faces_this_defense_this_week" for r in nyj_rb["related_players"]),
+            "every related_players entry is a real player entity with a real player_id/display_label, and the note cites the real faces-this-defense relationship",
+            all(
+                r["entity_type"] == "player" and r["player_id"] and r["display_label"]
+                and "Faces this defense this week" in r["note"]
+                for r in nyj_rb["related_players"]
+            ),
+        ))
+        results.append(check(
+            "direction_indicator matches the real story direction for every entry (growing-vulnerability -> up, since this NYJ RB story is real growing-vulnerability)",
+            all(r["direction_indicator"] == "up" for r in nyj_rb["related_players"]) and nyj_rb["trend_direction"] == "growing-vulnerability",
         ))
         results.append(check("related_players is capped, not an unbounded dump", len(nyj_rb["related_players"]) <= CONFIG["related_players_limit"]))
-        tds = [r["td_opportunity"] for r in nyj_rb["related_players"] if r["td_opportunity"] is not None]
-        results.append(check("related_players are ranked by td_opportunity, highest first", tds == sorted(tds, reverse=True)))
+        td_by_player = dict(zip(wk15_2025["player_id"], wk15_2025["td_opportunity"]))
+        tds = [td_by_player.get(r["player_id"]) for r in nyj_rb["related_players"]]
+        results.append(check(
+            "related_players are ranked by real td_opportunity, highest first (cross-checked against real weekly data)",
+            tds == sorted(tds, reverse=True),
+        ))
 
     # ============================================================
     # Storytelling honesty — the real bug found and fixed during this

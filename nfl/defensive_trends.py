@@ -174,22 +174,38 @@ def _trend_delta(defense_weekly: pd.DataFrame, window: int) -> pd.Series:
     return delta.where(games_played > window)
 
 
-def _related_players(weekly: pd.DataFrame, season, week, defteam, position_group, config: dict) -> list:
+def _related_players(weekly: pd.DataFrame, season, week, defteam, position_group, direction: str, config: dict) -> list:
     """
     The real offensive players actually facing this defense at this
     position group this week, ranked by td_opportunity — who's
     genuinely positioned to exploit (or be limited by) this trend, not
     a generic roster dump.
+
+    Universal Card v2 shape: entity_type is always "player" (confirmed
+    — always a real offensive player row from weekly). direction_
+    indicator is a real, directly-derived claim, not a separate guess:
+    this SAME fixed group of players is exactly who signal_direction's
+    own real reasoning already concerns (see _signal_direction, this
+    module) — growing-vulnerability means a real, better matchup for
+    them (up); growing-resistance means a real, tougher one (down).
+    Every entry shares the one real direction the story itself already
+    established. note reuses their own real td_opportunity, the one
+    real fact this function already has for them.
     """
     pool = weekly[
         (weekly["season"] == season) & (weekly["week"] == week)
         & (weekly["defteam"] == defteam) & (weekly["position_group"] == position_group)
     ]
     pool = pool.sort_values("td_opportunity", ascending=False, na_position="last").head(config["related_players_limit"])
+    indicator = "up" if direction == "growing-vulnerability" else "down"
     return [
         {
-            "player_id": r["player_id"], "player_name": r["player_name"], "team": r["posteam"],
-            "relationship": "faces_this_defense_this_week", "td_opportunity": r.get("td_opportunity"),
+            "player_id": r["player_id"],
+            "display_label": r["player_name"],
+            "entity_type": "player",
+            "direction_indicator": indicator,
+            "note": f"Faces this defense this week · TD opportunity {r['td_opportunity']:.0f}/100" if pd.notna(r.get("td_opportunity"))
+            else "Faces this defense this week",
         }
         for _, r in pool.iterrows()
     ]
@@ -434,7 +450,7 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
             completeness=float(row["defensive_matchup_completeness"]),
             confidence=float(row["defensive_matchup_completeness"]),
             time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
-            related_players=_related_players(weekly, season, week, row["defteam"], row["position_group"], config),
+            related_players=_related_players(weekly, season, week, row["defteam"], row["position_group"], direction, config),
         )
         # Universal Card v2 fields -- attached after build_story(), not
         # part of its own hard STORY_FIELDS contract (see the block

@@ -59,8 +59,8 @@ if __name__ == "__main__":
     if white:
         results.append(check("Rachaad White's story is opportunity-driven", white["trend_direction"] == "opportunity-driven"))
         results.append(check(
-            "Rachaad White's related_players correctly names Bucky Irving as the causal injury",
-            any(r["player_name"] == "Bucky Irving" and r["status"] == "Out" for r in white["related_players"]),
+            "Rachaad White's related_players correctly names Bucky Irving as the causal injury (Universal Card v2 shape: display_label, note carries the real status, direction_indicator='down' for the injured teammate himself)",
+            any(r["display_label"] == "Bucky Irving" and "Out" in r["note"] and r["direction_indicator"] == "down" and r["entity_type"] == "player" for r in white["related_players"]),
         ))
         results.append(check("Rachaad White's headline names Bucky Irving", "Bucky Irving" in white["headline"]))
 
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     if washington:
         results.append(check(
             "Parker Washington's related_players correctly names Brian Thomas Jr. as the causal injury",
-            any(r["player_name"] == "Brian Thomas Jr." and r["status"] == "Out" for r in washington["related_players"]),
+            any(r["display_label"] == "Brian Thomas Jr." and "Out" in r["note"] for r in washington["related_players"]),
         ))
 
     # every schema field genuinely populated
@@ -127,21 +127,31 @@ if __name__ == "__main__":
     ))
 
     # ============================================================
-    # related_players — two genuinely different relationship types,
-    # each internally consistent.
+    # related_players — Universal Card v2 shape (player_id/display_
+    # label/entity_type/direction_indicator/note) — two genuinely
+    # different real relationship types, each internally consistent.
     # ============================================================
     opportunity_stories = [st for st in wk10 if st["trend_direction"] == "opportunity-driven"]
     results.append(check(
-        "every opportunity-driven story's related_players uses the causal injury relationship",
-        all(all(r["relationship"] == "injured_ahead_on_depth_chart" for r in st["related_players"]) for st in opportunity_stories),
+        "every opportunity-driven story's related_players is a real player entity, direction_indicator='down' (the injured teammate's own real status), note citing the real injury",
+        all(
+            all(
+                r["entity_type"] == "player" and r["direction_indicator"] == "down" and "Injured" in r["note"]
+                for r in st["related_players"]
+            )
+            for st in opportunity_stories
+        ),
     ))
+    wk10_2025 = weekly[(weekly["season"] == 2025) & (weekly["week"] == 10)]
+    posteam_by_player = dict(zip(wk10_2025["player_id"], wk10_2025["posteam"]))
     trend_stories = [st for st in wk10 if st["trend_direction"] == "role-trend-driven" and st["related_players"]]
     results.append(check(
-        "every role-trend-driven story's related_players uses the role-competition relationship, same team, excludes self",
+        "every role-trend-driven story's related_players is real same-team competition (cross-checked against real weekly posteam, since the field itself was dropped from the v2 shape), excludes self, direction_indicator='none'",
         len(trend_stories) > 0
         and all(
             all(
-                r["relationship"] == "same_position_group_competition" and r["team"] == st["entity"]["team"]
+                r["entity_type"] == "player" and r["direction_indicator"] == "none"
+                and posteam_by_player.get(r["player_id"]) == st["entity"]["team"]
                 and r["player_id"] != st["entity"]["player_id"]
                 for r in st["related_players"]
             )

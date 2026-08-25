@@ -410,6 +410,14 @@ def _related_players_redzone(weekly: pd.DataFrame, season, week, team, direction
     heavy) or top red-zone targets (if trending pass-heavy), ranked by
     rz_touch_share — the most directly, mechanically linked metric (red-
     zone touch share specifically), not a general opportunity score.
+
+    Universal Card v2 shape: entity_type is always "player" (confirmed
+    — always a real offensive player row from weekly). direction_
+    indicator="up" for every entry, unconditionally — the SAME real
+    reasoning as _signal_direction_redzone's own constant: this
+    function already selects the beneficiary group per direction (top
+    rushers when run-heavy, top targets when pass-heavy), so every real
+    entry it returns is, by construction, someone this trend benefits.
     """
     position_groups = ["RB"] if direction == "growing-run-heavy" else ["WR", "TE"]
     pool = weekly[
@@ -419,28 +427,61 @@ def _related_players_redzone(weekly: pd.DataFrame, season, week, team, direction
     pool = pool.sort_values("rz_touch_share", ascending=False, na_position="last").head(config["related_players_limit"])
     return [
         {
-            "player_id": r["player_id"], "player_name": r["player_name"], "team": team,
-            "relationship": "benefits_from_redzone_play_calling_tendency", "rz_touch_share": r.get("rz_touch_share"),
+            "player_id": r["player_id"],
+            "display_label": r["player_name"],
+            "entity_type": "player",
+            "direction_indicator": "up",
+            "note": f"Benefits from this team's real red-zone play-calling tendency · red-zone touch share {r['rz_touch_share']*100:.0f}%" if pd.notna(r.get("rz_touch_share"))
+            else "Benefits from this team's real red-zone play-calling tendency",
         }
         for _, r in pool.iterrows()
     ]
 
 
-def _related_players_team_wide(weekly: pd.DataFrame, season, week, team, rank_col: str, relationship: str, config: dict) -> list:
+def _related_players_team_wide(
+    weekly: pd.DataFrame, season, week, team, rank_col: str, benefit_label: str, metric_label: str, metric_is_percent: bool,
+    favorable_direction: str, direction: str, config: dict,
+) -> list:
     """
-    TEAM-WIDE (not directional): used by both fourth-down aggressiveness
-    (ranked by td_opportunity — an aggressive team keeps drives alive
-    for everyone, not one position) and pace (ranked by snap_share —
-    more plays run mechanically amplifies whoever's already on the
-    field the most, a volume mechanism rather than an opportunity one).
+    TEAM-WIDE (not directional in WHICH players are selected): used by
+    both fourth-down aggressiveness (ranked by td_opportunity — an
+    aggressive team keeps drives alive for everyone, not one position)
+    and pace (ranked by snap_share — more plays run mechanically
+    amplifies whoever's already on the field the most, a volume
+    mechanism rather than an opportunity one).
+
+    Universal Card v2 shape: entity_type is always "player" (confirmed
+    — always a real offensive player row). direction_indicator IS
+    genuinely directional here, unlike redzone above — this same fixed
+    group either benefits or doesn't depending on which way the real
+    trend moved (favorable_direction is the caller's own real
+    growing-aggressive/growing-faster value; every entry gets "up" when
+    the story's real direction matches it, "down" otherwise) — the
+    identical real reasoning _signal_direction_fourth_down/_pace
+    already use for the story itself, applied per related player.
+    metric_is_percent distinguishes td_opportunity (already a real 0-100
+    score, no *100 needed) from snap_share (a real 0-1 fraction,
+    matching the exact same distinction role_changes.py's own snap_
+    share citations already make) — real, confirmed unit difference,
+    not a guess.
     """
     pool = weekly[
         (weekly["season"] == season) & (weekly["week"] == week) & (weekly["posteam"] == team)
         & (weekly["position_group"].isin(["RB", "WR", "TE"]))
     ]
     pool = pool.sort_values(rank_col, ascending=False, na_position="last").head(config["related_players_limit"])
+    indicator = "up" if direction == favorable_direction else "down"
     return [
-        {"player_id": r["player_id"], "player_name": r["player_name"], "team": team, "relationship": relationship, rank_col: r.get(rank_col)}
+        {
+            "player_id": r["player_id"],
+            "display_label": r["player_name"],
+            "entity_type": "player",
+            "direction_indicator": indicator,
+            "note": (
+                f"{benefit_label} · {metric_label} {r[rank_col] * 100:.0f}%" if metric_is_percent
+                else f"{benefit_label} · {metric_label} {r[rank_col]:.0f}/100"
+            ) if pd.notna(r.get(rank_col)) else benefit_label,
+        }
         for _, r in pool.iterrows()
     ]
 
@@ -906,7 +947,10 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
             completeness=completeness,
             confidence=completeness,
             time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
-            related_players=_related_players_team_wide(weekly, season, week, row["team"], "td_opportunity", "benefits_from_sustained_drives", config),
+            related_players=_related_players_team_wide(
+                weekly, season, week, row["team"], "td_opportunity", "Benefits from sustained drives", "TD opportunity",
+                False, "growing-aggressive", direction, config,
+            ),
         )
         story["hero_metric"] = _hero_metric_for_fourth_down_row(row, agrees)
         story["signal_direction"] = _signal_direction_fourth_down(direction)
@@ -960,7 +1004,10 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
             completeness=completeness,
             confidence=completeness,
             time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
-            related_players=_related_players_team_wide(weekly, season, week, row["team"], "snap_share", "benefits_from_play_volume", config),
+            related_players=_related_players_team_wide(
+                weekly, season, week, row["team"], "snap_share", "Benefits from play volume", "Snap share",
+                True, "growing-faster", direction, config,
+            ),
         )
         story["hero_metric"] = _hero_metric_for_pace_row(row, agrees)
         story["signal_direction"] = _signal_direction_pace(direction)
