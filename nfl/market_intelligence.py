@@ -62,6 +62,12 @@ CONFIG = {
     # get.
     "favored_threshold": 65.0,
     "longshot_threshold": 35.0,
+    # evidence_classification (Universal Card v2) -- the REAL formula,
+    # confirmed directly from Lovable's own trustIndicator() (same
+    # thresholds already confirmed and shipped for the other three
+    # families).
+    "evidence_strong_threshold": 80.0,
+    "evidence_moderate_threshold": 60.0,
 }
 
 
@@ -206,6 +212,104 @@ def _format_kickoff_et(commence_time: str) -> str:
     return f"{et.strftime('%b')} {et.day}, {hour12}:{et.minute:02d} {ampm} ET"
 
 
+# ============================================================
+# Universal Card v2 fields — same "attach after build_story(), not
+# threaded through STORY_FIELDS" approach the other three families
+# already established. Last of the four; see each function's own
+# docstring for what's genuinely different about Market's real shape.
+# ============================================================
+
+def _signal_direction_for_row(direction: str) -> str:
+    """
+    A real, considered judgment call, not an obvious mechanical mapping
+    — flagged explicitly (per Sam's own explicit invitation to
+    reconsider rather than force a value here), not silently assumed.
+
+    trend_direction here is a SNAPSHOT-STANDING read (market-favored/
+    market-longshot/market-neutral), never a movement — confirmed
+    already, unchanged. But signal_direction's real job across every
+    family isn't "is this a trend," it's "does this real signal help or
+    hurt a bettor considering this specific player" — the same
+    generic, cross-family vocabulary already applied to Role Changes'
+    own non-movement trend_direction (opportunity-driven/role-trend-
+    driven, also not a trend). Market's current standing is real,
+    substantive information for that same question: the market
+    strongly believing a player scores (market-favored) is a real,
+    validating signal for that player's own real anytime-TD prospects
+    -- favorable, the same spirit Market Intelligence's own headline/
+    story text already uses ("one of the field's clearest bets to
+    score"). market-longshot is the real inverse (the market itself
+    signaling against this player) -- unfavorable. market-neutral has
+    no real signal either way -- neutral, the first real use of that
+    value across all four families (none of the other three's real
+    story populations ever produced it).
+
+    NOT the same question as "is this a good VALUE bet against the
+    market's own price" (arbitrage) -- that's a genuinely different
+    real question this module was never built to answer (V1 is a
+    snapshot standing read, not a value-vs-price model), and isn't
+    what's being classified here.
+    """
+    if direction == "market-favored":
+        return "favorable"
+    if direction == "market-longshot":
+        return "unfavorable"
+    return "neutral"
+
+
+def _hero_metric_for_row() -> None:
+    """
+    Permanently null by design, not a placeholder waiting on future
+    work in this same pass -- confirmed, unchanged from the original
+    backend audit: V1 is snapshot-only (market_value.py's PRICE_
+    HISTORY_COLUMNS table has never had a row written to it — see this
+    module's own docstring), so there is no real upstream time series
+    to compute a real before_value/after_value from at all. A real,
+    movement-based Market Intelligence hero_metric only becomes
+    possible once that table gets built — flagged there already as
+    Valuable Later, not approximated here with a fake "before" value.
+    """
+    return None
+
+
+def _what_changed_for_row(row: pd.Series, pool_rank: int, pool_size: int, n_books, thin: bool) -> list:
+    """
+    Real editorial content — genuinely closer to Role Changes' direct-
+    reuse case than Defensive/Coaching's fresh-rewrite case: this
+    family's own supporting_evidence lines are almost entirely already
+    plain language (confirmed directly, not assumed) -- "Consensus
+    price: -105 (51.2% implied probability)" and "Based on 1 book — a
+    thin, early read" read exactly like real what_changed copy already,
+    reused near-verbatim below. The ONE real exception is the pool-rank
+    line, which embeds a raw internal field name inline ("Ranks 3 of 20
+    players... (market_value_score 95/100)") -- that one number is
+    dropped here (primary_signal already carries it elsewhere in the
+    schema; no need to duplicate an internal field name in a user-
+    facing field just to restate it).
+    """
+    price_label = "Consensus price"
+    coverage_label = "Book coverage"
+    items = [
+        {"label": price_label, "observation": f"Consensus price: {int(row['consensus_price_american']):+d} ({row['consensus_implied_probability']*100:.1f}% implied probability)."},
+        {
+            "label": coverage_label,
+            "observation": f"Based on {int(n_books) if pd.notna(n_books) else 0} book" + ("s" if pd.isna(n_books) or n_books != 1 else "") + (" — a thin, early read." if thin else " — solid multi-book coverage."),
+        },
+        {"label": "Market ranking", "observation": f"Ranks {pool_rank} of {pool_size} players with a posted market this week."},
+    ]
+    return items[:3]
+
+
+def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
+    """Same real formula as the other three families, confirmed directly from Lovable's own trustIndicator(): score = (confidence+completeness)/2, strong >= 80, moderate >= 60, else limited."""
+    score = (confidence + completeness) / 2
+    if score >= config["evidence_strong_threshold"]:
+        return "strong"
+    if score >= config["evidence_moderate_threshold"]:
+        return "moderate"
+    return "limited"
+
+
 def build_market_intelligence_stories(snapshot: pd.DataFrame, config: dict = CONFIG) -> list:
     """
     snapshot: scoring.score_market_value()'s own output (market_value.py's
@@ -256,7 +360,7 @@ def build_market_intelligence_stories(snapshot: pd.DataFrame, config: dict = CON
         # the short-name happy path).
         time_window = f"Live snapshot, {row['away_team']} @ {row['home_team']}, kickoff {_format_kickoff_et(row['commence_time'])}"
 
-        stories.append(build_story(
+        story = build_story(
             intelligence_family="market_intelligence",
             entity={
                 "type": "player", "player_id": row["player_id"], "player_name": row["player_name_raw"],
@@ -273,6 +377,17 @@ def build_market_intelligence_stories(snapshot: pd.DataFrame, config: dict = CON
             confidence=completeness,
             time_window=time_window,
             related_players=_related_players(ranked, row["event_id"], row["team"], row["player_id"]),
-        ))
+        )
+        # Universal Card v2 fields -- attached after build_story(), not
+        # part of its own hard STORY_FIELDS contract. hero_metric is
+        # permanently None for this family (see _hero_metric_for_row's
+        # own docstring); lifecycle_state is also always None for
+        # Market (the already-approved deferral, unrelated to this
+        # task, unchanged) -- both real, structural absences, not gaps.
+        story["hero_metric"] = _hero_metric_for_row()
+        story["signal_direction"] = _signal_direction_for_row(direction)
+        story["what_changed"] = _what_changed_for_row(row, pool_rank, pool_size, n_books, thin)
+        story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        stories.append(story)
 
     return stories

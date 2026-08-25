@@ -16,6 +16,7 @@ Run: python3 nfl/test_market_intelligence.py
 """
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -209,6 +210,70 @@ if __name__ == "__main__":
         "the real November DST transition is handled correctly (EST, not a stale EDT offset) for that same longest-pair case",
         real_longest_pair_time_window.endswith("kickoff Nov 8, 1:00 PM ET"),
     ))
+
+    # ============================================================
+    # Universal Card v2 fields.
+    # ============================================================
+    results.append(check(
+        "hero_metric is permanently None -- Market Intelligence has no real upstream time series (the price-history table has never had a row written to it), confirmed on both synthetic stories",
+        all(st["hero_metric"] is None for st in synthetic_stories),
+    ))
+    results.append(check(
+        f"evidence_classification correctly discriminates using the real formula even within this one synthetic pair -- well-covered (completeness=100) lands strong, thin (completeness=57.7) lands limited (got well_covered={well_covered['evidence_classification']!r}, thin={thin['evidence_classification']!r})",
+        well_covered["evidence_classification"] == "strong" and thin["evidence_classification"] == "limited",
+    ))
+    results.append(check(
+        "what_changed is a real, non-empty list capped at 3 items and never leaks the internal 'market_value_score' field name, both synthetic stories",
+        all(
+            isinstance(st["what_changed"], list) and 1 <= len(st["what_changed"]) <= 3
+            and not any("market_value_score" in item["observation"] for item in st["what_changed"])
+            for st in synthetic_stories
+        ),
+    ))
+
+    STUB_PATH = Path(__file__).resolve().parent / "data" / "stub_weeks" / "2026_wk1.csv"
+    if not STUB_PATH.exists():
+        print("(skipped the real-live-stub-week v2 validation — 2026_wk1.csv not present in this environment)")
+    else:
+        import nfl_data_py as _nfl
+        df = pd.read_csv(STUB_PATH)
+        q = df[df["market_value_score"].notna()].copy()
+        team_desc = _nfl.import_team_desc()
+        abbr_to_name = dict(zip(team_desc["team_abbr"], team_desc["team_name"]))
+        parts = q["game_id"].str.split("_", expand=True)
+        q["event_id"] = q["game_id"]
+        q["away_team"] = parts[2].map(abbr_to_name)
+        q["home_team"] = parts[3].map(abbr_to_name)
+        q["commence_time"] = "2026-09-13T17:00:00Z"
+        q["team"] = q["posteam"]
+        q["player_name_raw"] = q["player_name"]
+        real_snapshot = q[[
+            "player_id", "player_name_raw", "team", "position_group", "event_id", "away_team", "home_team", "commence_time",
+            "market_value_score", "n_books", "market_value_completeness", "consensus_price_american",
+            "consensus_implied_probability", "best_price", "best_book",
+        ]].reset_index(drop=True)
+        real_stories = build_market_intelligence_stories(real_snapshot)
+
+        results.append(check(
+            f"real live current-week data: signal_direction genuinely exercises all three real values, INCLUDING neutral -- the first family of the four to do so (got {Counter(st['signal_direction'] for st in real_stories)})",
+            len({st["signal_direction"] for st in real_stories}) == 3,
+        ))
+        results.append(check(
+            "real live current-week data: signal_direction matches trend_direction correctly on every real row (market-favored->favorable, market-longshot->unfavorable, market-neutral->neutral)",
+            all(
+                (st["signal_direction"] == {"market-favored": "favorable", "market-longshot": "unfavorable", "market-neutral": "neutral"}[st["trend_direction"]])
+                for st in real_stories
+            ),
+        ))
+        results.append(check("real live current-week data: hero_metric is None for every real row", all(st["hero_metric"] is None for st in real_stories)))
+        real_dist = Counter(st["evidence_classification"] for st in real_stories)
+        results.append(check(
+            f"REAL FINDING: every real live current-week story lands on 'limited' -- real market_value_completeness is always 100.0 "
+            f"but real n_books is always 1 (this project has never yet seen n_books>1 in real data -- confirmed, not assumed), so the "
+            f"real completeness/confidence ceiling under today's real single-book conditions is a constant 57.7, below the 60 moderate "
+            f"threshold (got {dict(real_dist)}) -- a genuine, currently-real degenerate pattern, distinct from Defensive's own constant-strong case",
+            real_dist == {"limited": len(real_stories)},
+        ))
 
     print()
     if all(results):
