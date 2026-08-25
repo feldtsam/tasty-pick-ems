@@ -34,7 +34,7 @@ from lovable_forward import forward_to_lovable, resolve_url_env
 from build_game_candidates import build_candidates_for_game
 from game_lookup import resolve_game_pk
 from scored_picks import build_scored_picks_for_game, fetch_recent_statcast_form
-from curate_shelves import curate_shelves_for_date
+from curate_shelves import curate_shelves_for_date, fetch_todays_scored_picks
 from shelf_curation import DEFAULT_SHELF_SIZE
 from grade_official_picks_live import grade_official_picks_for_pending
 from grade_bookmarks_live import grade_bookmarks_for_pending
@@ -535,6 +535,33 @@ def curate_shelves_health_check():
                  "(shelf_candidates_detailed) to the response.",
         "deployed_via": "github-auto-deploy",
     })
+
+
+@app.route("/api/_debug-raw-read", methods=["POST"])
+def debug_raw_read_endpoint():
+    """
+    TEMPORARY -- verifying book_odds persists end-to-end through the real
+    scored-picks-read path, unfiltered by curate_shelves.py's sanity
+    check or shelf selection. Remove after verification.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    date = data.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    secret = os.environ.get("LOVABLE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "LOVABLE_WEBHOOK_SECRET is not configured"}), 500
+
+    read_url = resolve_url_env("LOVABLE_SCORED_PICKS_READ_URL", DEFAULT_SCORED_PICKS_READ_URL)
+    try:
+        result = fetch_todays_scored_picks(date, secret, read_url)
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": "Network error reaching scored-picks-read.", "detail": str(e)}), 502
+
+    return jsonify(result)
 
 
 @app.route("/api/grade-official-picks", methods=["POST"])
