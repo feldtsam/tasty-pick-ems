@@ -147,6 +147,11 @@ CONFIG = {
     # fixes already established the need for.
     "component_evidence_threshold": 55.0,
     "related_players_limit": 5,
+    # evidence_classification (Universal Card v2) -- the REAL formula,
+    # confirmed directly from Lovable's own trustIndicator() (same
+    # thresholds already confirmed and shipped for Defensive Trends).
+    "evidence_strong_threshold": 80.0,
+    "evidence_moderate_threshold": 60.0,
 }
 
 
@@ -280,6 +285,143 @@ def _headline_and_story(row: pd.Series, opportunity_driven: bool, evidence_kind:
     return headline, story
 
 
+# ============================================================
+# Universal Card v2 fields — same "attach after build_story(), not
+# threaded through STORY_FIELDS" approach Defensive Trends already
+# established (see that module's own block comment for the full
+# reasoning: STORY_FIELDS stays a hard, closed 13-field contract shared
+# unchanged by all four families).
+# ============================================================
+
+def _signal_direction_for_row() -> str:
+    """
+    REAL FINDING, confirmed against this module's own module docstring
+    before hardcoding, not assumed: unlike Defensive Trends' genuinely
+    bidirectional trend_direction, Role Changes is explicitly, by
+    design, EXPANDING ROLES ONLY — "role_momentum has no mechanism that
+    specifically flags 'this player's role is shrinking' as its own
+    signal" (confirmed by reading score_role_momentum directly, per
+    that same docstring). A row only ever reaches this family's own
+    pool at all when role_momentum has already cleared a real
+    materiality threshold for an EXPANDING role — there is no real
+    "his role is shrinking" story in this family's current scope at
+    all, and trend_direction (opportunity-driven vs role-trend-driven)
+    is a WHY-classification of that expansion, not an up/down polarity
+    the way Defensive's two values were.
+
+    Given that, every real Role Changes story already represents
+    favorable news for its own entity player — confirmed this is
+    genuinely a real constant for this family (not a lazy fallback),
+    the same way Defensive Trends' evidence_classification turned out
+    to be a real, non-forced constant for a different reason. unfavorable/
+    neutral/mixed have no real case to map to here today; if bidirectional
+    Role Changes (declining roles) is ever built (flagged as Valuable
+    Later in this module's own docstring), THAT is where unfavorable
+    would first have a real story to attach to, not before.
+    """
+    return "favorable"
+
+
+def _hero_metric_for_row(row: pd.Series, opportunity_driven: bool, evidence_kind: str, config: dict) -> dict | None:
+    """
+    NULLABLE, same principle as Defensive Trends: populated only when
+    the SAME real evidence_kind gate that already decides whether a
+    specific claim is safe to cite in the story text itself (_role_
+    trend_evidence, or the opportunity-driven branch's own deliberate
+    "generic" — see build_role_changes_stories) says a specific real
+    number backs this story. Never a separate, looser check.
+
+    Which of THREE real sub-metrics becomes the hero is genuinely
+    per-story, not fixed per family — whichever one _role_trend_
+    evidence found already winning and citable. depth_chart's real
+    comparison window is prior-week-vs-this-week (a real shift(1)),
+    genuinely different from snap/touch share's season-vs-last-3 — the
+    period labels reflect that real difference, not a copy-paste of
+    Defensive's own SEASON/LAST 3 labels onto a different real window.
+    """
+    if opportunity_driven or evidence_kind == "generic":
+        return None
+    if evidence_kind == "snap_share":
+        before, after = float(row["snap_share_season_avg"]) * 100, float(row["snap_share_last3"]) * 100
+        return {
+            "label": "Snap Share", "before_value": round(before, 1), "after_value": round(after, 1),
+            "unit": "%", "value_format": "percent", "delta_display_mode": "percentage_points",
+            "delta_value": round(after - before, 1), "lower_is_better": False,
+            "period_before_label": "SEASON", "period_after_label": "LAST 3",
+        }
+    if evidence_kind == "touch_share":
+        before, after = float(row["rz_touch_share_season_avg"]) * 100, float(row["rz_touch_share_last3"]) * 100
+        return {
+            "label": "Red-Zone Touch Share", "before_value": round(before, 1), "after_value": round(after, 1),
+            "unit": "%", "value_format": "percent", "delta_display_mode": "percentage_points",
+            "delta_value": round(after - before, 1), "lower_is_better": False,
+            "period_before_label": "SEASON", "period_after_label": "LAST 3",
+        }
+    if evidence_kind == "depth_chart":
+        before, after = float(row["_depth_rank_prev"]), float(row["depth_rank"])
+        return {
+            "label": f"{row['position_group']} Depth Chart Rank", "before_value": before, "after_value": after,
+            "unit": "rank", "value_format": "rank", "delta_display_mode": "absolute",
+            "delta_value": after - before,
+            # A lower rank number IS the improvement here (#1 beats #3) —
+            # the real reason this metric needs its own inversion flag,
+            # confirmed directly against real depth_rank semantics, not
+            # assumed from the field name alone.
+            "lower_is_better": True,
+            "period_before_label": "PRIOR WEEK", "period_after_label": "NOW",
+        }
+    return None
+
+
+def _what_changed_for_row(row: pd.Series, opportunity_driven: bool, evidence_kind: str, evidence_detail, thin: bool, config: dict) -> list:
+    """
+    Real editorial content — genuinely different from Defensive Trends'
+    own equivalent in one respect worth being explicit about: _role_
+    trend_evidence's own evidence_detail strings are ALREADY plain
+    editorial language with no internal field names (confirmed directly
+    — "Snap share is up to 62% over his last 3 games..." reads exactly
+    like real what_changed copy already), unlike Defensive's raw
+    supporting_evidence list (which cites literal internal field names
+    like "defensive_matchup_vulnerability"). Reused directly here for
+    that reason, not out of inconsistency with Defensive's own separate
+    "never reuse the internal evidence list" decision — that decision
+    was about THAT list's real content, not a blanket rule independent
+    of what the content actually looks like.
+    """
+    if opportunity_driven:
+        injured = row["_injured_teammates_parsed"]
+        if injured:
+            who, status = injured[0]["player_name"], injured[0]["status"]
+            items = [{"label": "Opportunity opened up", "observation": f"{who} is {status.lower()}, clearing a path to more of this player's own touches and snaps."}]
+        else:
+            items = [{"label": "Opportunity opened up", "observation": "A real injury ahead of him on the depth chart has cleared a path to more touches and snaps."}]
+    elif evidence_kind != "generic" and evidence_detail:
+        items = [{"label": "Role expanding", "observation": evidence_detail}]
+    else:
+        items = [{"label": "Role trending up", "observation": "This player's combined role-trend read is elevated this week, though no single usage number stands out clearly yet."}]
+
+    items.append({
+        "label": "Sample size",
+        "observation": f"Based on {int(row['_games_played'])} real game(s) this season" + (" — still an early read." if thin else ", a season-established read."),
+    })
+    if pd.notna(row.get("depth_rank")):
+        items.append({
+            "label": "Depth chart standing",
+            "observation": f"Currently ranked #{int(row['depth_rank'])} at {row['position_group']} on the depth chart.",
+        })
+    return items[:3]
+
+
+def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
+    """Same real formula as Defensive Trends, confirmed directly from Lovable's own trustIndicator(): score = (confidence+completeness)/2, strong >= 80, moderate >= 60, else limited."""
+    score = (confidence + completeness) / 2
+    if score >= config["evidence_strong_threshold"]:
+        return "strong"
+    if score >= config["evidence_moderate_threshold"]:
+        return "moderate"
+    return "limited"
+
+
 def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
     """
     weekly: the full multi-week player_redzone_weekly table (scoring.
@@ -337,7 +479,7 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
 
         time_window = f"Season {season}, through Week {week}"
 
-        stories.append(build_story(
+        story = build_story(
             intelligence_family="role_changes",
             entity={
                 "type": "player", "player_id": row["player_id"], "player_name": row["player_name"],
@@ -354,6 +496,14 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
             confidence=float(row["role_momentum_completeness"]),
             time_window=time_window,
             related_players=related_players,
-        ))
+        )
+        # Universal Card v2 fields -- attached after build_story(), not
+        # part of its own hard STORY_FIELDS contract (see the block
+        # comment above these helper functions for why).
+        story["hero_metric"] = _hero_metric_for_row(row, opportunity_driven, evidence_kind, config)
+        story["signal_direction"] = _signal_direction_for_row()
+        story["what_changed"] = _what_changed_for_row(row, opportunity_driven, evidence_kind, evidence_detail, thin, config)
+        story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        stories.append(story)
 
     return stories

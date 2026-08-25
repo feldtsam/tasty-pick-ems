@@ -186,6 +186,77 @@ if __name__ == "__main__":
             all("combined role-trend read" in st["story"] for st in generic_stories),
         ))
 
+    # ============================================================
+    # Universal Card v2 fields — checked across the FULL real backfill,
+    # not just week 10.
+    # ============================================================
+    all_v2_stories = []
+    for season in weekly["season"].dropna().unique():
+        for week in range(1, 23):
+            all_v2_stories += build_role_changes_stories(weekly, int(season), week)
+
+    results.append(check(
+        f"signal_direction is 'favorable' for every real story, confirmed as a genuine constant for this family "
+        f"(Role Changes is expanding-roles-only by design — there is no real 'role shrinking' story in scope today) "
+        f"-- checked {len(all_v2_stories)} real stories",
+        all(st["signal_direction"] == "favorable" for st in all_v2_stories),
+    ))
+    results.append(check(
+        "hero_metric is null for every real opportunity-driven story (that branch never computes a role-trend evidence_kind at all)",
+        all(st["hero_metric"] is None for st in all_v2_stories if st["trend_direction"] == "opportunity-driven"),
+    ))
+    role_trend_stories = [st for st in all_v2_stories if st["trend_direction"] == "role-trend-driven"]
+    results.append(check(
+        "hero_metric is populated for a role-trend-driven story if and only if its story text carries a specific 'up to X%...' or depth-chart claim "
+        "(the same real evidence_kind gate, never a separate looser check)",
+        all(
+            (st["hero_metric"] is not None) == ("up to" in st["story"] or "Moved up the depth chart" in st["story"])
+            for st in role_trend_stories
+        ),
+    ))
+    hero_stories = [st for st in all_v2_stories if st["hero_metric"] is not None]
+    results.append(check(
+        f"every real populated hero_metric's label is one of the three real sub-metrics, each with the right unit/format (checked {len(hero_stories)} real stories)",
+        all(
+            (st["hero_metric"]["label"] in ("Snap Share", "Red-Zone Touch Share") and st["hero_metric"]["value_format"] == "percent")
+            or ("Depth Chart Rank" in st["hero_metric"]["label"] and st["hero_metric"]["value_format"] == "rank" and st["hero_metric"]["lower_is_better"] is True)
+            for st in hero_stories
+        ),
+    ))
+    results.append(check(
+        "depth_chart hero_metric always uses PRIOR WEEK/NOW period labels, genuinely different from snap/touch share's SEASON/LAST 3 (a real different comparison window, not a copy-paste)",
+        all(
+            (st["hero_metric"]["period_before_label"], st["hero_metric"]["period_after_label"]) == ("PRIOR WEEK", "NOW")
+            for st in hero_stories if "Depth Chart Rank" in st["hero_metric"]["label"]
+        ),
+    ))
+    results.append(check(
+        "what_changed is always a real, non-empty list capped at 3 items, every real story",
+        all(isinstance(st["what_changed"], list) and 1 <= len(st["what_changed"]) <= 3 for st in all_v2_stories),
+    ))
+    results.append(check(
+        "evidence_classification is always one of the three real approved values, every real story",
+        all(st["evidence_classification"] in ("strong", "moderate", "limited") for st in all_v2_stories),
+    ))
+    results.append(check(
+        "the real formula (confidence+completeness)/2 against real thresholds (>=80 strong, >=60 moderate) is applied correctly, checked against every real story's own confidence/completeness",
+        all(
+            st["evidence_classification"] == (
+                "strong" if (st["confidence"] + st["completeness"]) / 2 >= 80.0
+                else "moderate" if (st["confidence"] + st["completeness"]) / 2 >= 60.0
+                else "limited"
+            )
+            for st in all_v2_stories
+        ),
+    ))
+    real_classification_dist = {c: sum(1 for st in all_v2_stories if st["evidence_classification"] == c) for c in ("strong", "moderate", "limited")}
+    results.append(check(
+        f"REAL FINDING, distinct from Defensive Trends: role_momentum_completeness genuinely VARIES across real stories "
+        f"(unlike Defensive's constant-100 case), so evidence_classification actually exercises all three real bands "
+        f"here (got {real_classification_dist})",
+        real_classification_dist["moderate"] > 0 and real_classification_dist["limited"] > 0 and real_classification_dist["strong"] > 0,
+    ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")
