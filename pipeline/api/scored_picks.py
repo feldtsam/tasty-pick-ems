@@ -43,6 +43,7 @@ reported by name in `match_summary.excluded_below_odds_filter` rather than
 silently vanishing.
 """
 import difflib
+import os
 import re
 import sys
 import unicodedata
@@ -256,6 +257,70 @@ def match_players(odds_rows: list, candidates: list) -> dict:
     return {"matched": matched, "unmatched_odds": unmatched_odds, "unmatched_candidates": unmatched_candidates}
 
 
+def _implied_probability(price) -> float:
+    """
+    Standard American-odds -> implied probability conversion. Same real
+    formula as NFL's market_value.py's implied_probability(), scalar
+    here rather than pandas-vectorized since nothing else in this file
+    uses pandas — deliberately not introducing it as a new dependency
+    for one calculation. Positive price (underdog-style payout):
+    100 / (price + 100). Negative price (favorite-style payout):
+    -price / (-price + 100).
+    """
+    price = float(price)
+    return 100.0 / (price + 100.0) if price > 0 else -price / (-price + 100.0)
+
+
+def _book_odds_for_match(rows: list) -> list:
+    """
+    Reshapes match_players()'s own real per-book rows (match["odds_rows"]
+    — already computed, already in memory; nothing re-fetched) into the
+    real book_odds column shape: [{bookmaker, odds, implied_prob}, ...].
+    implied_prob is stored as a raw 0-1 fraction (rounded to 4 decimal
+    places for real JSON-payload cleanliness — not pre-rounded to a
+    display precision; that stays the reader's job, same "store raw,
+    round for display" convention NFL's own consensus_implied_
+    probability already follows). Order matches the order odds_rows
+    arrived in (bookmaker order from the raw Odds API response) — not
+    re-sorted by price, so a caller wanting "best price first" sorts it
+    themselves; this column's job is to carry the full real picture, not
+    pre-opine on presentation order.
+    """
+    return [
+        {"bookmaker": r["bookmaker"], "odds": r["odds"], "implied_prob": round(_implied_probability(r["odds"]), 4)}
+        for r in rows
+    ]
+
+
+# Real safety gate, not a placeholder -- confirmed directly (see the
+# conversation this was added in) that _build_scored_pick()'s full
+# returned dict reaches forward_to_lovable() completely unmodified:
+# index.py's write route does `scored_picks = result["scored_picks"]`
+# then `forward_to_lovable(scored_picks, secret, url)` with NO
+# intermediate allowlist/mapping step in between. That means whatever
+# keys this function puts in its return dict are exactly what gets
+# POSTed -- there's no separate place to "wire book_odds into the
+# write" the way there might be if a shaping layer existed here.
+#
+# Given that, adding book_odds unconditionally would ship it into every
+# real write starting immediately, before the real book_odds column
+# exists on Lovable's scored_picks table -- and this codebase has no
+# visibility into whether that endpoint's real implementation silently
+# ignores an unrecognized field or hard-rejects the whole request (a
+# strict Zod/schema check would fail EVERY scored-picks-write, not just
+# silently drop book_odds -- a real regression risk for the already-
+# working odds/bookmaker/num_bookmakers fields too, not contained to
+# this one new field). Not something to guess at from this side alone
+# -- see the report this was flagged in.
+#
+# SCORED_PICKS_INCLUDE_BOOK_ODDS, unset/false by default: book_odds is
+# built by _book_odds_for_match() either way (cheap, pure, already
+# tested) but only actually added to the real write payload when this
+# is explicitly turned on -- flip it once Lovable confirms the column
+# exists, no other code change needed at that point.
+_INCLUDE_BOOK_ODDS_IN_WRITE = os.environ.get("SCORED_PICKS_INCLUDE_BOOK_ODDS", "").strip().lower() in ("1", "true", "yes")
+
+
 def _build_scored_pick(match: dict, game: dict, score_result: dict,
                         batter_form: dict, pitcher_form: dict, statcast_form: dict) -> dict:
     """One row for the scored_picks table/webhook — see README for the
@@ -274,14 +339,21 @@ def _build_scored_pick(match: dict, game: dict, score_result: dict,
     recent_statcast_form.py's daily batch job (see fetch_recent_
     statcast_form) — HITTERS ONLY, keyed on the candidate's OWN mlbam_id,
     never the opposing pitcher's. Pitcher-allowed Statcast metrics
-    (Hard-Hit % Allowed, Exit Velo, xERA) are out of scope for this."""
+    (Hard-Hit % Allowed, Exit Velo, xERA) are out of scope for this.
+
+    book_odds is gated by _INCLUDE_BOOK_ODDS_IN_WRITE (see its own
+    comment right above this function) — omitted from the returned dict
+    entirely when the gate is off, not set to null/empty. Omitting the
+    key outright, rather than sending an explicit null, means a caller
+    with the gate off produces byte-identical output to before book_odds
+    existed at all."""
     c = match["candidate"]
     pillars = score_result["pillars"]
     own_form = batter_form.get(c["mlbam_id"], _EMPTY_BATTER_FORM)
     opp_id = c.get("opp_pitcher_mlbam_id")
     opp_form = pitcher_form.get(opp_id, _EMPTY_PITCHER_FORM) if opp_id else _EMPTY_PITCHER_FORM
     own_statcast_form = statcast_form.get(c["mlbam_id"], _EMPTY_STATCAST_FORM)
-    return {
+    row = {
         "player_name": c["player_name"],
         "mlbam_id": c["mlbam_id"],
         "team": c["team"],
@@ -345,6 +417,14 @@ def _build_scored_pick(match: dict, game: dict, score_result: dict,
         "notes": score_result["notes"],
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }
+    if _INCLUDE_BOOK_ODDS_IN_WRITE:
+        # Additive, not a replacement -- odds/bookmaker/num_bookmakers
+        # above (the single best price) still drive scoring/shelf logic
+        # unchanged; book_odds carries the full real per-book picture
+        # match_players() already computed (match["odds_rows"]) but this
+        # function used to discard.
+        row["book_odds"] = _book_odds_for_match(match["odds_rows"])
+    return row
 
 
 def build_scored_picks_for_game(game_pk: int, raw_odds_event, recent_statcast_form: dict | None = None) -> dict:
