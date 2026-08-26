@@ -257,6 +257,33 @@ CONFIG = {
         # not a hardcoded 4. See score_evidence_quality.
         "family_score_columns": ["td_opportunity", "role_momentum", "situation", "market_value_score"],
         "completeness_columns": ["td_opportunity_completeness", "role_momentum_completeness", "situation_completeness"],
+        # signal_convergence (see score_evidence_quality) is a STRICTER,
+        # card-facing read than evidence_convergence: tight spread is not
+        # enough on its own, because several neutral-50 fallback readings
+        # sitting next to each other are trivially "close together" without
+        # being a real signal. Both thresholds are empirically grounded
+        # against the real 2022/2024/2025 backfill (scripts/player_redzone_
+        # weekly.csv, 7934 rows), not round-number guesses -- see this
+        # task's own investigation report for the full distribution:
+        #   - 39.2% of rows currently read as high-convergence
+        #     (evidence_convergence >= 80) have min(family scores) sitting
+        #     at EXACTLY 50.0 -- the neutral-fallback value, not a real
+        #     reading (fill_neutral's own sentinel, confirmed by exact
+        #     equality, not "near 50").
+        #   - Pooling all real (non-fallback) family-score values across
+        #     the same backfill, 60.0 sits almost exactly at the 65th
+        #     percentile (57.4 at the 60th, 60.0 at the 65th, 62.5 at the
+        #     70th) -- "meaningfully above a typical real reading," not
+        #     just "average."
+        #   - spread_threshold=80 is evidence_convergence's own ~50th
+        #     percentile (median 79.6) -- "at least as tight as a typical
+        #     reading," kept at the same value already used informally
+        #     above rather than re-derived, since the task was to ADD a
+        #     floor, not re-tune the existing spread read.
+        #   - Together these pass 153/7934 real rows (1.9%) -- selective
+        #     enough to mean something, not so rare it never fires.
+        "signal_convergence_spread_threshold": 80,
+        "signal_convergence_strength_floor": 60,
     },
     "universal_tpe": {
         # The blueprint's stated pillar weights, applied to everything
@@ -861,6 +888,24 @@ def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Da
     convergence (a "range" of one value is meaningless, not informative)
     — same missing-data philosophy as every fallback elsewhere in this
     module.
+
+    signal_convergence (bool) — a STRICTER, card-facing read of the same
+    idea, NOT a rename of evidence_convergence and not used anywhere else
+    in this pillar's own math (evidence_quality below is still computed
+    from the pure, ungated evidence_convergence, unchanged). Tight spread
+    alone is not enough: several family scores that all happen to be
+    sitting at the neutral-50 fallback are trivially "close together"
+    without being a real signal at all — confirmed directly against the
+    real 2022/2024/2025 backfill, not assumed: 39.2% of rows currently
+    read as high-convergence (evidence_convergence >= 80) have
+    min(family scores) sitting at EXACTLY 50.0. True requires BOTH the
+    existing tight-spread read AND every present family score clearing a
+    real strength floor — see config["evidence_quality"]'s own comment
+    for exactly how signal_convergence_spread_threshold (80) and
+    signal_convergence_strength_floor (60) were derived from that same
+    backfill's real distribution, not picked as round numbers. Same
+    n_present >= 2 gate as convergence itself — a single present family
+    score can't demonstrate agreement with anything.
     """
     weekly = weekly.copy()
     eq_cfg = config["evidence_quality"]
@@ -876,9 +921,17 @@ def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Da
 
     evidence_quality = np.sqrt(completeness * convergence)
 
+    family_min = family_scores.min(axis=1)
+    signal_convergence = (
+        (n_present >= 2)
+        & (convergence >= eq_cfg["signal_convergence_spread_threshold"])
+        & (family_min >= eq_cfg["signal_convergence_strength_floor"])
+    ).fillna(False)
+
     weekly["evidence_completeness"] = completeness.round(1)
     weekly["evidence_convergence"] = convergence.round(1)
     weekly["evidence_quality"] = evidence_quality.round(1)
+    weekly["signal_convergence"] = signal_convergence
 
     return weekly
 

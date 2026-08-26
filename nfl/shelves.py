@@ -428,6 +428,14 @@ def _finalize_cards(shelf_result: dict, story_fn) -> list:
             "primary_signal_value": row["_primary_value"],
             "tpe_score": row.get("tpe_score"),
             "evidence_quality": row.get("evidence_quality"),
+            # Strength-gated read of evidence_convergence (see
+            # scoring.score_evidence_quality's own docstring) -- whether
+            # multiple pillars are BOTH tightly agreed AND meaningfully
+            # strong, not just close together. Deliberately a distinct
+            # name from evidence_convergence (that internal column stays
+            # ungated, feeding evidence_quality's own math unchanged) so
+            # the two are never confused downstream.
+            "signal_convergence": bool(row.get("signal_convergence", False)),
             "completeness": row["_completeness_value"],
             "meets_evidence_threshold": entry["meets_evidence_threshold"],
             "consensus_price_american": row.get("consensus_price_american"),
