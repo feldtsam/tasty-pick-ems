@@ -832,6 +832,12 @@ def shape_content_draft_rows(
             "validation_passed": validation_passed,
             "validation_issues": validation_issues,
             "review_status": "pending_review",
+            # Already computed upstream (scoring.score_evidence_quality) --
+            # pulled straight through, same full_row.get(...) pattern as
+            # tpe_score above. None (not False) when full_row is missing or
+            # never had it computed, so a genuinely unknown case doesn't
+            # masquerade as a confirmed non-convergent read.
+            "signal_convergence": full_row.get("signal_convergence") if full_row is not None else None,
         })
     return rows
 
