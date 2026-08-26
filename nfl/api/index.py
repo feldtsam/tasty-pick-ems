@@ -623,49 +623,6 @@ def curate_and_write_drafts_health_check():
     })
 
 
-@app.route("/api/_debug-relay-content-drafts-read", methods=["POST"])
-def debug_relay_content_drafts_read_endpoint():
-    """
-    TEMPORARY -- relays a signed read against the real
-    nfl-debug-content-drafts-read.ts route on Lovable, using the REAL
-    NFL_PIPELINE_WEBHOOK_SECRET from this function's own Vercel runtime
-    env (Sensitive vars can't be read back locally via `vercel env pull`
-    -- it returns the literal placeholder "[Sensitive]", not the real
-    value, confirmed directly this task). Own incoming auth is a
-    throwaway token hardcoded directly in this temporary handler (NOT a
-    real secret, generated fresh for this one check) --
-    PIPELINE_INCOMING_SECRET on THIS project is also Sensitive/write-
-    only, same problem, confirmed directly. No real secret is reused or
-    exposed by this route. Remove once verification is done.
-    """
-    if request.headers.get("x-debug-token") != "de71877d99b2d3f3a9a300366a8dfa11bf929d6bdd44c9f6":
-        return jsonify({"error": "Unauthorized"}), 401
-
-    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
-    if not secret:
-        return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
-
-    data = request.get_json(force=True, silent=True) or {}
-    body = {k: data[k] for k in ("limit", "player_id", "event_id") if k in data}
-
-    from lovable_forward import serialize_payload, compute_signature
-    payload_str = serialize_payload(body)
-    signature = compute_signature(secret, payload_str)
-
-    import requests
-    try:
-        resp = requests.post(
-            "https://tastypickems.com/api/public/nfl-debug-content-drafts-read",
-            data=payload_str.encode("utf-8"),
-            headers={"Content-Type": "application/json", "x-signature": signature},
-            timeout=15,
-        )
-    except requests.RequestException as e:
-        return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
-
-    return jsonify({"status_code": resp.status_code, "body": resp.text[:8000]}), 200
-
-
 @app.route("/api/write-intelligence", methods=["POST"])
 def write_intelligence_endpoint():
     """
