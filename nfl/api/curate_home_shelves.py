@@ -838,6 +838,10 @@ def shape_content_draft_rows(
             # never had it computed, so a genuinely unknown case doesn't
             # masquerade as a confirmed non-convergent read.
             "signal_convergence": full_row.get("signal_convergence") if full_row is not None else None,
+            # Same already-computed-upstream, straight-through pattern as
+            # signal_convergence directly above (scoring.score_signal_breach) --
+            # None (not False) when full_row is missing, same reasoning.
+            "signal_breach": full_row.get("signal_breach") if full_row is not None else None,
         })
     return rows
 

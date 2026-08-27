@@ -436,6 +436,12 @@ def _finalize_cards(shelf_result: dict, story_fn) -> list:
             # ungated, feeding evidence_quality's own math unchanged) so
             # the two are never confused downstream.
             "signal_convergence": bool(row.get("signal_convergence", False)),
+            # Whether defensive weakness is the DOMINANT reason this pick
+            # qualifies (score_signal_breach) -- a materially stricter,
+            # differently-scoped claim than signal_convergence's own
+            # cross-pillar agreement read. Independent column, independent
+            # math; see scoring.score_signal_breach's own docstring.
+            "signal_breach": bool(row.get("signal_breach", False)),
             "completeness": row["_completeness_value"],
             "meets_evidence_threshold": entry["meets_evidence_threshold"],
             "consensus_price_american": row.get("consensus_price_american"),

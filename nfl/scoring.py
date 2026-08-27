@@ -285,6 +285,68 @@ CONFIG = {
         "signal_convergence_spread_threshold": 80,
         "signal_convergence_strength_floor": 60,
     },
+    "signal_breach": {
+        # signal_breach -- "defensive weakness is the dominant reason this
+        # pick qualified," not just "this defense ranks poorly on one
+        # metric." A DIFFERENT question from signal_convergence's own
+        # cross-pillar AGREEMENT read, and computed independently of it --
+        # see score_signal_breach, which touches no evidence_quality/
+        # signal_convergence column or logic.
+        #
+        # Only two real comparison pillars exist to test dominance
+        # against today: td_opportunity and role_momentum.
+        # market_value_score has no comparable 0-100 score yet (same gap
+        # noted above) and isn't backfilled into historical rows at all;
+        # Coaching Trends has no scored pillar at all. Whatever rate this
+        # produces is a function of the two pillars actually available,
+        # not the full "offensive role, coaching, or market movement"
+        # set the editorial contract describes -- revisit this if/when
+        # Market Value or Coaching come online, not a permanent number.
+        #
+        # Both thresholds are empirically grounded against the real
+        # 2022/2024/2025 backfill (scripts/player_redzone_weekly.csv,
+        # 7934 rows / 176 real qualifying Defensive Trends stories / 304
+        # related-player rows), not round-number guesses -- see this
+        # task's own two investigation reports for the full modeling:
+        #   - A raw "highest of the three" comparison is NOT enough on its
+        #     own: td_opportunity and defensive_matchup_vulnerability are
+        #     both nominally 0-100 but aren't calibrated to the same
+        #     distribution (real means 60.0 vs. 43.9) -- the same scale
+        #     artifact curate_home_shelves.py's own trend-shelf comparison
+        #     already had to fix once. A pure "highest" read let Justin
+        #     Jefferson (dmv=71 vs. his own real td_opportunity=70, a
+        #     0.3-point margin) count as "the defense is the story" --
+        #     one of the best receivers in the league, on a rounding
+        #     error. A REAL SEPARATION MARGIN is required, not just
+        #     "highest," to rule this class of case out.
+        #   - A comparison pillar sitting at fill_neutral's own exact 50.0
+        #     sentinel is a MISSING reading, not a genuinely weak one --
+        #     confirmed directly: 18.8% of related-player role_momentum
+        #     values sit at exactly 50.0, and 18.4% of "dominant" rows
+        #     under a floor-only definition were only beating that
+        #     fallback, not a real number. signal_breach's margin is
+        #     computed ONLY against whichever of td_opportunity/
+        #     role_momentum are real (!= 50.0 exactly) for that row --
+        #     contamination confirmed at 0% once this gate is applied,
+        #     down from 18.4%.
+        #   - floor=60 and margin=15 together land at 8.5% (top-related-
+        #     player) to 9.1% (majority-of-related) of real qualifying
+        #     Defensive Trends stories -- inside, at the tight end of, the
+        #     10-20% editorial target range. A looser margin (10) would
+        #     land closer to the center of that range (12.5-14.8%) but
+        #     retains at least one real, named edge case (a defense
+        #     beating a genuinely competitive opposing pillar by only 12
+        #     points) that margin=15 correctly excludes -- the tighter
+        #     value was the deliberate choice, prioritizing a clean
+        #     separation claim over centering the rate.
+        "strength_floor": 60,
+        "margin_threshold": 15,
+        # Sentinel value fill_neutral() uses for a missing/unqualified
+        # reading -- same exact-equality convention signal_convergence's
+        # own contamination check already established (not "near 50").
+        "fallback_sentinel": 50.0,
+        "comparison_columns": ["td_opportunity", "role_momentum"],
+    },
     "universal_tpe": {
         # The blueprint's stated pillar weights, applied to everything
         # EXCEPT evidence_quality -- see module docstring for why that
@@ -933,6 +995,62 @@ def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Da
     weekly["evidence_quality"] = evidence_quality.round(1)
     weekly["signal_convergence"] = signal_convergence
 
+    return weekly
+
+
+def score_signal_breach(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    signal_breach (bool) -- "defensive weakness is the DOMINANT reason
+    this pick qualifies," not just "this defense ranks poorly on one
+    metric." Independent of score_evidence_quality/signal_convergence:
+    reads no evidence_quality column, writes no evidence_quality column,
+    and evidence_quality's own math is completely untouched by this
+    function's presence in the pipeline. Requires weekly to already have
+    defensive_matchup_vulnerability (score_situation), td_opportunity
+    (score_td_opportunity), and role_momentum (score_role_momentum) --
+    must run after all three, same as score_evidence_quality.
+
+    See config["signal_breach"]'s own comment for the full real-data
+    grounding (two investigation reports) behind both thresholds below --
+    not reproduced here, kept in one place.
+
+    A comparison pillar is treated as REAL only when it does not sit at
+    fill_neutral's own exact fallback_sentinel (50.0) -- a value sitting
+    there is a missing reading, not a genuinely weak one, and must not be
+    what defensive_matchup_vulnerability gets credited with "beating."
+    A row with NEITHER comparison pillar real has nothing genuine to
+    compare against and can never qualify, regardless of how high
+    defensive_matchup_vulnerability itself is.
+
+    signal_breach requires BOTH:
+      - defensive_matchup_vulnerability >= strength_floor
+      - defensive_matchup_vulnerability - (the higher of whichever
+        comparison pillars are real) >= margin_threshold
+    """
+    weekly = weekly.copy()
+    sb_cfg = config["signal_breach"]
+    sentinel = sb_cfg["fallback_sentinel"]
+    comparison_cols = [c for c in sb_cfg["comparison_columns"] if c in weekly.columns]
+
+    is_real = pd.DataFrame(
+        {c: weekly[c].round(1) != sentinel for c in comparison_cols}, index=weekly.index
+    )
+    # Real values only, per row -- a fallback reading in one column must
+    # never suppress a real value present in another column that row.
+    real_values = weekly[comparison_cols].where(is_real)
+    real_max_other = real_values.max(axis=1)
+    has_real_comparison = real_max_other.notna()
+
+    dmv = weekly["defensive_matchup_vulnerability"]
+    margin = dmv - real_max_other
+
+    signal_breach = (
+        has_real_comparison
+        & (dmv >= sb_cfg["strength_floor"])
+        & (margin >= sb_cfg["margin_threshold"])
+    ).fillna(False)
+
+    weekly["signal_breach"] = signal_breach
     return weekly
 
 

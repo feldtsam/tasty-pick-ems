@@ -47,6 +47,7 @@ from redzone import (
 from scoring import (
     score_evidence_quality,
     score_role_momentum,
+    score_signal_breach,
     score_situation,
     score_td_opportunity,
     score_universal_tpe,
@@ -252,6 +253,14 @@ def run_pipeline(
     # their own outputs (completeness columns + final scores), nothing
     # here is computable any earlier in the pipeline.
     weekly = score_evidence_quality(weekly)
+    # Independent of score_evidence_quality/signal_convergence — reads
+    # only defensive_matchup_vulnerability/td_opportunity/role_momentum,
+    # touches no evidence_quality column. Must run after score_situation
+    # (defensive_matchup_vulnerability) same as evidence_quality does;
+    # order relative to evidence_quality itself doesn't matter, kept
+    # after it here so every "meta-layer over the three pillars" step
+    # reads top to bottom.
+    weekly = score_signal_breach(weekly)
     weekly = score_universal_tpe(weekly)
 
     return weekly, allowed_weekly
