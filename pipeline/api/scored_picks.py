@@ -285,10 +285,52 @@ def _book_odds_for_match(rows: list) -> list:
     re-sorted by price, so a caller wanting "best price first" sorts it
     themselves; this column's job is to carry the full real picture, not
     pre-opine on presentation order.
+
+    DEDUPED BY BOOKMAKER — real incident, not a hypothetical: production
+    showed the same bookmaker (Caesars) twice in "Odds by Sportsbook" with
+    two different prices for one player. Checked directly (see
+    scripts/debug_duplicate_bookmaker.py, run against a live day's full
+    real slate — 16 events, up to 6 bookmakers deep, both regions=us and
+    regions=us,us2): the raw Odds API response itself showed exactly one
+    entry per bookmaker key every time, at every nesting level
+    (bookmakers[], markets[], and outcomes[] each checked for repeats) —
+    Caesars specifically wasn't posting this market at all that day, so
+    the exact book couldn't be reproduced live, but nothing about the
+    response shape suggests it duplicates entries under normal
+    conditions. Regardless of which exact upstream condition produced the
+    real incident (a transient stale+fresh quote from the API, or a
+    caller merging two fetches before this function ever sees them),
+    neither this function nor flatten_hr_props.py had ever guarded
+    against it — a second row for an already-seen bookmaker flowed
+    straight through unmodified. Deduping here, not in flatten_hr_props.py,
+    because this is the one real chokepoint everything reaching the DB
+    passes through regardless of where an upstream duplicate originates.
+
+    Keeps the higher raw odds value (lower implied probability, better
+    payout) when two rows share a bookmaker — same "higher American odds
+    = better price" convention match_players()'s own best_row selection
+    already uses elsewhere in this file, not a new rule. First-seen
+    position is kept for each unique bookmaker, so a clean input's output
+    order is unchanged; a deduped bookmaker doesn't jump to a new position
+    just because its winning row came from a later duplicate.
     """
+    best_by_bookmaker = {}
+    order = []
+    for r in rows:
+        key = r["bookmaker"]
+        if key not in best_by_bookmaker:
+            order.append(key)
+            best_by_bookmaker[key] = r
+        elif r["odds"] > best_by_bookmaker[key]["odds"]:
+            best_by_bookmaker[key] = r
+
     return [
-        {"bookmaker": r["bookmaker"], "odds": r["odds"], "implied_prob": round(_implied_probability(r["odds"]), 4)}
-        for r in rows
+        {
+            "bookmaker": key,
+            "odds": best_by_bookmaker[key]["odds"],
+            "implied_prob": round(_implied_probability(best_by_bookmaker[key]["odds"]), 4),
+        }
+        for key in order
     ]
 
 
