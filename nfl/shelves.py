@@ -70,6 +70,7 @@ import ast
 
 import pandas as pd
 
+from divisions import DIVISIONS, team_to_division
 from redzone import add_rolling_windows, aggregate_whole_game_targets
 
 
@@ -605,6 +606,94 @@ def build_odds_band_shelf(weekly: pd.DataFrame, lo: int, hi, config: dict = CONF
     result = _build_odds_band_shelf(weekly, lo, hi, config["shelf_size"])
     result["cards"] = _finalize_cards(result, odds_band_story)
     return result
+
+
+def around_the_league_story(row: pd.Series, division: str) -> dict:
+    """
+    PUBLIC, same reasoned exception as red_zone_story/position_story/
+    odds_band_story above. Around the League has no themed pillar either
+    (same shape as the odds-band shelves, just grouped by division
+    instead of price) -- cites the real composite score directly, same
+    as odds_band_story, with division-appropriate copy rather than that
+    function's "this price range" framing (which would be a wrong claim
+    to reuse verbatim here — nothing about this shelf is odds-banded).
+    """
+    return {
+        "headline": f"One of the model's top-graded picks in the {division}.",
+        "evidence": f"Universal TPE Score {row['tpe_score']:.0f}/100, evidence quality {row['evidence_quality']:.0f}/100",
+    }
+
+
+def _build_around_the_league_division(weekly: pd.DataFrame, division: str, shelf_size: int) -> dict:
+    """
+    Shared per-division builder for Around the League — same no-
+    completeness-gate shape as _build_odds_band_shelf (see that
+    function's own docstring: no single pillar's completeness is the
+    natural gate for a tpe_score-primary shelf), reusing odds_band_
+    eligible(weekly, 300, None) UNMODIFIED for the pool itself: lo=300,
+    hi=None collapses that function's own band filter to exactly the
+    full ATTD-eligible RB/WR/TE-with-a-real-tpe_score pool — no new
+    eligibility logic, no separate pool built for this shelf.
+
+    Grouped by division via team_to_division(posteam) — Around the
+    League slices by the player's OWN team, not opponent, matching "top
+    picks around the league by division" rather than a matchup concept.
+
+    NO fill/backfill (a thin division returns fewer than shelf_size
+    cards, never padded, never borrowed from an adjacent division, floor
+    never weakens) and NO per-game/per-team clustering cap — confirmed
+    directly that no such cap exists anywhere in this NFL pipeline today
+    (DEFAULT_MAX_PER_GAME is an MLB-only constant, pipeline/api/
+    shelf_curation.py — nothing analogous exists here to collide with),
+    and even if it did, it would be the wrong tool here: this shelf
+    groups BY team ownership within a division on purpose, the opposite
+    of de-clustering.
+    """
+    pool = odds_band_eligible(weekly, 300, None)
+    pool = pool[pool["posteam"].apply(team_to_division) == division].copy()
+    eligible_pool_size = len(pool)
+    pool["_primary_value"] = pool["tpe_score"]
+    pool["_completeness_value"] = pool["evidence_quality"]
+
+    ranked = pool.sort_values(["tpe_score", "evidence_quality"], ascending=False)
+    cards = []
+    for _, row in ranked.iterrows():
+        cards.append({"row": row, "meets_evidence_threshold": True})
+        if len(cards) >= shelf_size:
+            break
+
+    return {
+        "cards": cards, "eligible_pool_size": eligible_pool_size,
+        "gated_pool_size": eligible_pool_size, "below_gate_pool_size": 0, "fallback_count": 0,
+    }
+
+
+def build_around_the_league(weekly: pd.DataFrame, config: dict = CONFIG) -> dict:
+    """
+    Around the League — the 8th content family. NOT a new prediction
+    model or ranking system: reuses the exact same eligible pool and
+    exact same universal_tpe_score ranking the three ATTD odds-band
+    shelves already use (see _build_around_the_league_division), re-
+    sliced by NFL division (divisions.py) instead of by odds band.
+
+    Top 6 per division, no minimum enforced. Returns ALL EIGHT divisions
+    always, even one with an empty list — {"AFC East": [...], ...} — so
+    a caller can render an explicit empty state per division rather than
+    a missing key, per the approved spec.
+
+    Return shape is dict[str, list] of already-finalized cards (the same
+    shape _finalize_cards produces for every other shelf: rank/player_id/
+    player_name/posteam/tpe_score/evidence_quality/signal_convergence/
+    signal_breach/headline/evidence/...), NOT the {"cards": [...], ...}
+    wrapper build_all_shelves' own seven shelves use — a deliberate
+    difference from every other builder in this file, because the
+    approved spec asked for the bare list shape here specifically.
+    """
+    out = {}
+    for division in DIVISIONS:
+        result = _build_around_the_league_division(weekly, division, config["shelf_size"])
+        out[division] = _finalize_cards(result, lambda row, d=division: around_the_league_story(row, d))
+    return out
 
 
 def build_all_shelves(weekly: pd.DataFrame, pbp: pd.DataFrame = None, config: dict = CONFIG) -> dict:

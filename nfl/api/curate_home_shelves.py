@@ -113,6 +113,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
+from divisions import DIVISIONS
 from normalize import build_reference_scale, fill_neutral, percentile_lookup
 from redzone import add_kickoff_utc
 from shelves import CONFIG as SHELVES_CONFIG
@@ -570,6 +571,13 @@ _DETERMINISTIC_PILLAR_FOR_SHELF = {
     "ATTD +300-499": ("market_value", "tpe_score"),
     "ATTD +500-699": ("market_value", "tpe_score"),
     "ATTD +700+": ("market_value", "tpe_score"),
+    # Around the League's 8 division "shelves" — same tpe_score-primary
+    # shape as the 3 ATTD odds-band shelves directly above (Around the
+    # League is grouped by division instead of price, but the ranking
+    # signal is the identical composite score), so each division maps to
+    # the same ("market_value", "tpe_score") pair rather than inventing
+    # a ninth pillar tag that doesn't exist in the real 5-pillar enum.
+    **{division: ("market_value", "tpe_score") for division in DIVISIONS},
 }
 
 
@@ -843,6 +851,137 @@ def shape_content_draft_rows(
             # None (not False) when full_row is missing, same reasoning.
             "signal_breach": full_row.get("signal_breach") if full_row is not None else None,
         })
+    return rows
+
+
+def shape_around_the_league_draft_rows(
+    division_cards: dict, season: int, week: int, weekly: pd.DataFrame = None, schedules: pd.DataFrame = None,
+) -> list:
+    """
+    One dict per Around the League card, shaped to the SAME real
+    nfl_content_drafts write schema shape_content_draft_rows targets —
+    same table, same route, same field set. NOT built by extending
+    shape_content_draft_rows itself: that function is built around
+    capped_assignments/tasty_six, a single-home-shelf-per-player model
+    (apply_shelf_cap's whole point is picking ONE home shelf per
+    player). Around the League is explicitly non-exclusive and parallel
+    to that — the same player is expected to appear here AND on a
+    primary shelf (no cross-shelf dedup, per the approved spec) — so it
+    needs its own row-shaping path, not a branch bolted onto the
+    single-shelf one.
+
+    `division_cards`: build_around_the_league()'s own return shape —
+    {"AFC East": [card, ...], ...}, already-finalized cards (rank/
+    player_id/player_name/posteam/tpe_score/evidence_quality/
+    signal_convergence/signal_breach/consensus_price_american/headline/
+    evidence/...). Every division's cards get a row, including a
+    division with zero cards (contributes zero rows, not a placeholder
+    — no fill/backfill anywhere in this shelf, see shelves.py).
+
+    shelf = the division name itself ("AFC East", not an existing shelf
+    slug) — the real per-row identifier the approved spec asked for, no
+    new schema column needed for this: the existing shelf column is
+    real free text already, not a constrained enum on the write side
+    (confirmed against the live route's own Zod schema — NflShelfSchema
+    is z.string(), not z.enum([...]); the enum-like NflShelfId union
+    only exists on the READ side, in the frontend's own display-order
+    lookup — see the frontend investigation note below, not this write
+    schema).
+
+    is_tasty_six is always False and writer_type is always "shelf_card"
+    — Around the League has no Tasty Six concept of its own (Tasty Six
+    is a primary-shelf, single-pick-per-shelf idea; this shelf has no
+    analogous "one flagship pick per division" requirement in the
+    approved spec). editorial_sentence stays None always, same
+    regular-card convention shape_content_draft_rows' non-Tasty-Six
+    rows already use.
+
+    CONTENT comes straight from the card's OWN already-computed
+    headline/evidence (around_the_league_story, computed inside
+    build_around_the_league via _finalize_cards) — NOT a fresh
+    _story_for_row dispatch the way shape_content_draft_rows' regular
+    rows work. There's no separate "home-assigned but uncapped, needs
+    its own fresh story" population here the way _story_for_row's own
+    docstring describes for the primary shelves (that gap exists
+    because shelves.py's raw top-N and this module's home-assigned
+    population diverge); Around the League has exactly one population
+    (build_around_the_league's own top-6-per-division cut) and exactly
+    one already-computed story per card, so reusing it directly is
+    correct, not a shortcut.
+
+    review_status is "pending_review" on every row, same as every other
+    real row this module writes — but flagged explicitly here because
+    it contradicts an assumption the approved spec itself stated
+    ("Around the League does NOT need a separate review pass since it
+     only re-slices already-approved picks"): CONFIRMED, directly
+    against curate_home_shelves.py's own code and the real nfl_content_
+    drafts table, that review_status lives on the CONTENT DRAFT ROW —
+    i.e. per (player, shelf) pairing — not globally per player. A
+    player already "approved" on a primary shelf's row does not carry
+    that approval to a new row for the same player on their division
+    shelf; there is no global per-player approval flag anywhere in this
+    schema to inherit from. Every Around the League row is therefore a
+    genuinely new pending_review row, same as any other new shelf row,
+    and needs its own pass through Human Review before publishing —
+    this is a real, confirmed finding, not a cautious default.
+    """
+    weekly_lookup = {}
+    if weekly is not None and len(weekly) > 0:
+        prepped = weekly
+        if schedules is not None and len(schedules) > 0:
+            prepped = add_kickoff_utc(prepped, schedules)
+        weekly_lookup = {row["player_id"]: row for _, row in prepped.iterrows()}
+
+    rows = []
+    for division, cards in division_cards.items():
+        for card in cards:
+            full_row = weekly_lookup.get(card["player_id"])
+
+            event_id = team = opponent = matchup = kickoff_utc = None
+            if full_row is not None:
+                game_id = full_row.get("game_id")
+                event_id = game_id
+                team = full_row.get("posteam")
+                opponent = full_row.get("defteam")
+                matchup = _matchup_from_game_id(game_id)
+                ku = full_row.get("kickoff_utc")
+                if pd.notna(ku) and hasattr(ku, "isoformat"):
+                    kickoff_utc = ku.isoformat()
+            else:
+                # weekly/schedules weren't passed (or this player fell out
+                # of weekly between build_around_the_league's own run and
+                # this call) -- fall back to the card's own posteam rather
+                # than leaving team None outright, same "use what's
+                # actually available, don't guess further" spirit as every
+                # other optional-input fallback in this module.
+                team = card.get("posteam")
+
+            rows.append({
+                "player_id": card["player_id"],
+                "event_id": event_id,
+                "shelf": division,
+                "writer_type": "shelf_card",
+                "is_tasty_six": False,
+                "rank": int(card["rank"]),
+                "player_name": card["player_name"],
+                "team": team,
+                "opponent": opponent,
+                "matchup": matchup,
+                "odds": card.get("consensus_price_american"),
+                "kickoff_utc": kickoff_utc,
+                "season": season,
+                "week": week,
+                "title": card["headline"],
+                "editorial_sentence": None,
+                "why_reasons": _deterministic_why_reasons(card, division, card),
+                "confidence_band": nfl_regular_row_confidence_band_for_score(card.get("tpe_score")),
+                "model_name": None,
+                "validation_passed": True,
+                "validation_issues": [],
+                "review_status": "pending_review",
+                "signal_convergence": card.get("signal_convergence"),
+                "signal_breach": card.get("signal_breach"),
+            })
     return rows
 
 
