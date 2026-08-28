@@ -118,8 +118,9 @@ from normalize import build_reference_scale, fill_neutral, percentile_lookup
 from redzone import add_kickoff_utc
 from shelves import CONFIG as SHELVES_CONFIG
 from shelves import (
-    ODDS_BANDS, add_red_zone_trend_windows, eligible_pool, odds_band_eligible,
-    odds_band_story, position_story, red_zone_story,
+    ODDS_BANDS, add_red_zone_trend_windows, add_td_opportunity_history_lookup, eligible_pool,
+    odds_band_eligible, odds_band_story, position_story, red_zone_story, section_title_for_shelf,
+    td_opportunity_trend_for_row,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
@@ -546,12 +547,24 @@ def _story_for_row(row: pd.Series, shelf_name: str) -> dict:
     Requires add_red_zone_trend_windows() already applied upstream when
     shelf_name == "Red Zone Trends" — see shape_content_draft_rows'
     weekly_lookup construction, the only caller.
+
+    Phase 2: shelf_name is now also threaded into odds_band_story's own
+    band_label param, so a home-assigned +500-699/+700+ row gets that
+    band's real role_signals pool here too, not always the +300-499
+    default. WR/TE Trends' role_signals (target_share/target_share_
+    trend) will be unavailable via this path specifically — this
+    reconnection function's own weekly_lookup (see shape_content_draft_
+    rows) is built from add_red_zone_trend_windows(weekly) alone, with
+    no pbp threaded through, unlike shelves.py's own build_wr_trends/
+    build_te_trends. Confirmed, not silently papered over: flagged in
+    this task's own report as a known limitation of this specific write
+    path, not a bug introduced here.
     """
     if shelf_name == "Red Zone Trends":
         return red_zone_story(row)
     if shelf_name in ("RB Trends", "WR Trends", "TE Trends"):
         return position_story(row, shelf_name.split()[0])
-    return odds_band_story(row)
+    return odds_band_story(row, shelf_name)
 
 
 # {shelf_name: (why_reasons pillar tag, real column to cite as the sole
@@ -636,7 +649,7 @@ def _deterministic_why_reasons(row: pd.Series, shelf_name: str, story: dict) -> 
     return [{
         "pillar": pillar,
         "stars": stars,
-        "text": story["evidence"],
+        "text": story["why_this_hits"],
         "citation": [source_key],
     }]
 
@@ -660,6 +673,7 @@ def _matchup_from_game_id(game_id) -> str | None:
 def shape_content_draft_rows(
     capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int,
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
+    history_weekly: pd.DataFrame = None,
 ) -> list:
     """
     One dict per (surviving-the-cap) player-shelf placement, shaped to
@@ -737,6 +751,32 @@ def shape_content_draft_rows(
 
     review_status is always "pending_review" — never auto-approved, per
     explicit instruction; nothing here ever sets it to anything else.
+
+    Phase 2 (structured Role Signals evidence layer): why_this_hits,
+    confidence_band (already existed), td_opportunity_trend, role_
+    signals, and section_title are now computed UNIFORMLY for every
+    row, Tasty Six or not — unlike title/editorial_sentence/why_reasons
+    (which stay genuinely two-path: LLM-written for Tasty Six, deter-
+    ministic otherwise), these five are all real, deterministic facts
+    about the player/pillar, not narrative — there's no reason a Tasty
+    Six row's role_signals should be any less real than a regular row's.
+    `story` is therefore computed once, up front, whenever full_row
+    exists, regardless of is_tasty_six.
+
+    KNOWN LIMITATION, confirmed not silently papered over: this
+    function's own weekly_lookup is built from add_red_zone_trend_
+    windows(weekly) alone, with no `pbp` threaded through (unlike
+    shelves.py's own build_wr_trends/build_te_trends) — so WR/TE
+    Trends' target_share/target_share_trend role_signal candidates are
+    never available via this path. Flagged in this task's own report,
+    not fixed here (would require threading pbp from api/index.py all
+    the way through curate_nfl_shelves, out of this task's own stated
+    scope).
+
+    history_weekly: real per-week history (nfl/scripts/player_redzone_
+    weekly.csv shape) for td_opportunity_trend — see shelves.
+    add_td_opportunity_history_lookup. Omit it and every row's
+    td_opportunity_trend degrades to a length-1 list (this week only).
     """
     if len(capped_assignments) == 0:
         return []
@@ -748,6 +788,7 @@ def shape_content_draft_rows(
         if schedules is not None and len(schedules) > 0:
             prepped = add_kickoff_utc(prepped, schedules)
         weekly_lookup = {row["player_id"]: row for _, row in prepped.iterrows()}
+    history_lookup = add_td_opportunity_history_lookup(history_weekly)
 
     rows = []
     for _, r in capped_assignments[~capped_assignments["capped"]].iterrows():
@@ -771,6 +812,12 @@ def shape_content_draft_rows(
         model_name = None
         validation_passed = True
         validation_issues = []
+
+        story = _story_for_row(full_row, r["home_shelf"]) if full_row is not None else None
+        why_this_hits = story["why_this_hits"] if story is not None else None
+        role_signals = story["role_signals"] if story is not None else []
+        td_opportunity_trend = td_opportunity_trend_for_row(full_row, history_lookup) if full_row is not None else []
+        section_title = section_title_for_shelf(r["home_shelf"])
 
         if is_tasty_six:
             writer_type = "tasty_six"
@@ -810,7 +857,6 @@ def shape_content_draft_rows(
                     validation_passed = bool(draft.get("validation_passed", True))
                     validation_issues = draft.get("validation_issues") or []
         elif full_row is not None:
-            story = _story_for_row(full_row, r["home_shelf"])
             title = story["headline"]
             why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
             confidence_band = nfl_regular_row_confidence_band_for_score(full_row.get("tpe_score"))
@@ -836,6 +882,10 @@ def shape_content_draft_rows(
             "editorial_sentence": editorial_sentence,
             "why_reasons": why_reasons,
             "confidence_band": confidence_band,
+            "why_this_hits": why_this_hits,
+            "td_opportunity_trend": td_opportunity_trend,
+            "role_signals": role_signals,
+            "section_title": section_title,
             "model_name": model_name,
             "validation_passed": validation_passed,
             "validation_issues": validation_issues,
@@ -974,7 +1024,19 @@ def shape_around_the_league_draft_rows(
                 "title": card["headline"],
                 "editorial_sentence": None,
                 "why_reasons": _deterministic_why_reasons(card, division, card),
-                "confidence_band": nfl_regular_row_confidence_band_for_score(card.get("tpe_score")),
+                # card already carries a real confidence_band (build_around_
+                # the_league -> _finalize_cards -> _confidence_band_for_row,
+                # the exact same nfl_regular_row_confidence_band_for_score
+                # call this used to duplicate here) -- read straight through
+                # rather than recomputing an identical value a second time.
+                "confidence_band": card["confidence_band"],
+                # Phase 2 fields — all three already computed by build_
+                # around_the_league's own _finalize_cards call, read
+                # straight through, same pattern as confidence_band above.
+                "why_this_hits": card["why_this_hits"],
+                "td_opportunity_trend": card["td_opportunity_trend"],
+                "role_signals": card["role_signals"],
+                "section_title": card["section_title"],
                 "model_name": None,
                 "validation_passed": True,
                 "validation_issues": [],
@@ -988,6 +1050,7 @@ def shape_around_the_league_draft_rows(
 def curate_nfl_shelves(
     weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG, shelves_config: dict = SHELVES_CONFIG,
     schedules: pd.DataFrame = None, anthropic_api_key: str = None, prior_assignments: dict = None,
+    history_weekly: pd.DataFrame = None,
 ) -> dict:
     """
     The full pipeline, steps 1-7: eligibility -> home-shelf assignment
@@ -997,10 +1060,11 @@ def curate_nfl_shelves(
     see shape_content_draft_rows). Does NOT write anywhere — see
     write_content_draft_rows/write_shelf_signal_history_rows for that.
 
-    `schedules`/`anthropic_api_key` thread straight through to shape_
-    content_draft_rows — see its own docstring for what each unlocks
-    (kickoff_utc; real Tasty Six LLM content) and what happens when
-    either is omitted (honest None, not a guess or a skipped row).
+    `schedules`/`anthropic_api_key`/`history_weekly` thread straight
+    through to shape_content_draft_rows — see its own docstring for
+    what each unlocks (kickoff_utc; real Tasty Six LLM content;
+    td_opportunity_trend) and what happens when any is omitted (honest
+    None/length-1, not a guess or a skipped row).
 
     `prior_assignments`: the real, walked-back prior-week stickiness
     state (see build_prior_state_with_walkback) — omit it (the default)
@@ -1021,6 +1085,7 @@ def curate_nfl_shelves(
     tasty_six = select_tasty_six(capped, config)
     content_draft_rows = shape_content_draft_rows(
         capped, tasty_six, season, week, weekly=weekly, schedules=schedules, anthropic_api_key=anthropic_api_key,
+        history_weekly=history_weekly,
     )
     shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
     return {

@@ -256,7 +256,7 @@ if __name__ == "__main__":
     wk10_card = next(c for c in wr["cards"] if c["player_id"] == "WTGT")
     results.append(check(
         "WR target-share evidence appears in the headline evidence text when pbp is provided",
-        "target share trend" in wk10_card["evidence"],
+        "target share trend" in wk10_card["why_this_hits"],
     ))
 
     # ============================================================
@@ -282,7 +282,7 @@ if __name__ == "__main__":
     ))
     results.append(check(
         "Red Zone Trends: the zero-production case's evidence text contains no false zero-count claim",
-        "0 goal-line touches" not in card["evidence"],
+        "0 goal-line touches" not in card["why_this_hits"],
     ))
 
     # role_trend "wins" but the row's own raw snap share is DECLINING,
@@ -297,11 +297,11 @@ if __name__ == "__main__":
     card = rb["cards"][0]
     results.append(check(
         "RB Trends: role_trend 'winning' with a declining raw snap share does NOT cite a season->recent snap-share claim",
-        "(most recent)" not in card["evidence"],
+        "(most recent)" not in card["why_this_hits"],
     ))
     results.append(check(
         "RB Trends: falls back to percentile-trend evidence instead when the raw snap share isn't really up",
-        "percentile" in card["evidence"],
+        "percentile" in card["why_this_hits"],
     ))
 
     print()
