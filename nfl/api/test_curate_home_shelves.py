@@ -327,6 +327,69 @@ if __name__ == "__main__":
         syn_c["home_shelf"] == "RB Trends",
     ))
 
+    # ============================================================
+    # pbp threading fix: WR/TE Trends' target_share/target_share_trend
+    # role_signal candidates via the LIVE write path (shape_content_
+    # draft_rows -> _story_for_row), not just the shelves.py fixture
+    # path (build_wr_trends/build_te_trends). Real player (Keenan
+    # Allen, a real WR in this real 2025 Week 10 pool), synthetic pbp
+    # -- same "minimal synthetic pbp, real player/game_id/week" pattern
+    # test_shelves.py's own WR target-share test already uses, kept
+    # network-free/deterministic rather than depending on a live
+    # nfl_data_py pull inside a test.
+    # ============================================================
+    wr_survivors = capped[(~capped["capped"]) & (capped["home_shelf"] == "WR Trends")]
+    real_wr_pid = wr_survivors.iloc[0]["player_id"]
+    real_wr = sub[sub["player_id"] == real_wr_pid].iloc[0]
+    wr_pid, wr_team, wr_week10_game = real_wr["player_id"], real_wr["posteam"], real_wr["game_id"]
+    wr_week9_game = f"2025_09_{wr_team}_OPP"
+
+    def pass_play(game_id, week, posteam, receiver):
+        return {
+            "game_id": game_id, "season": 2025, "week": week, "posteam": posteam,
+            "pass_attempt": 1, "rush_attempt": 0,
+            "receiver_player_id": receiver, "receiver_player_name": receiver,
+            "rusher_player_id": None, "rusher_player_name": None,
+            "pass_touchdown": 0, "rush_touchdown": 0, "yardline_100": 50,
+        }
+    synthetic_pbp = pd.DataFrame([
+        pass_play(wr_week9_game, 9, wr_team, wr_pid), pass_play(wr_week9_game, 9, wr_team, wr_pid),
+        pass_play(wr_week9_game, 9, wr_team, wr_pid), pass_play(wr_week9_game, 9, wr_team, "DECOY1"),
+        pass_play(wr_week10_game, 10, wr_team, wr_pid),
+        pass_play(wr_week10_game, 10, wr_team, "DECOY1"), pass_play(wr_week10_game, 10, wr_team, "DECOY2"),
+        pass_play(wr_week10_game, 10, wr_team, "DECOY3"),
+    ])
+
+    without_pbp = shape_content_draft_rows(capped, tasty_six, 2025, 10, weekly=sub)
+    with_pbp = shape_content_draft_rows(capped, tasty_six, 2025, 10, weekly=sub, pbp=synthetic_pbp)
+
+    wr_row_without = next((r for r in without_pbp if r["player_id"] == wr_pid), None)
+    wr_row_with = next((r for r in with_pbp if r["player_id"] == wr_pid), None)
+
+    results.append(check(
+        f"real WR ({real_wr['player_name']}) IS home-assigned to a shelf that reaches shape_content_draft_rows "
+        "(sanity check the rest of this block's assertions are actually exercised, not vacuously true)",
+        wr_row_without is not None and wr_row_with is not None,
+    ))
+    if wr_row_without is not None and wr_row_with is not None:
+        labels_without = {s["label"] for s in wr_row_without["role_signals"]}
+        labels_with = {s["label"] for s in wr_row_with["role_signals"]}
+        results.append(check(
+            "WITHOUT pbp: target_share/target_share_trend are NOT in role_signals via the live write path "
+            "(confirms the pre-fix gap was real, not already silently working)",
+            "Target Share" not in labels_without and "Target Share Trend" not in labels_without,
+        ))
+        results.append(check(
+            "WITH pbp threaded through shape_content_draft_rows: Target Share now appears in this real WR's "
+            "role_signals via the live write path (_story_for_row), matching what build_wr_trends already had",
+            "Target Share" in labels_with,
+        ))
+        results.append(check(
+            "WITH pbp: Target Share Trend also appears (both candidates from add_whole_game_target_share_trend "
+            "become eligible together, not just one)",
+            "Target Share Trend" in labels_with,
+        ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")

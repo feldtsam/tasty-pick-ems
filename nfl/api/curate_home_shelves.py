@@ -118,9 +118,9 @@ from normalize import build_reference_scale, fill_neutral, percentile_lookup
 from redzone import add_kickoff_utc
 from shelves import CONFIG as SHELVES_CONFIG
 from shelves import (
-    ODDS_BANDS, add_red_zone_trend_windows, add_td_opportunity_history_lookup, eligible_pool,
-    odds_band_eligible, odds_band_story, position_story, red_zone_story, section_title_for_shelf,
-    td_opportunity_trend_for_row,
+    ODDS_BANDS, add_red_zone_trend_windows, add_td_opportunity_history_lookup,
+    add_whole_game_target_share_trend, eligible_pool, odds_band_eligible, odds_band_story,
+    position_story, red_zone_story, section_title_for_shelf, td_opportunity_trend_for_row,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
@@ -673,7 +673,7 @@ def _matchup_from_game_id(game_id) -> str | None:
 def shape_content_draft_rows(
     capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int,
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
-    history_weekly: pd.DataFrame = None,
+    history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None,
 ) -> list:
     """
     One dict per (surviving-the-cap) player-shelf placement, shaped to
@@ -763,15 +763,19 @@ def shape_content_draft_rows(
     `story` is therefore computed once, up front, whenever full_row
     exists, regardless of is_tasty_six.
 
-    KNOWN LIMITATION, confirmed not silently papered over: this
-    function's own weekly_lookup is built from add_red_zone_trend_
-    windows(weekly) alone, with no `pbp` threaded through (unlike
-    shelves.py's own build_wr_trends/build_te_trends) — so WR/TE
-    Trends' target_share/target_share_trend role_signal candidates are
-    never available via this path. Flagged in this task's own report,
-    not fixed here (would require threading pbp from api/index.py all
-    the way through curate_nfl_shelves, out of this task's own stated
-    scope).
+    `pbp`: FIXED, previously a known gap (flagged in the Phase 2 Role
+    Signals report) — this function's own weekly_lookup used to be
+    built from add_red_zone_trend_windows(weekly) alone, with no `pbp`
+    threaded through, unlike shelves.py's own build_wr_trends/build_te_
+    trends. Now, when `pbp` is provided, add_whole_game_target_share_
+    trend(weekly, pbp) runs on the SAME full-table prep step (the exact
+    same batch-merge shape build_wr_trends/build_te_trends already use
+    it for — no per-row adjustment needed), so WR/TE Trends' target_
+    share/target_share_trend role_signal candidates become eligible via
+    this live path too, matching the fixture path. Omit `pbp` (the
+    default) and behavior is UNCHANGED from before this fix — those two
+    candidates are simply ineligible, same graceful degradation as
+    every other missing-input case in this module, never an error.
 
     history_weekly: real per-week history (nfl/scripts/player_redzone_
     weekly.csv shape) for td_opportunity_trend — see shelves.
@@ -785,6 +789,8 @@ def shape_content_draft_rows(
     weekly_lookup = {}
     if weekly is not None and len(weekly) > 0:
         prepped = add_red_zone_trend_windows(weekly)
+        if pbp is not None and len(pbp) > 0:
+            prepped = add_whole_game_target_share_trend(prepped, pbp)
         if schedules is not None and len(schedules) > 0:
             prepped = add_kickoff_utc(prepped, schedules)
         weekly_lookup = {row["player_id"]: row for _, row in prepped.iterrows()}
@@ -1050,7 +1056,7 @@ def shape_around_the_league_draft_rows(
 def curate_nfl_shelves(
     weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG, shelves_config: dict = SHELVES_CONFIG,
     schedules: pd.DataFrame = None, anthropic_api_key: str = None, prior_assignments: dict = None,
-    history_weekly: pd.DataFrame = None,
+    history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None,
 ) -> dict:
     """
     The full pipeline, steps 1-7: eligibility -> home-shelf assignment
@@ -1060,11 +1066,13 @@ def curate_nfl_shelves(
     see shape_content_draft_rows). Does NOT write anywhere — see
     write_content_draft_rows/write_shelf_signal_history_rows for that.
 
-    `schedules`/`anthropic_api_key`/`history_weekly` thread straight
-    through to shape_content_draft_rows — see its own docstring for
-    what each unlocks (kickoff_utc; real Tasty Six LLM content;
-    td_opportunity_trend) and what happens when any is omitted (honest
-    None/length-1, not a guess or a skipped row).
+    `schedules`/`anthropic_api_key`/`history_weekly`/`pbp` thread
+    straight through to shape_content_draft_rows — see its own
+    docstring for what each unlocks (kickoff_utc; real Tasty Six LLM
+    content; td_opportunity_trend; WR/TE Trends' target_share/target_
+    share_trend role_signal candidates) and what happens when any is
+    omitted (honest None/length-1/ineligible, not a guess or a skipped
+    row).
 
     `prior_assignments`: the real, walked-back prior-week stickiness
     state (see build_prior_state_with_walkback) — omit it (the default)
@@ -1085,7 +1093,7 @@ def curate_nfl_shelves(
     tasty_six = select_tasty_six(capped, config)
     content_draft_rows = shape_content_draft_rows(
         capped, tasty_six, season, week, weekly=weekly, schedules=schedules, anthropic_api_key=anthropic_api_key,
-        history_weekly=history_weekly,
+        history_weekly=history_weekly, pbp=pbp,
     )
     shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
     return {

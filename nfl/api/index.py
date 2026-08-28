@@ -481,6 +481,22 @@ def curate_and_write_drafts_endpoint():
     file is the only real source with live ATTD odds on it at all
     before a week goes final and gets reconciled away.
 
+    ALSO fetches nfl_data_py.import_pbp_data([season]) — a NEW load
+    this endpoint didn't do before (confirmed directly: not reused from
+    anywhere else already reachable here) — so WR/TE Trends' target_
+    share/target_share_trend role_signal candidates are available via
+    this live write path, matching what build_wr_trends/build_te_trends
+    already had. Same try/except-and-degrade shape as `schedules`
+    directly below: a real, EXPECTED failure mode is nflverse not
+    having published pbp for the current season yet this early (a 404,
+    not a fluke) — pbp=None in that case, and curation proceeds exactly
+    as it did before this fix (those two candidates simply ineligible).
+    Timing: ~2.5s for a full single season, measured locally against a
+    completed season (2025) — a LOCAL number, not a Vercel benchmark
+    (same caveat scripts/backfill_redzone.py's own docstring already
+    gives itself for a comparable fetch); worth re-checking against a
+    real deployed invocation if this ever looks slow in practice.
+
     Runs the full pipeline (curate_nfl_shelves: eligibility -> home-
     shelf assignment -> cap -> Tasty Six -> content shaping, INCLUDING a
     real Part C LLM call for Tasty Six rows whenever ANTHROPIC_API_KEY
@@ -543,10 +559,28 @@ def curate_and_write_drafts_endpoint():
         print(f"[curate-and-write-drafts] season={season} week={week} schedules_fetch_failed error={e!r}", flush=True)
         schedules = None  # kickoff_utc stays None for every row -- honest gap, not a hard failure
 
+    # WR/TE Trends' target_share/target_share_trend role_signal candidates
+    # (curate_home_shelves.shape_content_draft_rows -> add_whole_game_
+    # target_share_trend) -- same "fetch, catch, degrade to None" shape as
+    # schedules directly above, not a hard failure. CONFIRMED, not assumed:
+    # nfl_data_py.import_pbp_data([season]) raises a real 404 for a season
+    # nflverse hasn't published pbp for yet (e.g. the current season before
+    # enough of it has been played/ingested upstream) -- this is the
+    # EXPECTED path early in a season, not a rare edge case; pbp=None here
+    # means those two candidates are simply ineligible, same graceful
+    # degradation as every other missing-input case in this module.
+    try:
+        pbp = nfl.import_pbp_data([season], downcast=True)
+    except Exception as e:
+        print(f"[curate-and-write-drafts] season={season} week={week} pbp_fetch_failed error={e!r}", flush=True)
+        pbp = None
+
     anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
 
     try:
-        result = curate_nfl_shelves(weekly, season, week, schedules=schedules, anthropic_api_key=anthropic_api_key)
+        result = curate_nfl_shelves(
+            weekly, season, week, schedules=schedules, anthropic_api_key=anthropic_api_key, pbp=pbp,
+        )
     except Exception as e:
         print(f"[curate-and-write-drafts] season={season} week={week} status=error error={e!r}", flush=True)
         return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500

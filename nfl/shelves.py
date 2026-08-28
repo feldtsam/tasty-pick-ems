@@ -165,8 +165,17 @@ def _trailing_sum(weekly: pd.DataFrame, col: str, window: int) -> pd.Series:
     return g.transform(lambda s: s.rolling(window, min_periods=1).sum())
 
 
-def _add_whole_game_target_share_trend(weekly: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
+def add_whole_game_target_share_trend(weekly: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
     """
+    PUBLIC (no leading underscore), same reasoned exception as
+    add_red_zone_trend_windows above: curate_home_shelves.py's
+    shape_content_draft_rows calls this directly on its own full
+    `weekly` prep step (the exact same full-table batch-merge shape
+    build_wr_trends/build_te_trends already use it for — no per-row or
+    single-player adjustment needed to reuse it there), so WR/TE
+    Trends' live-write-path role_signals get the same target_share/
+    target_share_trend eligibility the fixture path already has.
+
     WR Trends' one approved V1 extension beyond the existing pillars:
     whole-game (not red-zone-scoped) target-share movement. See
     redzone.aggregate_whole_game_targets for why this needs its own
@@ -517,7 +526,7 @@ def rb_trends_role_signals(row: pd.Series) -> list:
 
 def _target_share_level_candidate(row: pd.Series) -> dict:
     """LEVEL candidate: current whole-game target share (see
-    _add_whole_game_target_share_trend — requires `pbp` threaded
+    add_whole_game_target_share_trend — requires `pbp` threaded
     through build_wr_trends/build_te_trends; absent otherwise, and this
     candidate is then simply ineligible, not an error)."""
     value = row.get("target_share")
@@ -531,7 +540,7 @@ def _target_share_level_candidate(row: pd.Series) -> dict:
 def _target_share_trend_candidate(row: pd.Series) -> dict:
     """LEVEL candidate whose own value IS a delta-shaped number
     (target_share_last3 - target_share_season_avg, already computed by
-    _add_whole_game_target_share_trend, UNMASKED — that helper applies
+    add_whole_game_target_share_trend, UNMASKED — that helper applies
     no games_played gate today, same accepted early-season trade-off as
     _level_candidate). Shown as `value` with `delta: None` rather than
     duplicated into both fields, to avoid a confusing "delta of a
@@ -999,7 +1008,7 @@ def build_te_trends(weekly: pd.DataFrame, pbp: pd.DataFrame = None, config: dict
     threshold = config["completeness_threshold"]["te_trends"]
     weekly = weekly.copy()
     if pbp is not None:
-        weekly = _add_whole_game_target_share_trend(weekly, pbp)
+        weekly = add_whole_game_target_share_trend(weekly, pbp)
     weekly["_primary_value"] = weekly["role_momentum"]
     weekly["_completeness_value"] = weekly["role_momentum_completeness"]
 
@@ -1027,7 +1036,7 @@ def build_wr_trends(weekly: pd.DataFrame, pbp: pd.DataFrame = None, config: dict
     threshold = config["completeness_threshold"]["wr_trends"]
     weekly = weekly.copy()
     if pbp is not None:
-        weekly = _add_whole_game_target_share_trend(weekly, pbp)
+        weekly = add_whole_game_target_share_trend(weekly, pbp)
     weekly["_primary_value"] = weekly["role_momentum"]
     weekly["_completeness_value"] = weekly["role_momentum_completeness"]
 
