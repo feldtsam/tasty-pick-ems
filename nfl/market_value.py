@@ -49,6 +49,8 @@ that unless historical odds data is purchased separately. The final TPE
 score formula has to treat this as a standing gap for historical rows,
 not a bug to fix.
 """
+import json
+
 import numpy as np
 import pandas as pd
 
@@ -263,16 +265,48 @@ PRICE_HISTORY_COLUMNS = [
 
 
 def new_price_history_rows(
-    matched_snapshot: pd.DataFrame, unmatched: pd.DataFrame, poll_timestamp: str
+    matched_snapshot: pd.DataFrame, unmatched: pd.DataFrame, poll_timestamp: str, season: int,
 ) -> pd.DataFrame:
     """
     Build price-history rows (PRICE_HISTORY_COLUMNS schema) from one
     poll's snapshot_scoring_inputs() output plus match_attd_players'
     unmatched rows — matching failures get a row too (matched=False),
     not silently dropped from the record. Returns a DataFrame ready to
-    append to nfl/data/market_value/price_history.csv; does not write
-    anything itself — the actual polling script (not built this round)
-    owns when/whether to append.
+    append to nfl_price_history; does not write anything itself — the
+    caller (nfl/api/index.py's poll-market-value endpoint) owns the
+    actual write.
+
+    `season` is a REQUIRED explicit param, not read off the input
+    frames — this function has no way to know it otherwise (neither
+    input frame carries a reliable season column of its own). A single
+    call to this function is always scoped to exactly one season by its
+    only real caller (poll_market_value_endpoint batches events via
+    parsed_by_season before calling this per batch), so one scalar
+    value is correct here, unlike `week`.
+
+    `week` is DELIBERATELY NOT a parameter here, unlike `season` — a
+    single poll_market_value_endpoint request can span multiple
+    DIFFERENT weeks within the same season (rare, but real: a batch of
+    events near a season boundary), so there is no single correct
+    scalar value the way there is for season. Both `matched_snapshot`
+    and `unmatched` are expected to already carry a real, resolved
+    per-row `week` column BEFORE this function is called — mirroring
+    poll_market_value_for_stub.py's own existing convention of
+    attaching season/week onto its snapshot before this shaping step,
+    just per-row instead of a single constant, since that caller's own
+    week can genuinely vary row to row within one request. If a caller
+    doesn't provide it, the column-fill loop below defaults it to None
+    for every row — an honest "not resolved" rather than a crash, but
+    real callers should resolve it (see poll_market_value_endpoint's
+    own _week_lookup_for_season).
+
+    CONFIRMED FIX, not a new design: season/week used to be
+    unconditionally hardcoded to None here regardless of what the
+    caller knew — the real bug scripts/reconcile_week.py's own live
+    deployment crash surfaced (a downstream consumer needing to query
+    nfl_price_history by (player_id, season, week) got zero real rows
+    back, since every row had season=week=NULL by construction, not by
+    missing data).
     """
     matched_out = matched_snapshot.astype(object).copy()
     matched_out["matched"] = True
@@ -291,14 +325,138 @@ def new_price_history_rows(
     # up front sidesteps the ambiguity entirely rather than fighting it.
     combined = pd.concat([matched_out, unmatched_out], ignore_index=True)
     combined["poll_timestamp"] = poll_timestamp
-    combined["season"] = None
-    combined["week"] = None
+    combined["season"] = season
+    # week: NOT reassigned here — see docstring. Whatever real per-row
+    # value the caller already attached to matched_snapshot/unmatched
+    # survives the concat above untouched; the fill loop below only
+    # backstops a caller that genuinely never provided one at all.
 
     for col in PRICE_HISTORY_COLUMNS:
         if col not in combined.columns:
             combined[col] = None
 
     return combined[PRICE_HISTORY_COLUMNS]
+
+
+DEFAULT_NFL_PRICE_HISTORY_READ_URL = "https://tastypickems.com/api/public/nfl-price-history-read"
+
+
+def read_price_history(season: int, week: int, secret: str, read_url: str = None) -> dict:
+    """
+    One signed POST (body {"season": season, "week": week}), returns
+    {"ok": bool, "error": str|None, "status_code": int|None, "rows":
+    [...]} for EVERY real nfl_price_history row at (season, week) — same
+    real sign+POST+capture-response reuse of forward_to_lovable every
+    other read route in this codebase already uses (see curate_home_
+    shelves.read_shelf_signal_history's own docstring for why that's a
+    deliberate reuse, not a misuse).
+
+    Returns the FULL real poll history for the week, not pre-reduced to
+    "latest per player" — that reduction is scripts/reconcile_week.py's
+    own job (see market_value_snapshot_for_reconciliation), matching the
+    read route's own design (a future different caller might genuinely
+    want the whole poll history, not just the latest).
+
+    A real "zero rows" response (nfl_price_history has no polls yet for
+    this week — the expected, current state until the Make.com polling
+    scenario is built, a separately-tracked blocker, not this function's
+    job) is a genuine, valid outcome (rows=[]), not an error — mirrors
+    read_shelf_signal_history's own "no rows for this week is valid"
+    convention exactly.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "api"))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = read_url or resolve_url_env("LOVABLE_NFL_PRICE_HISTORY_READ_URL", DEFAULT_NFL_PRICE_HISTORY_READ_URL)
+    result = forward_to_lovable({"season": season, "week": week}, secret, url)
+    if not result["success"]:
+        return {"ok": False, "error": result["error"], "status_code": result["status_code"], "rows": []}
+    try:
+        body = json.loads(result["response_body"])
+    except (json.JSONDecodeError, TypeError):
+        return {
+            "ok": False, "error": f"non-JSON response body: {result['response_body']!r}",
+            "status_code": result["status_code"], "rows": [],
+        }
+    return {"ok": True, "error": None, "status_code": result["status_code"], "rows": body.get("price_history") or []}
+
+
+def latest_price_history_per_player(rows: list) -> pd.DataFrame:
+    """
+    Reduces read_price_history()'s real row list to one row per real
+    player_id — whichever has the latest real poll_timestamp — the
+    "latest poll on file" semantic reconcile_week()'s own docstring
+    already documented and accepted for the stub-file mechanism this
+    replaces (see that module's own "FINAL SNAPSHOT" note: "last poll on
+    file," NOT "guaranteed last poll before kickoff" — unchanged by this
+    swap of data source). Rows with a null player_id (an unmatched
+    outcome — see new_price_history_rows) are dropped here: they carry
+    no market_value_score-relevant identity to key on, same as they
+    never had one in the old stub file either.
+
+    Empty input -> an empty, correctly-shaped DataFrame (player_id/
+    season/week/consensus_implied_probability/best_price columns), not
+    an error — the real, expected state before the Make.com polling
+    scenario has run for a given week (see read_price_history's own
+    docstring).
+    """
+    cols = ["player_id", "season", "week", "poll_timestamp", "consensus_implied_probability", "best_price"]
+    if not rows:
+        return pd.DataFrame(columns=[c for c in cols if c != "poll_timestamp"])
+    df = pd.DataFrame(rows)
+    df = df[df["player_id"].notna()].copy()
+    if len(df) == 0:
+        return pd.DataFrame(columns=[c for c in cols if c != "poll_timestamp"])
+    df["poll_timestamp"] = pd.to_datetime(df["poll_timestamp"])
+    latest = (
+        df.sort_values("poll_timestamp")
+        .drop_duplicates(subset=["player_id"], keep="last")
+    )
+    return latest[[c for c in cols if c != "poll_timestamp"]].reset_index(drop=True)
+
+
+def market_value_snapshot_for_reconciliation(season: int, week: int, secret: str, read_url: str = None) -> pd.DataFrame:
+    """
+    The real replacement for reconcile_week()'s old `stub[[player_id,
+    season, week, market_value_score, market_value_completeness,
+    consensus_implied_probability, best_price]]` read — same shape,
+    different source. Reads the real latest-per-player nfl_price_history
+    snapshot for (season, week), then runs scoring.score_market_value()
+    (the REAL one, grouped by season/week — NOT this module's own unused
+    score_market_value(snapshot) above, which has no completeness
+    column and a different, single-snapshot reference population) on it
+    — the exact same real function scripts/poll_market_value_for_stub.py
+    already calls, computing market_value_score/market_value_completeness
+    fresh, since neither is ever stored in nfl_price_history itself (see
+    that module's own confirmed investigation: they're always computed
+    on demand from consensus_implied_probability, never persisted raw).
+
+    A genuinely empty snapshot (no real polls yet for this week) still
+    returns a correctly-shaped, zero-row DataFrame with every expected
+    column — reconcile_week()'s own left-merge against this produces
+    honest NaN market_value_score/completeness for every player, the
+    SAME graceful degradation the old stub-CSV path already had for any
+    player missing from the stub (a left merge, not an inner one) —
+    not a new behavior invented here, a preserved one.
+    """
+    from scoring import CONFIG, score_market_value as scoring_score_market_value
+
+    result = read_price_history(season, week, secret, read_url)
+    latest = latest_price_history_per_player(result["rows"])
+    if len(latest) == 0:
+        return pd.DataFrame(columns=[
+            "player_id", "season", "week", "market_value_score", "market_value_completeness",
+            "consensus_implied_probability", "best_price",
+        ])
+    latest["season"] = season
+    latest["week"] = week
+    scored = scoring_score_market_value(latest, CONFIG)
+    return scored[[
+        "player_id", "season", "week", "market_value_score", "market_value_completeness",
+        "consensus_implied_probability", "best_price",
+    ]]
 
 
 def score_market_value(snapshot: pd.DataFrame) -> pd.DataFrame:

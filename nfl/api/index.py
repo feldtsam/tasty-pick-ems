@@ -166,6 +166,43 @@ def _season_for_commence_time(commence_time: str) -> int:
     return dt.year if dt.month >= 8 else dt.year - 1
 
 
+def _week_lookup_for_season(season: int, schedules: pd.DataFrame, team_desc: pd.DataFrame) -> dict:
+    """
+    {(home_team_full_name, away_team_full_name): week} for one season,
+    keyed by The Odds API's own full-name format (e.g. "Seattle
+    Seahawks") so a caller can look up directly from a raw event's own
+    home_team/away_team with no per-row translation at lookup time.
+
+    UNLIKE _season_for_commence_time (pure date math, no schedule
+    needed), week genuinely requires a real schedule lookup — NFL week
+    boundaries don't align to calendar boundaries consistently enough
+    to derive from commence_time alone.
+
+    REUSES, not invents: the exact (home_team, away_team) exact-order
+    matching convention scripts/poll_market_value_for_stub.py's own
+    fetch_week_events() already established and validated against real
+    data — confirmed directly there (real 2026 Week 1 data: SEA/NE,
+    PIT/ATL, KC/DEN all matched without flipping) that The Odds API's
+    home_team/away_team already matches nflverse's schedule convention
+    exactly. Deliberately NOT falling back to a flipped-orientation
+    match: that was tried in that same investigation and caused real
+    contamination (a divisional rematch's second meeting, home/away
+    reversed, incorrectly matched the FIRST meeting's week too).
+
+    A game missing from this dict (e.g. team_desc has no abbreviation
+    for one of the two names) simply isn't resolvable — the caller's
+    own .get() on this dict returns None for that event, an honest
+    "week not resolved," not a guess.
+    """
+    name_to_abbr = dict(zip(team_desc["team_name"], team_desc["team_abbr"]))
+    abbr_to_name = {v: k for k, v in name_to_abbr.items()}
+    season_games = schedules[schedules["season"] == season]
+    return {
+        (abbr_to_name.get(row["home_team"]), abbr_to_name.get(row["away_team"])): int(row["week"])
+        for _, row in season_games.iterrows()
+    }
+
+
 EXPECTED_INPUT_ERROR = (
     "Expected a single Odds API event object (with a 'bookmakers' key), "
     "a list of event objects, or {\"events\": [...]}."
@@ -185,11 +222,21 @@ def poll_market_value_endpoint():
     Lovable's nfl-price-history-write webhook in a single signed POST.
 
     Events are grouped by season (derived from commence_time) before
-    matching, so seasonal_rosters/team_desc are only fetched once per
-    distinct season present in the batch, not once per event — batches
-    will typically be all one season in practice, but this stays correct
-    if that's ever not true (e.g. very late in one season with next
-    season's early lines already posted).
+    matching, so seasonal_rosters/team_desc/schedules are only fetched
+    once per distinct season present in the batch, not once per event —
+    batches will typically be all one season in practice, but this stays
+    correct if that's ever not true (e.g. very late in one season with
+    next season's early lines already posted).
+
+    season/week ARE NOW REAL on every written row — CONFIRMED FIX, not
+    new scope: new_price_history_rows() used to hardcode both to None
+    unconditionally, discovered when a real downstream query (scripts/
+    reconcile_week.py's own live deployment test) needed to filter
+    nfl_price_history by (player_id, season, week) and got zero real
+    rows back — every row had season=week=NULL by construction, not by
+    missing data. season is a single real value per season-batch (see
+    the loop below); week is resolved per row via _week_lookup_for_
+    season, since one batch can span multiple weeks within a season.
     """
     auth_error = check_pipeline_secret()
     if auth_error:
@@ -224,10 +271,25 @@ def poll_market_value_endpoint():
         parsed_season = pd.concat(parts, ignore_index=True)
         seasonal_rosters = nfl.import_seasonal_rosters([season])
         team_desc = nfl.import_team_desc()
+        schedules = nfl.import_schedules([season])
         matched, unmatched = match_attd_players(parsed_season, seasonal_rosters, team_desc, season)
 
+        # week: resolved per-row, not a single constant like season above
+        # — a batch CAN span multiple weeks within one season (see
+        # _week_lookup_for_season's own docstring). Built once per season,
+        # not once per row/event, then applied via home_team/away_team,
+        # which both matched_snapshot (see snapshot_scoring_inputs' own
+        # group_cols) and unmatched (never dropped by match_attd_players)
+        # already carry.
+        week_lookup = _week_lookup_for_season(season, schedules, team_desc)
+
         snap = snapshot_scoring_inputs(matched) if len(matched) else pd.DataFrame(columns=PRICE_HISTORY_COLUMNS)
-        price_history_parts.append(new_price_history_rows(snap, unmatched, poll_timestamp))
+        if len(snap) and "home_team" in snap.columns:
+            snap["week"] = snap.apply(lambda r: week_lookup.get((r["home_team"], r["away_team"])), axis=1)
+        if len(unmatched) and "home_team" in unmatched.columns:
+            unmatched["week"] = unmatched.apply(lambda r: week_lookup.get((r["home_team"], r["away_team"])), axis=1)
+
+        price_history_parts.append(new_price_history_rows(snap, unmatched, poll_timestamp, season))
 
         match_summary["matched"] += len(matched)
         match_summary["unmatched"] += len(unmatched)
@@ -333,14 +395,22 @@ def reconcile_week_endpoint():
     an incomplete week structurally impossible from this endpoint, not
     just discouraged by convention.
 
-    NO LOVABLE FORWARDING HERE, deliberately — unlike /api/poll-market-
-    value, reconcile_week() only ever writes to a local CSV file
-    (player_redzone_weekly.csv) and archives the stub file; there's no
-    webhook write step to report a lovable_status_code/forward_error
-    for. Using the parts of that endpoint's response convention that
-    actually apply here (structured status, clear error reporting) and
-    skipping the parts that don't, rather than forcing in fields that
-    would always be null.
+    NOW DOES A REAL LOVABLE WRITE (Phase 1 of the Role Changes/Defensive
+    Trends live-wiring project) — CORRECTED from an earlier version of
+    this docstring, which described reconcile_week() as CSV-only.
+    reconcile_week() itself now persists to the real nfl_player_redzone_
+    weekly table (upsert on player_id/season/week) instead of the local
+    player_redzone_weekly.csv (confirmed broken in production: never
+    git-tracked, and even if deployed would write to Vercel's read-only
+    bundle path / non-persistent /tmp). NFL_PIPELINE_WEBHOOK_SECRET is
+    resolved internally by reconcile_week() itself (not passed here
+    explicitly) — same env var this endpoint's own outbound writes
+    already use elsewhere in this file. A failed persistence write
+    raises inside reconcile_week() and is caught by the existing
+    except block below as a real status="error" response — no new
+    error-handling needed here for that case. archive_stub's own
+    behavior (moving the played stub file, unrelated to this table)
+    is unchanged.
 
     SCOPED TO THE TARGET SEASON ONLY (historical_seasons=[season]), not
     reconcile_week()'s own default (backfill_redzone.SEASONS — ALL of
@@ -423,8 +493,8 @@ def reconcile_week_health_check():
         "status": "ok",
         "usage": "POST {\"season\": int, \"week\": int}. Checks week_is_complete() first — if any "
                  "of that week's real games aren't final yet, returns status=\"not_ready\" and never "
-                 "runs reconciliation. Only calls reconcile_week() (destructive: replaces this week's "
-                 "rows in player_redzone_weekly.csv and archives the stub file) once every game is "
+                 "runs reconciliation. Only calls reconcile_week() (destructive: upserts this week's "
+                 "rows into nfl_player_redzone_weekly and archives the stub file) once every game is "
                  "confirmed final.",
         "deployed_via": "github-auto-deploy",
     })
