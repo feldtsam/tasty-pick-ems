@@ -138,6 +138,33 @@ def _defense_weekly(weekly: pd.DataFrame) -> pd.DataFrame:
     docstring): defensive_matchup_vulnerability and defensive_matchup_
     completeness are already identical across every offensive player row
     sharing that group, so keep="first" loses no information.
+
+    REAL BUG FIXED HERE, found via live Make.com testing (Phase 4): this
+    used to be a hard `weekly[cols]` select, which raises a real KeyError
+    ("not in index") if ANY of these columns is entirely absent from
+    `weekly` — confirmed, via a direct local reproduction of reconcile_
+    week(2025, 10, historical_seasons=[2025]) against real live data, that
+    the CURRENT pipeline always produces every one of these columns for a
+    real reconciled week, and that the read-side typed+extra merge
+    (scripts.reconcile_week.role_defensive_weekly_snapshot) correctly
+    round-trips them — so the specific row that crashed a real Generate
+    Intelligence call was very likely written by an EARLIER real
+    reconciliation run (this exact season/week was hit by more than one
+    real code fix earlier this same project, including a single-season-
+    scoping crash in redzone.py's depth-chart handling), before one of
+    those fixes landed, and simply predates having these columns at all.
+    Rather than chase down and manually correct that one stale row (a
+    one-time fix that says nothing about future robustness), this
+    function is fixed to degrade the same honest way every other missing-
+    data case in this codebase already does: reindex to the expected
+    columns instead of a hard select, so a genuinely absent column
+    becomes NaN for every row (never crashes), the same as season 2022/
+    2024's real pre-Market-Value rows are honestly NaN for market_value_
+    score today. Every downstream use of these 6 columns already has (or
+    now has, see build_defensive_trends_stories' own evidence-building
+    fix) its own pd.notna() guard, so a NaN here correctly falls back to
+    generic, honest language — never a crash, never a literal "nan" in
+    customer-facing text.
     """
     cols = [
         "defteam", "position_group", "season", "week",
@@ -147,7 +174,8 @@ def _defense_weekly(weekly: pd.DataFrame) -> pd.DataFrame:
         "allowed_rz_touches_last3", "allowed_rz_touches_season_avg",
     ]
     dw = (
-        weekly.drop_duplicates(subset=["defteam", "position_group", "season", "week"])[cols]
+        weekly.drop_duplicates(subset=["defteam", "position_group", "season", "week"])
+        .reindex(columns=cols)
         .sort_values(["defteam", "position_group", "season", "week"])
         .reset_index(drop=True)
     )
@@ -426,11 +454,20 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
         evidence = [
             f"defensive_matchup_vulnerability {row['defensive_matchup_vulnerability']:.0f}/100, "
             f"moved {row['_delta']:+.1f} points over the last {config['trend_window']} games vs. season-to-date",
-            f"recent_tds_allowed_pct {row['recent_tds_allowed_pct']:.0f}/100, conversion_rate_allowed_pct "
-            f"{row['conversion_rate_allowed_pct']:.0f}/100 (this week's own component readings)",
             f"{int(row['_games_played'])} game(s) of data this season "
             f"({'a thin, still-developing sample' if thin_completeness else 'an established, well-populated read'})",
         ]
+        # Guarded the same way td_agrees already is below -- _defense_
+        # weekly() now honestly degrades these two to NaN rather than
+        # crashing when genuinely absent (see that function's own
+        # docstring), so this bullet is only cited when both component
+        # readings are real numbers; never a literal "nan/100" in
+        # customer-facing evidence text.
+        if pd.notna(row["recent_tds_allowed_pct"]) and pd.notna(row["conversion_rate_allowed_pct"]):
+            evidence.insert(1, (
+                f"recent_tds_allowed_pct {row['recent_tds_allowed_pct']:.0f}/100, conversion_rate_allowed_pct "
+                f"{row['conversion_rate_allowed_pct']:.0f}/100 (this week's own component readings)"
+            ))
         if td_agrees:
             evidence.insert(1, (
                 f"Allowed {row['allowed_rz_tds_last3']:.1f} red-zone TDs/game over the last 3 games "
