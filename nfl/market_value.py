@@ -459,6 +459,78 @@ def market_value_snapshot_for_reconciliation(season: int, week: int, secret: str
     ]]
 
 
+def latest_price_history_full_per_player(rows: list) -> pd.DataFrame:
+    """
+    Same real "latest real poll per player" reduction as
+    latest_price_history_per_player, but keeps every PRICE_HISTORY_COLUMNS
+    column instead of narrowing to the 6 reconciliation needs. Built for
+    Phase 3's generation need: build_market_intelligence_stories() needs a
+    FULL-ROW snapshot (event_id, team names, book fields, etc.), not just
+    the market-value/consensus numbers reconcile_week()'s merge step needs —
+    a genuinely different consumer than latest_price_history_per_player was
+    built for, confirmed by reading build_market_intelligence_stories()'s own
+    body during the Phase 3 investigation (it references row['event_id'],
+    row['away_team'], row['home_team'], row['commence_time'], row['n_books'],
+    row['best_price']/['best_book'], row['consensus_price_american'], none of
+    which the narrower reduction carries).
+
+    Only real MATCHED rows are kept (player_id notna) — an unmatched row
+    (see new_price_history_rows) carries no player identity at all, so it
+    has nothing a story could be built around, same exclusion latest_price_
+    history_per_player already applies for its own narrower purpose.
+
+    Empty input -> an empty, correctly-shaped DataFrame (every real
+    PRICE_HISTORY_COLUMNS column present), not an error — same "no polls
+    yet" honest-degradation convention every other read-then-reduce
+    wrapper in this codebase already has.
+    """
+    if not rows:
+        return pd.DataFrame(columns=PRICE_HISTORY_COLUMNS)
+    df = pd.DataFrame(rows)
+    df = df[df["player_id"].notna()].copy()
+    if len(df) == 0:
+        return pd.DataFrame(columns=PRICE_HISTORY_COLUMNS)
+    df["poll_timestamp"] = pd.to_datetime(df["poll_timestamp"])
+    latest = (
+        df.sort_values("poll_timestamp")
+        .drop_duplicates(subset=["player_id"], keep="last")
+    )
+    for col in PRICE_HISTORY_COLUMNS:
+        if col not in latest.columns:
+            latest[col] = None
+    return latest[PRICE_HISTORY_COLUMNS].reset_index(drop=True)
+
+
+def market_intelligence_snapshot_for_generation(season: int, week: int, secret: str, read_url: str = None) -> pd.DataFrame:
+    """
+    The real input build_market_intelligence_stories() needs, sourced from
+    storage instead of a live poll: reads the real latest-per-player nfl_
+    price_history snapshot for (season, week) with EVERY real column intact
+    (see latest_price_history_full_per_player), then runs scoring.
+    score_market_value() (the REAL one, grouped by season/week) on it —
+    the exact same real function scripts/poll_market_value_for_stub.py's
+    own fetch_and_score_market_value already calls on a fresh live poll;
+    this mirrors that same snapshot_scoring_inputs -> attach season/week ->
+    score_market_value sequence, just reading the poll back from nfl_
+    price_history instead of hitting The Odds API directly.
+
+    A genuinely empty snapshot (no real polls yet for this week — the
+    expected, current state until the Make.com polling scenario is built)
+    still returns a correctly-shaped, zero-row DataFrame — build_market_
+    intelligence_stories()'s own pool iteration already degrades correctly
+    to "no stories" against a zero-row frame, not a new behavior invented
+    here.
+    """
+    from scoring import CONFIG, score_market_value as scoring_score_market_value
+
+    result = read_price_history(season, week, secret, read_url)
+    latest = latest_price_history_full_per_player(result["rows"])
+    if len(latest) == 0:
+        cols = list(PRICE_HISTORY_COLUMNS) + ["market_value_score", "market_value_completeness"]
+        return pd.DataFrame(columns=cols)
+    return scoring_score_market_value(latest, CONFIG)
+
+
 def score_market_value(snapshot: pd.DataFrame) -> pd.DataFrame:
     """
     Percentile-ranks consensus_implied_probability (snapshot_scoring_

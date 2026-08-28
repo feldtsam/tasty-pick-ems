@@ -162,6 +162,106 @@ def write_player_redzone_weekly_rows(rows: list, secret: str, write_url: str = N
     return forward_to_lovable(rows, secret, url)
 
 
+# Real, confirmed gap found during Phase 3 (generation-endpoint) investigation:
+# the write route above has existed since Phase 1, but nothing ever read this
+# table back until now — build_role_changes_stories()/build_defensive_trends_
+# stories() (role_changes.py/defensive_trends.py) both need the FULL multi-
+# week table as their own `weekly` input, not just one week's rows.
+DEFAULT_NFL_PLAYER_REDZONE_WEEKLY_READ_URL = "https://tastypickems.com/api/public/nfl-player-redzone-weekly-read"
+
+
+def read_player_redzone_weekly_rows(season: int, secret: str, read_url: str = None) -> dict:
+    """
+    One signed POST (body {"season": season}), returns {"ok": bool, "error":
+    str|None, "status_code": int|None, "rows": [...]} for EVERY real
+    nfl_player_redzone_weekly row for the WHOLE season — same real sign+POST+
+    capture-response reuse of forward_to_lovable every other read route in
+    this codebase already uses.
+
+    Whole-SEASON, not a single week — mirrors read_price_history's own
+    (season, week) scoping only in SPIRIT, not in shape: build_role_changes_
+    stories()/build_defensive_trends_stories() both need multiple weeks of
+    history within the season (games_played counts, trend deltas) to
+    correctly score the TARGET week, so a single week's rows alone can't
+    reproduce what they need — the read route itself is season-scoped for
+    exactly this reason (see its own docstring).
+
+    A real "zero rows" response (this season has no reconciled weeks yet) is
+    a genuine, valid outcome (rows=[]), not an error — same "no rows is
+    valid" convention every other read route in this codebase already uses.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = read_url or resolve_url_env(
+        "LOVABLE_NFL_PLAYER_REDZONE_WEEKLY_READ_URL", DEFAULT_NFL_PLAYER_REDZONE_WEEKLY_READ_URL,
+    )
+    result = forward_to_lovable({"season": season}, secret, url)
+    if not result["success"]:
+        return {"ok": False, "error": result["error"], "status_code": result["status_code"], "rows": []}
+    try:
+        body = json.loads(result["response_body"])
+    except (json.JSONDecodeError, TypeError):
+        return {
+            "ok": False, "error": f"Non-JSON response body: {result['response_body']!r}",
+            "status_code": result["status_code"], "rows": [],
+        }
+    if not body.get("ok"):
+        return {
+            "ok": False, "error": body.get("error", "Unknown error"),
+            "status_code": result["status_code"], "rows": [],
+        }
+    return {"ok": True, "error": None, "status_code": result["status_code"], "rows": body.get("player_redzone_weekly", [])}
+
+
+def role_defensive_weekly_snapshot(season: int, secret: str, read_url: str = None) -> pd.DataFrame:
+    """
+    The real input build_role_changes_stories()/build_defensive_trends_
+    stories() both need: reads the whole real season back from
+    nfl_player_redzone_weekly and reconstitutes each row's FULL original
+    shape — every typed column PLUS its own `extra` jsonb unpacked back
+    onto it — not just the 15-column NFL_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS
+    subset.
+
+    CORRECTED, not the original design: an earlier version of this function
+    returned only the 15 typed columns, on the belief (from an earlier
+    investigation) that those were the only columns either builder reads.
+    A full re-audit during real Gate testing found that belief was stale —
+    written before this project's own "NFL Expanded Card Phase 2" work
+    (structured hero_metric/what_changed evidence) added several MORE real
+    column reads to both builders (player_name, td_opportunity,
+    allowed_rz_tds_season_avg, conversion_rate_allowed_pct, recent_tds_
+    allowed_pct, defensive_matchup_vulnerability_season_avg, depth_chart_
+    movement_pct, rz_touch_share_season_avg, snap_share_season_avg, snap_
+    share_trend_pct_role, touch_share_trend_pct_role — confirmed via a
+    fresh grep of every row[...]/row.get(...) reference in both modules,
+    not a partial list). Rather than hand-maintain a second list that can
+    go stale again the next time either builder reads one more field,
+    unpacking `extra` back onto the row returns exactly what shape_player_
+    redzone_weekly_rows() originally split apart — the full real run_
+    pipeline() row, restored — which is what `extra` existed for in the
+    first place (see that function's own docstring).
+
+    A genuinely empty season (nothing reconciled yet) returns a correctly-
+    shaped, zero-row DataFrame with every typed column present (at minimum)
+    — both builders' own pool-filtering already degrades correctly to "no
+    stories" against an empty/short frame, the same honest-degradation
+    shape every other read-then-reduce wrapper in this codebase already has.
+    """
+    result = read_player_redzone_weekly_rows(season, secret, read_url)
+    rows = result["rows"]
+    if not rows:
+        return pd.DataFrame(columns=NFL_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS)
+    merged = []
+    for row in rows:
+        extra = row.get("extra") or {}
+        full = {**extra, **{col: row.get(col) for col in NFL_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS}}
+        merged.append(full)
+    return pd.DataFrame(merged).reset_index(drop=True)
+
+
 def week_is_complete(season: int, week: int) -> dict:
     """
     Real per-game completeness check — the readiness gate reconcile_week()

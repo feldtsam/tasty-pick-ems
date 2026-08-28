@@ -88,6 +88,7 @@ import numpy as np
 import pandas as pd
 
 from curate_home_shelves import curate_nfl_shelves, write_content_draft_rows
+from intelligence_generate import FAMILIES, generate_and_write_intelligence
 from intelligence_write import process_family, write_intelligence_rows
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
 from market_value import (
@@ -847,5 +848,96 @@ def write_intelligence_health_check():
                  "Sanity-checks each story, applies lifecycle (unless lifecycle_eligible=false, for Market "
                  "Intelligence), and writes both story rows and history rows to nfl_intelligence_stories / "
                  "nfl_intelligence_story_history via one combined signed call.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/generate-and-write-intelligence", methods=["POST"])
+def generate_and_write_intelligence_endpoint():
+    """
+    Phase 3 of the live-wiring project: the real, family-agnostic
+    generation endpoint. Unlike /api/write-intelligence (which requires
+    the caller to already have real story dicts in hand), this endpoint
+    fetches each family's real input itself, builds real stories, reads
+    Phase 2's real prior_history back, and writes — nothing has ever run
+    this on a live cadence before; every existing caller anywhere in this
+    codebase is a test file.
+
+    POST body: {"season": int, "week": int, "families": [str, ...]
+    (optional, default every family in intelligence_generate.FAMILIES —
+    role_changes, defensive_trends, market_intelligence; Coaching Trends
+    is never included, see that module's own docstring), "preview_only":
+    bool (optional)}.
+
+    AUTH: check_pipeline_secret() — same small-fixed-Make.com-trigger
+    reasoning as /api/curate-and-write-drafts and /api/write-intelligence.
+
+    preview_only: real generation still runs in full for every requested
+    family (including a real prior_history read-back for lifecycle-
+    eligible families) — nothing is written to Lovable. Same semantics
+    /api/curate-and-write-drafts already established, and the concrete
+    tool this endpoint's own local test suite uses to prove the real
+    round trip without a live secret.
+
+    Does NOT write anything to nfl_intelligence_story_history/
+    nfl_intelligence_stories in preview mode, and does not run Coaching
+    Trends (still deferred — no persisted read-back exists yet for its
+    primary pbp input, a genuinely different, larger problem).
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        season = int(data.get("season"))
+        week = int(data.get("week"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
+
+    families = data.get("families")
+    if families is not None:
+        if not isinstance(families, list) or not all(isinstance(f, str) for f in families):
+            return jsonify({"error": "\"families\" must be a list of strings if provided."}), 400
+        unknown = [f for f in families if f not in FAMILIES]
+        if unknown:
+            return jsonify({"error": f"Unknown families: {unknown}. Expected one of {sorted(FAMILIES)}."}), 400
+
+    preview_only = bool(data.get("preview_only"))
+
+    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+
+    try:
+        result = generate_and_write_intelligence(season, week, secret, families=families, preview_only=preview_only)
+    except Exception as e:
+        print(f"[generate-and-write-intelligence] season={season} week={week} status=error error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
+
+    result = _json_safe(result)
+
+    print(
+        f"[generate-and-write-intelligence] season={season} week={week} "
+        f"families={list(result['families'])} "
+        f"story_rows_generated={result['story_rows_generated']} history_rows_generated={result['history_rows_generated']} "
+        f"story_rows_written={result['story_rows_written']} history_rows_written={result['history_rows_written']} "
+        f"forward_success={result['forwarded']} forward_status={result['lovable_status_code']} "
+        f"forward_error={truncate_for_log(result['forward_error'], 500)!r}",
+        flush=True,
+    )
+
+    return jsonify(result), (502 if result["forwarded"] is False else 200)
+
+
+@app.route("/api/generate-and-write-intelligence", methods=["GET"])
+def generate_and_write_intelligence_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"season\": int, \"week\": int, \"families\": [str, ...] (optional, default all of "
+                 f"{sorted(FAMILIES)}), \"preview_only\": bool (optional)}}. "
+                 "Fetches each family's real input, builds real stories, reads real prior lifecycle state back "
+                 "(Phase 2), sanity-checks + applies lifecycle + shapes rows (Phase 2/existing), and writes "
+                 "everything in one combined signed call to nfl_intelligence_stories / nfl_intelligence_story_history.",
         "deployed_via": "github-auto-deploy",
     })
