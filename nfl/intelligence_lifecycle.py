@@ -46,6 +46,7 @@ live multi-week Intelligence data actually accumulates is expected, not
 optional.
 """
 
+import json
 import math
 
 # ---------------------------------------------------------------------------
@@ -383,6 +384,21 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
             "trend_strength": current_value,
             "primary_signal_value": _safe_float(story["primary_signal"].get("value")),
             "lifecycle_state": result["lifecycle_state"],
+            # pending_direction/appearance_count -- CONFIRMED FIX, not new
+            # scope: these were missing from history_rows entirely before
+            # (and from nfl_intelligence_story_history's own real schema,
+            # a real, confirmed gap relative to the working precedent this
+            # table was supposed to mirror -- nfl_shelf_signal_history's
+            # own pending_shelf/pending_run_count columns for the
+            # identical "hidden pending state, separate from the visible
+            # one" shape). Without them, a real read-back could never
+            # reconstruct the ONE thing _compute_lifecycle_state's own
+            # docstring identifies as the actual bug this module's
+            # validation caught: comparing against the wrong (visible,
+            # not pending) state silently prevents any real directional
+            # confirmation from ever completing.
+            "pending_direction": result["pending_direction"],
+            "appearance_count": result["appearance_count"],
             "streak_count": result["streak_count"],
             "miss_count": result["miss_count"],
         })
@@ -407,8 +423,152 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
             "trend_strength": None,
             "primary_signal_value": None,
             "lifecycle_state": result["lifecycle_state"],
+            "pending_direction": result["pending_direction"],
+            "appearance_count": result["appearance_count"],
             "streak_count": result["streak_count"],
             "miss_count": result["miss_count"],
         })
 
     return {"history_rows": history_rows, "updated_history": updated_history}
+
+
+DEFAULT_NFL_INTELLIGENCE_STORY_HISTORY_READ_URL = "https://tastypickems.com/api/public/nfl-intelligence-story-history-read"
+
+
+def read_story_history(family: str, season: int, secret: str, read_url: str = None) -> dict:
+    """
+    One signed POST (body {"intelligence_family": family, "season":
+    season}), returns {"ok": bool, "error": str|None, "status_code":
+    int|None, "rows": [...]} for EVERY real nfl_intelligence_story_
+    history row for this family across the WHOLE real season — same
+    real sign+POST+capture-response reuse of forward_to_lovable every
+    other read route in this codebase already uses (see curate_home_
+    shelves.read_shelf_signal_history's own docstring for why that's a
+    deliberate reuse, not a misuse).
+
+    Whole-SEASON, not a single week — a deliberate, confirmed
+    difference from nfl_shelf_signal_history's own per-week read
+    (see the read route's own docstring for the full reasoning):
+    apply_lifecycle() needs up to the last 3 REAL prior readings per
+    identity (recent_values), which can span more than 1 calendar week
+    whenever a bye/miss sits between real appearances — reducing "most
+    recent state" + "last 3 real values" per identity from one whole-
+    season fetch (see _reduce_to_prior_history below) avoids tuning a
+    separate walk-back depth for this real, different need.
+
+    A real "zero rows" response (no real automated run has ever
+    written to this table yet for this family/season — the actual,
+    confirmed current state, not hypothetical: no family has a live
+    generation trigger as of this task) is a genuine, valid outcome
+    (rows=[]), not an error — same "no rows is valid" convention every
+    other read route in this codebase already uses.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "api"))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = read_url or resolve_url_env(
+        "LOVABLE_NFL_INTELLIGENCE_STORY_HISTORY_READ_URL", DEFAULT_NFL_INTELLIGENCE_STORY_HISTORY_READ_URL,
+    )
+    result = forward_to_lovable({"intelligence_family": family, "season": season}, secret, url)
+    if not result["success"]:
+        return {"ok": False, "error": result["error"], "status_code": result["status_code"], "rows": []}
+    try:
+        body = json.loads(result["response_body"])
+    except (json.JSONDecodeError, TypeError):
+        return {
+            "ok": False, "error": f"non-JSON response body: {result['response_body']!r}",
+            "status_code": result["status_code"], "rows": [],
+        }
+    return {"ok": True, "error": None, "status_code": result["status_code"], "rows": body.get("story_history") or []}
+
+
+def _reduce_to_prior_history(rows: list, family: str, before_week: int) -> dict:
+    """
+    Pure function: reduces read_story_history()'s real row list into
+    EXACTLY apply_lifecycle()'s own expected `history` shape (see that
+    function's own docstring for the target dict shape) — "the real
+    persisted state as of the END of the PRIOR real run", i.e. every
+    real row with week < before_week, grouped by identity.
+
+    For each identity: the scalar fields (lifecycle_state,
+    pending_direction, streak_count, appearance_count, miss_count) come
+    from whichever real row has the highest real week (the most recent
+    prior run this identity actually appeared or missed in — NOT
+    necessarily before_week - 1, since a real gap/bye means the most
+    recent real row could be further back, same "pause, don't reset"
+    principle stickiness's own walkback already established).
+    recent_values is the last up to BASELINE_WINDOW real (non-null
+    trend_strength) readings, in week order — a miss row's own
+    trend_strength is always None by construction (see apply_lifecycle's
+    miss branch), so it naturally contributes nothing to this list
+    without needing an explicit filter for "was this a miss."
+
+    An identity with zero real rows before before_week is simply absent
+    from the returned dict — apply_lifecycle()'s own history.get(identity)
+    already treats a missing key as "no prior history, first appearance"
+    correctly; this function doesn't need its own separate "not found"
+    handling.
+    """
+    by_identity = {}
+    for row in rows:
+        if row.get("intelligence_family") != family:
+            continue
+        week = row.get("week")
+        if week is None or week >= before_week:
+            continue
+        identity = (family, row["entity_key"], row["primary_signal_name"])
+        by_identity.setdefault(identity, []).append(row)
+
+    history = {}
+    for identity, identity_rows in by_identity.items():
+        identity_rows = sorted(identity_rows, key=lambda r: r["week"])
+        latest = identity_rows[-1]
+        recent_values = [
+            float(r["trend_strength"]) for r in identity_rows
+            if r.get("trend_strength") is not None
+        ][-BASELINE_WINDOW:]
+        history[identity] = {
+            "lifecycle_state": latest.get("lifecycle_state"),
+            "pending_direction": latest.get("pending_direction"),
+            "streak_count": latest.get("streak_count") or 0,
+            "appearance_count": latest.get("appearance_count") or 0,
+            "miss_count": latest.get("miss_count") or 0,
+            "recent_values": recent_values,
+        }
+    return history
+
+
+def read_prior_history(family: str, season: int, week: int, secret: str, read_url: str = None) -> dict:
+    """
+    The real replacement for apply_lifecycle()'s old dry-run-only
+    `history` input (a caller-maintained in-memory dict, per that
+    function's own docstring: "no real nfl_intelligence_story_history
+    read/write endpoint exists yet"). Reads the real whole-season
+    history for `family` and reduces it to apply_lifecycle()'s own
+    expected shape, scoped to real prior weeks only (week < `week`).
+
+    SEASON-SCOPED, deliberately: history is only ever read from WITHIN
+    the same real season, never carried across a season boundary — this
+    matches the underlying signals themselves (role_momentum,
+    defensive_matchup_vulnerability, etc. all reset at season
+    boundaries via add_rolling_windows' own (player_id, season)
+    grouping — confirmed directly in scoring.py, not assumed), so a
+    fresh season starting every identity back at "no prior history" is
+    consistent with the pillars lifecycle is built on top of, not an
+    arbitrary scoping choice.
+
+    A read failure (network error, bad signature, etc.) degrades to an
+    empty history dict — every identity treated as first-appearance —
+    rather than raising, matching this module's own "dry-run" original
+    default (an empty dict) and this codebase's general "missing
+    optional input -> honest degradation" philosophy. The caller can
+    inspect read_story_history()'s own {"ok": False, "error": ...}
+    return directly if it needs to distinguish "genuinely no history
+    yet" from "the read itself failed" — this convenience wrapper
+    intentionally doesn't surface that distinction, since apply_
+    lifecycle() only ever wants the reduced dict either way.
+    """
+    result = read_story_history(family, season, secret, read_url)
+    return _reduce_to_prior_history(result["rows"], family, week)
