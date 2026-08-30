@@ -222,6 +222,20 @@ def poll_market_value_endpoint():
     event in the request are combined into one batch and forwarded to
     Lovable's nfl-price-history-write webhook in a single signed POST.
 
+    A MALFORMED INDIVIDUAL EVENT NEVER FAILS THE WHOLE BATCH — real fix,
+    confirmed before this endpoint was scheduled hourly-ish via Make.com:
+    each event's parse (parse_attd_event + the commence_time -> season
+    resolution) is wrapped in its own try/except; an event that raises for
+    any reason (missing/null/malformed commence_time, or a bookmakers/
+    markets/outcomes level that arrived wrong-typed) is skipped and
+    recorded in the response's events_with_parse_errors, exactly the same
+    "graceful skip, not fatal" treatment events_with_no_market already
+    got — every other event in the same request still processes normally.
+    Before this fix there was no try/except anywhere in this loop, so one
+    bad event crashed the entire request with a generic 500 and left zero
+    trace of which event caused it, in either the response or the logs
+    (the diagnostic print() only ran after all processing completed).
+
     Events are grouped by season (derived from commence_time) before
     matching, so seasonal_rosters/team_desc/schedules are only fetched
     once per distinct season present in the batch, not once per event —
@@ -258,13 +272,42 @@ def poll_market_value_endpoint():
 
     parsed_by_season = {}
     events_with_no_market = []
+    # REAL BUG FIXED HERE, found before this endpoint was scheduled via
+    # Make.com: event["commence_time"] below used to be a direct-index
+    # access with no try/except anywhere around this loop — a malformed
+    # event with real market data (so it isn't caught by the "no market"
+    # skip above) but a missing/null/non-ISO commence_time raised an
+    # uncaught KeyError/AttributeError/ValueError that crashed the ENTIRE
+    # request with a generic 500, including every other event in the same
+    # batch that would otherwise have processed fine. Confirmed via a full
+    # audit (not just this one line): parse_attd_event() itself is also a
+    # real crash surface for the same reason (AttributeError if `event`,
+    # or any bookmaker/market/outcome nested inside it, isn't actually a
+    # dict — the same "a nesting level arrived wrong-typed" incident class
+    # pipeline/api/flatten_hr_props.py's own docstring already documents
+    # as a real, previously-hit MLB-side issue, not hypothetical). Both
+    # are covered by wrapping the WHOLE per-event body in one broad
+    # except, not narrowly `except KeyError` — a narrow catch would leave
+    # this exact crash reachable via any of the other exception types for
+    # the same malformed field.
+    events_with_parse_errors = []
     for event in events:
-        parsed = parse_attd_event(event)
-        if len(parsed) == 0:
-            events_with_no_market.append(event.get("id"))
+        event_id = event.get("id") if isinstance(event, dict) else None
+        try:
+            parsed = parse_attd_event(event)
+            if len(parsed) == 0:
+                events_with_no_market.append(event_id)
+                continue
+            season = _season_for_commence_time(event["commence_time"])
+            parsed_by_season.setdefault(season, []).append(parsed)
+        except Exception as e:
+            events_with_parse_errors.append({"event_id": event_id, "error": str(e)})
+            print(
+                f"[poll-market-value] event_id={event_id!r} parse_error={e!r} — "
+                f"skipping this event, batch continues",
+                flush=True,
+            )
             continue
-        season = _season_for_commence_time(event["commence_time"])
-        parsed_by_season.setdefault(season, []).append(parsed)
 
     price_history_parts = []
     match_summary = {"matched": 0, "unmatched": 0, "by_issue_type": {}}
@@ -339,6 +382,7 @@ def poll_market_value_endpoint():
     print(
         f"[poll-market-value] events_received={len(events)} "
         f"events_with_no_market={len(events_with_no_market)} "
+        f"events_with_parse_errors={len(events_with_parse_errors)} "
         f"matched={match_summary['matched']} unmatched={match_summary['unmatched']} "
         f"by_issue_type={match_summary['by_issue_type']} "
         f"rows_written={len(rows)} "
@@ -351,7 +395,8 @@ def poll_market_value_endpoint():
     return jsonify({
         "events_received": len(events),
         "events_with_no_market": events_with_no_market,
-        "events_processed": len(events) - len(events_with_no_market),
+        "events_with_parse_errors": events_with_parse_errors,
+        "events_processed": len(events) - len(events_with_no_market) - len(events_with_parse_errors),
         "match_summary": match_summary,
         "rows_written": len(rows),
         "forwarded": forward_result["success"],
@@ -367,7 +412,9 @@ def poll_market_value_health_check():
         "usage": "POST a raw Odds API event (or list of events, or {\"events\": [...]}) for the "
                  "player_anytime_td market. Parses, matches, and scores each event's real quotes "
                  "and forwards the resulting price-history rows to Lovable. Zero books posted for "
-                 "an event is a normal result (see events_with_no_market in the response), not an error.",
+                 "an event is a normal result (see events_with_no_market in the response), not an "
+                 "error. A malformed event (see events_with_parse_errors in the response) is also "
+                 "skipped, not fatal to the rest of the batch.",
         "deployed_via": "github-auto-deploy",
     })
 
