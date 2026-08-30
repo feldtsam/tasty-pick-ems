@@ -1,0 +1,12 @@
+# Tasty Pick Ems — CFB v1 red-zone ingestion dependencies.
+#
+# Deliberately minimal: this package only talks HTTP to CFBD and does
+# in-memory pandas aggregation. No parquet, no nfl_data_py, no vendored
+# anything — unlike nfl/, there is nothing here that a plain
+# `pip install -r requirements.txt` can't resolve.
+
+pandas==2.2.3
+numpy==1.26.4        # pandas runtime dep — pinned explicitly to match nfl/
+requests==2.31.0
+certifi==2024.8.30
+flask==3.0.3         # cfb/api/index.py — the manual ingestion trigger; same version nfl/ and pipeline/ pin
