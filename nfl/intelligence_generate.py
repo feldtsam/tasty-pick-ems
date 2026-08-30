@@ -18,13 +18,42 @@ tracking at all (lifecycle_eligible — Market Intelligence is permanently
 False, an existing, approved design decision, not new here). FAMILIES
 below captures exactly those three things per family, nothing more.
 
-Coaching Trends is deliberately NOT included — confirmed, not assumed:
-zero production callers exist anywhere in this codebase (grepped
-directly), its own module docstring still frames it as the fourth,
-not-yet-wired family, and its primary input (raw pbp) has no persisted/
-read-back design at all yet, a genuinely different, larger problem than
-either of the other three families' data-fetch step. Stays deferred to
-the existing plan's later phase.
+Coaching Trends (Phase 5) is now included — the fourth and final family.
+Real investigation findings, not assumed:
+- All three builders (build_redzone_play_calling_stories, build_fourth_
+  down_aggressiveness_stories, build_pace_stories) take (pbp, weekly,
+  season, week, config) — confirmed by reading every signature directly,
+  correcting an earlier framing that only the redzone detector touched
+  `weekly`: all three call a related_players_* helper that reads it
+  (_related_players_redzone for redzone, _related_players_team_wide for
+  BOTH fourth-down and pace).
+- weekly's 4 extra fields these helpers need (player_name, rz_touch_
+  share, td_opportunity, snap_share) are NOT in NFL_PLAYER_REDZONE_
+  WEEKLY_TYPED_COLUMNS — same situation Bug 1 (Phase 4) already fixed
+  for Defensive Trends. role_defensive_weekly_snapshot()'s typed+extra
+  merge already reconstructs the FULL row, so this needs no further
+  read-side change — confirmed all 4 fields are real run_pipeline()
+  columns (redzone.py), not assumed present.
+- pbp sourcing is a LIGHT, direct nfl_data_py.import_pbp_data() pull,
+  NOT a run_pipeline()-style multi-source join — confirmed by reading
+  every aggregate_* function: all three operate on raw pbp columns only
+  (rush_attempt/pass_attempt/yardline_100, down/score_differential/
+  game_seconds_remaining, drive_time_of_possession/drive_play_count/
+  drive_end_transition), never touching snap_counts/depth_charts/
+  injuries/rosters. Same "fetch, catch, degrade" shape /api/curate-and-
+  write-drafts's own pbp fetch already uses.
+- lifecycle_eligible=True, matching Role Changes/Defensive Trends, NOT
+  Market Intelligence — confirmed, not assumed symmetry: all three
+  Coaching Trends signals (redzone_run_tendency, fourth_down_
+  aggressiveness, pace_score) already have real, derived entries in
+  intelligence_lifecycle.FAMILY_SIGNAL_THRESHOLDS (only Market
+  Intelligence's signal is deliberately absent from that dict), and
+  apply_lifecycle() looks up that threshold by primary_signal_name, not
+  family name — already correctly generic across a family with THREE
+  distinct signal names, no code change needed there. test_intelligence_
+  lifecycle.py's own existing suite already validates real Coaching
+  Trends lifecycle progression against real historical data; this phase
+  is purely the live-wiring, not new lifecycle logic.
 """
 import sys
 from pathlib import Path
@@ -40,6 +69,7 @@ from intelligence_write import process_family, write_intelligence_rows
 from market_intelligence import build_market_intelligence_stories
 from market_value import market_intelligence_snapshot_for_generation
 from role_changes import build_role_changes_stories
+from team_tendencies import build_team_tendencies_stories
 
 # Deliberately NOT a single shared CONFIG import: role_changes.py,
 # defensive_trends.py, and market_intelligence.py each define their OWN
@@ -74,6 +104,34 @@ def _fetch_market_intelligence(season, week, secret, read_url=None):
     return build_market_intelligence_stories(snapshot)
 
 
+def _fetch_coaching_trends(season, week, secret, read_url=None):
+    """
+    The one family needing TWO real inputs, not one — weekly (same real
+    nfl_player_redzone_weekly season snapshot role_changes/defensive_
+    trends already read, for related_players enrichment only) AND a
+    light, direct raw-pbp pull (the actual trend math — see module
+    docstring). Same try/except-and-degrade-to-None shape /api/curate-
+    and-write-drafts's own pbp fetch already uses: a real, expected
+    failure mode (nflverse hasn't published pbp for a season yet) means
+    pbp=None here, which build_team_tendencies_stories itself has no
+    guard for (its three aggregate_* functions index straight into pbp
+    columns) — this closure is the one place that has to own that
+    guard, degrading to zero real Coaching Trends stories this week
+    rather than a hard crash, the same honest-degradation shape every
+    other optional/unavailable input in this project already gets.
+    """
+    import nfl_data_py as nfl
+    from reconcile_week import role_defensive_weekly_snapshot
+
+    weekly = role_defensive_weekly_snapshot(season, secret, read_url)
+    try:
+        pbp = nfl.import_pbp_data([season], downcast=True)
+    except Exception as e:
+        print(f"[generate-and-write-intelligence] coaching_trends season={season} week={week} pbp_fetch_failed error={e!r}", flush=True)
+        return []
+    return build_team_tendencies_stories(pbp, weekly, season, week)
+
+
 # Per-family: build_stories_fn(season, week, secret, read_url=None) -> list
 # of real story dicts (fetch + build combined, since each family's fetch
 # step is genuinely different but always feeds straight into exactly one
@@ -90,6 +148,10 @@ FAMILIES = {
     "market_intelligence": {
         "build_stories_fn": _fetch_market_intelligence,
         "lifecycle_eligible": False,
+    },
+    "coaching_trends": {
+        "build_stories_fn": _fetch_coaching_trends,
+        "lifecycle_eligible": True,
     },
 }
 
