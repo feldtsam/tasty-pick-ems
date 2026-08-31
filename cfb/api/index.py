@@ -127,6 +127,81 @@ def _forward(rows, secret, url_env, default_url):
     return result
 
 
+def _debug_perf(season: int, week: int, season_type: str):
+    """
+    Temporary perf-investigation path (spec: performance task, Step 1).
+    Times each CFBD call type and probes /plays playType-abbreviation
+    candidates so we can size the real call budget before optimising.
+    """
+    import time as _t
+
+    from ids import CFBD_BASE, cfbd_get
+    from plays_stats import fetch_play_stats_for_game, fetch_play_types, fetch_plays_for_team
+
+    out: dict = {"season": season, "week": week}
+
+    t0 = _t.time()
+    games = fetch_games(season, week, season_type=season_type)
+    out["games_call_s"] = round(_t.time() - t0, 3)
+    completed = completed_games(games)
+    out["games_total"] = len(games)
+    out["games_completed"] = len(completed)
+
+    # /plays/types — full dump for the two offensive TD types
+    types = fetch_play_types()
+    td_types = [t for t in types if isinstance(t.get("text"), str) and "touchdown" in t["text"].lower()]
+    out["play_types_touchdown"] = [
+        {"id": t.get("id"), "text": t.get("text"), "abbreviation": t.get("abbreviation")}
+        for t in td_types
+    ]
+
+    # probe /plays?playType= with candidate identifiers for "Rushing Touchdown"
+    rush_td = next((t for t in td_types if t.get("text") == "Rushing Touchdown"), {})
+    candidates = []
+    for label, val in (
+        ("text", "Rushing Touchdown"),
+        ("abbreviation", rush_td.get("abbreviation")),
+        ("id", rush_td.get("id")),
+        ("text_no_space", "RushingTouchdown"),
+        ("lower_hyphen", "rushing-touchdown"),
+    ):
+        if val is None:
+            continue
+        try:
+            t1 = _t.time()
+            rows = cfbd_get("/plays", {"year": season, "week": week, "classification": "fbs",
+                                       "seasonType": season_type, "playType": val})
+            candidates.append({"as": label, "value": str(val), "rows": len(rows) if isinstance(rows, list) else -1,
+                               "call_s": round(_t.time() - t1, 3)})
+        except Exception as e:  # noqa: BLE001
+            candidates.append({"as": label, "value": str(val), "error": f"{type(e).__name__}: {e}"})
+    out["plays_playtype_probes"] = candidates
+
+    # time one unfiltered-ish /plays?team= call and one /plays/stats?gameId= call
+    if completed:
+        g = completed[0]
+        school = g.get("homeTeam")
+        t2 = _t.time()
+        pt_rows = fetch_plays_for_team(season, week, school, season_type=season_type)
+        out["plays_per_team_call_s"] = round(_t.time() - t2, 3)
+        out["plays_per_team_rows"] = len(pt_rows)
+
+        t3 = _t.time()
+        ps_rows = fetch_play_stats_for_game(int(g["id"]), season_type=season_type)
+        out["plays_stats_per_game_call_s"] = round(_t.time() - t3, 3)
+        out["plays_stats_per_game_rows"] = len(ps_rows)
+
+        # time 5 serial /plays/stats calls to get an average
+        n = min(5, len(completed))
+        t4 = _t.time()
+        for gg in completed[:n]:
+            fetch_play_stats_for_game(int(gg["id"]), season_type=season_type)
+        out["plays_stats_5_serial_s"] = round(_t.time() - t4, 3)
+        out["plays_stats_avg_call_s"] = round((_t.time() - t4) / n, 3)
+
+    return jsonify(out), 200
+
+
 @app.route("/api/ingest-and-write-redzone", methods=["POST"])
 def ingest_and_write_redzone_endpoint():
     auth_error = check_pipeline_secret()
@@ -143,6 +218,9 @@ def ingest_and_write_redzone_endpoint():
     preview_only = bool(data.get("preview_only"))
 
     started = datetime.now(timezone.utc).isoformat()
+
+    if data.get("debug_perf"):
+        return _debug_perf(season, week, season_type)
 
     try:
         games = fetch_games(season, week, season_type=season_type)
