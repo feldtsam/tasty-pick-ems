@@ -144,6 +144,10 @@ def ingest_and_write_redzone_endpoint():
     season_type = str(data.get("season_type") or "regular")
     preview_only = bool(data.get("preview_only"))
     dry_run = bool(data.get("dry_run"))
+    # full_rows: with preview_only, echo EVERY aggregated row (not just the
+    # 3-row sample) so an offline scoring sanity-check can assemble a real
+    # multi-week frame. Only meaningful alongside preview_only.
+    full_rows = bool(data.get("full_rows")) and preview_only
 
     started = datetime.now(timezone.utc).isoformat()
     clock = time.monotonic
@@ -238,6 +242,9 @@ def ingest_and_write_redzone_endpoint():
         "player_sample": player_rows[:3],
         "defense_sample": defense_rows[:3],
     }
+    if full_rows:
+        result["player_rows_full"] = player_rows
+        result["defense_rows_full"] = defense_rows
 
     p_fwd, d_fwd = forwards["player"], forwards["defense"]
     print(
