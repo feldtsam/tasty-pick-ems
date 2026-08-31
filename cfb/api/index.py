@@ -50,7 +50,12 @@ from flask import Flask, jsonify, request
 
 from ids import CFBDError
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
-from plays_stats import completed_games, fetch_games, fetch_week_play_stats
+from plays_stats import (
+    completed_games,
+    fetch_games,
+    fetch_scoring_td_play_ids,
+    fetch_week_play_stats,
+)
 from redzone import aggregate_redzone_allowed_cfb, aggregate_redzone_game_cfb
 from roster import raw_position_lookup
 
@@ -150,11 +155,16 @@ def ingest_and_write_redzone_endpoint():
         )
         raw_pos = raw_position_lookup(season, fallback_teams=schools)
 
+        completed_ids = {int(g["id"]) for g in completed if g.get("id") is not None}
+        td_play_ids, td_diag = fetch_scoring_td_play_ids(
+            season, week, completed_game_ids=completed_ids, season_type=season_type
+        )
+
         player_rows, player_diag = aggregate_redzone_game_cfb(
-            play_stats, games, raw_pos, season=season, week=week
+            play_stats, games, raw_pos, td_play_ids, season=season, week=week
         )
         defense_rows, defense_diag = aggregate_redzone_allowed_cfb(
-            play_stats, games, raw_pos, season=season, week=week
+            play_stats, games, raw_pos, td_play_ids, season=season, week=week
         )
     except CFBDError as e:
         print(f"[ingest-and-write-redzone] season={season} week={week} status=cfbd_error error={e!r}", flush=True)
@@ -188,6 +198,7 @@ def ingest_and_write_redzone_endpoint():
         "games_completed": len(completed),
         "roster_positions_resolved": len(raw_pos),
         "fetch": fetch_diag,
+        "td_plays": td_diag,
         "player_rows": len(player_rows),
         "defense_rows": len(defense_rows),
         "player_diagnostics": player_diag,

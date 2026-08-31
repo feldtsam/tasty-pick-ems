@@ -94,10 +94,8 @@ Response shape from The Odds API is byte-identical to NFL's — `parse_attd_even
 ---
 ## 8. Implementation parameters (added 2026-08-30, in response to Claude Code's pre-Step-1 blocking questions)
 **Direct ports from NFL (reuse exactly, no change):**
-- TD Opportunity touch definition: `Rush` + `Target` stat types (not `Reception`) — captures opportunity regardless of completion, matching the pillar's name/intent
 - Rolling windows/weights: `last1/3/5/season_avg` = `.35/.30/.20/.15`
 - Bands: RZ ≤20 / i10 ≤10 / GL ≤5
-- TD attribution: join `statType='Touchdown'` rows to touch rows via `playId` + `athleteId`
 - Recency weights for `allowed_rz_tds_last{1,3,5}`/`season_avg`: same as NFL
 - `min_rz_touches_for_qualification`: **15** (NFL's value, reused for v1 — no CFB backtest data yet to justify a different number)
 - Shrinkage constant `k`: **6** (NFL's value, reused for v1 — audit flagged CFB likely wants it higher, but no CFB data exists yet to derive a real number; flag for recalibration once Week 5+ CFB data accumulates)
@@ -111,6 +109,35 @@ Response shape from The Odds API is byte-identical to NFL's — `parse_attd_even
 - Pipeline code: new `cfb/` directory in `tasty-pick-ems/`, mirroring `nfl/`
 - Table schema (typed core columns vs. `extra jsonb`): **left to Claude Code's Step 1 proposal**, using `nfl_player_redzone_weekly` as the template — not pre-specified here by design, consistent with the project's confirm-first pattern
 **Trigger mechanism (v1):** manually-triggered endpoint only, mirroring how NFL Intelligence's `/api/generate-and-write-intelligence` was built and tested before any Make.com wiring existed. Formal scheduling is a later phase, not part of this build.
+
+### 8a. Touch definition & TD attribution — amended 2026-08-31 after the first live CFBD smoke test
+
+The original §8 rules (`Rush` + `Target` for touches; `statType='Touchdown'` join for TDs) were written from the CFBD *OpenAPI schema* plus the earlier verification round, before any aggregation had been run against a real week. The first live `preview_only` run (2026 Week 1, 8 completed FBS games, 1,510 `/plays/stats` rows) showed **both rules are wrong against how CFBD's `/plays/stats` data is actually shaped**. Corrected rules below; the reasoning is recorded so a future session doesn't "restore" the original wording.
+
+**CFBD stat-type quirk 1 — `Target` means "targeted on an *incomplete* pass", not "all targets".** Live `statType` counts for those 8 games:
+
+| `statType` | count | what it actually is |
+|---|--:|---|
+| `Rush` | 454 | a rush attempt by the ball carrier |
+| `Reception` | 301 | the receiver on a **completed** pass |
+| `Target` | 157 | the receiver on an **incomplete** pass |
+| `Completion` / `Incompletion` | 308 / 165 | the QB's side of those same pass plays |
+
+`Reception` (301) *exceeds* `Target` (157) — impossible if `Target` meant every target. So `Rush` + `Target` (original §8) silently dropped **every completed catch** — a red-zone pass-catching back or a TE who scores on a 4-yard reception would be invisible. To recover the original intent ("opportunity regardless of completion"), a pass target is `Target` **+** `Reception`.
+
+- **Touch = `Rush` + `Target` + `Reception` stat rows.**
+  - `*_rush_touches` = count of `Rush` rows
+  - `*_target_touches` = count of `Target` + `Reception` rows (all pass targets, complete or not)
+  - `*_touches` = sum of the two
+- A `Reception` row and its matching `Completion` row are the same play from two sides — only the receiver-side row (`Reception`) is a touch; the QB-side rows (`Completion` / `Incompletion` / `Target`-when-it's-a-QB… n/a) are never touches.
+
+**CFBD stat-type quirk 2 — `statType='Touchdown'` essentially does not exist in `/plays/stats`.** Only **3** `Touchdown` rows across all 8 games (~35–40 real offensive TDs were scored). There is no `Rushing Touchdown` / `Receiving Touchdown` stat type either. The `Touchdown` rows that *do* appear are correct when present (2 of the 3 matched an offensive touch; the 3rd was a 68-yard defensive return, correctly excluded) — the type is just almost never emitted. Unusable as the TD source.
+
+- **TD source = the `/plays` endpoint.** Each `/plays` row carries `scoring: boolean`, `playType` (e.g. `"Rushing Touchdown"`, `"Passing Touchdown"`), `id` (the same play id `/plays/stats` rows carry as `playId`), and `offense`/`defense`.
+- **TD attribution:** build the set of `playId`s where `playType` is an **offensive** touchdown type (`Rushing Touchdown`, `Passing Touchdown` — *not* the return/recovery types, which are defensive/ST scores). A touch row scored iff its `playId` is in that set **and** it is a `Rush` or `Reception` (never a `Target` — an incompletion cannot score). On a rushing TD the `Rush` row is the scorer; on a passing TD the `Reception` row is the scorer; the QB's `Completion` row is not a touch, so the QB is never mis-credited with a receiving TD.
+- `/plays` has no `gameId` filter but does take `playType` + `classification` + `week`, so the TD-play set for a week is ~2 calls (`playType=Rushing Touchdown`, `playType=Passing Touchdown`), each well under the 2,000-row cap — no material change to the free-tier call budget.
+
+**`td_attribution` diagnostic** in the ingestion response reports `td_plays` (offensive TD plays found), `matched_to_a_touch`, and `unmatched` (+ a sample). Post-fix, `unmatched` should be ~0 — every rushing/passing TD has a `Rush` or `Reception` stat row on its play. A non-trivial `unmatched` count is the signal that this attribution has drifted again and needs re-checking against live data.
 ## 9. Open items before this spec is fully build-ready
 1. ~~Final pillar weight redistribution~~ — **LOCKED, see §0.**
 2. ~~Cold-start UI/product decision~~ — **LOCKED, see §5.2.**

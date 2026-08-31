@@ -35,8 +35,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ids import game_index, team_id_map_from_games
-from plays_stats import STAT_RUSH, STAT_TARGET, STAT_TOUCHDOWN
+from ids import team_id_map_from_games
+from plays_stats import STAT_RECEPTION, STAT_RUSH, STAT_TARGET
 
 RED_ZONE = 20
 INSIDE_10 = 10
@@ -44,35 +44,34 @@ GOAL_LINE = 5
 
 _BANDS = (("rz", RED_ZONE), ("i10", INSIDE_10), ("gl", GOAL_LINE))
 
-_TOUCH_TYPE = {STAT_RUSH: "rush", STAT_TARGET: "target"}
+# Touch = Rush + Target + Reception (spec §8a). CFBD's `Target` is only
+# the receiver on an INCOMPLETE pass and `Reception` only on a COMPLETED
+# one, so a pass "target" (opportunity regardless of completion) is the
+# two combined. rush -> "rush"; target/reception -> "target_*" for the
+# rush/target split, and both count toward total touches.
+_TOUCH_TYPE = {STAT_RUSH: "rush", STAT_TARGET: "target", STAT_RECEPTION: "reception"}
+_PASS_TOUCH_TYPES = ("target", "reception")
+# only a completed touch (rush or reception) can be the scorer on a TD
+# play — a `target` is by definition an incompletion.
+_SCOREABLE_TOUCH_TYPES = ("rush", "reception")
 
 
 # --------------------------------------------------------------------------
 # shared touch / band-count primitives
 # --------------------------------------------------------------------------
-def _touchdown_pairs(play_stats: list[dict]) -> set[tuple[str, str]]:
-    """{ (playId, athleteId) } for every `Touchdown` stat row."""
-    pairs: set[tuple[str, str]] = set()
-    for r in play_stats:
-        if r.get("statType") != STAT_TOUCHDOWN:
-            continue
-        pid, aid = r.get("playId"), r.get("athleteId")
-        if pid is not None and aid is not None:
-            pairs.add((str(pid), str(aid)))
-    return pairs
-
-
-def _touches(play_stats: list[dict]) -> pd.DataFrame:
+def _touches(play_stats: list[dict], td_play_ids: set[str]) -> pd.DataFrame:
     """
-    One row per touch (a `Rush` or `Target` stat row with a real
-    athleteId), tagged with which player/offense/defense touched the ball,
-    the yard line, and whether that player scored on the play.
+    One row per touch (a `Rush`, `Target`, or `Reception` stat row with a
+    real athleteId), tagged with which player/offense/defense touched the
+    ball, the yard line, and whether that player scored on the play.
+
+    A touch scored iff its `playId` is an offensive-TD play (from /plays,
+    passed in as `td_play_ids`, spec §8a) AND the touch is a rush or a
+    reception — never a bare `target`, which is an incompletion.
 
     Columns: game_id season week team opponent play_id athlete_id
              athlete_name yards_to_goal touch_type own_touchdown
     """
-    td_pairs = _touchdown_pairs(play_stats)
-
     recs: list[dict] = []
     for r in play_stats:
         st = r.get("statType")
@@ -86,6 +85,12 @@ def _touches(play_stats: list[dict]) -> pd.DataFrame:
         if ytg is None:
             continue
         pid = r.get("playId")
+        pid_s = None if pid is None else str(pid)
+        scored = int(
+            pid_s is not None
+            and pid_s in td_play_ids
+            and touch_type in _SCOREABLE_TOUCH_TYPES
+        )
         recs.append(
             {
                 "game_id": r.get("gameId"),
@@ -94,12 +99,12 @@ def _touches(play_stats: list[dict]) -> pd.DataFrame:
                 "team": r.get("team"),
                 "opponent": r.get("opponent"),
                 "conference": r.get("conference"),
-                "play_id": None if pid is None else str(pid),
+                "play_id": pid_s,
                 "athlete_id": str(aid),
                 "athlete_name": r.get("athleteName"),
                 "yards_to_goal": ytg,
                 "touch_type": touch_type,
-                "own_touchdown": int((None if pid is None else str(pid), str(aid)) in td_pairs),
+                "own_touchdown": scored,
             }
         )
 
@@ -137,7 +142,7 @@ def _band_agg(touches: pd.DataFrame, label: str, group_keys: list[str], zone_max
             **{
                 f"{label}_touches": ("touch_type", "count"),
                 f"{label}_rush_touches": ("touch_type", lambda s: (s == "rush").sum()),
-                f"{label}_target_touches": ("touch_type", lambda s: (s == "target").sum()),
+                f"{label}_target_touches": ("touch_type", lambda s: s.isin(_PASS_TOUCH_TYPES).sum()),
                 f"{label}_tds": ("own_touchdown", "sum"),
             }
         )
@@ -164,45 +169,31 @@ def _band_totals(touches: pd.DataFrame) -> dict:
         band = touches[touches["yards_to_goal"] <= zone_max]
         d[f"{label}_touches"] = int(len(band))
         d[f"{label}_rush_touches"] = int((band["touch_type"] == "rush").sum())
-        d[f"{label}_target_touches"] = int((band["touch_type"] == "target").sum())
+        d[f"{label}_target_touches"] = int(band["touch_type"].isin(_PASS_TOUCH_TYPES).sum())
         d[f"{label}_tds"] = int(band["own_touchdown"].sum())
     return d
 
 
-def _td_attribution_diagnostics(play_stats: list[dict], touches: pd.DataFrame) -> dict:
+def _td_attribution_diagnostics(td_play_ids: set[str], touches: pd.DataFrame) -> dict:
     """
-    How many `Touchdown` (playId, athleteId) pairs matched a real touch
-    row. A high unmatched count is the canary for the one CFBD unknown
-    that matters here: if passing TDs are credited only to the QB's
-    athleteId (not the receiver's), receiver `*_tds` would silently read
-    ~0 and this number would spike. MUST be eyeballed on the first live
-    smoke run.
+    How many offensive-TD plays (from /plays, spec §8a) matched a real
+    rush/reception touch row. Post-§8a, `unmatched` should be ~0 — every
+    rushing/passing TD has a `Rush` or `Reception` stat row on its play.
+    A non-trivial `unmatched` count means the /plays -> /plays/stats join
+    (or the offensive-TD play-type list) has drifted and needs a look.
     """
-    td_pairs = _touchdown_pairs(play_stats)
     if touches.empty:
-        touch_pairs: set[tuple[str, str]] = set()
+        scoreable_play_ids: set[str] = set()
     else:
-        touch_pairs = set(
-            zip(touches["play_id"].astype("object"), touches["athlete_id"].astype("object"))
-        )
-    matched = td_pairs & touch_pairs
-    unmatched = td_pairs - touch_pairs
-    sample = []
-    if unmatched:
-        by_id = {(str(r.get("playId")), str(r.get("athleteId"))): r for r in play_stats if r.get("statType") == STAT_TOUCHDOWN}
-        for key in list(unmatched)[:10]:
-            r = by_id.get(key, {})
-            sample.append(
-                {
-                    "play_id": key[0], "athlete_id": key[1],
-                    "athlete_name": r.get("athleteName"), "yards_to_goal": r.get("yardsToGoal"),
-                }
-            )
+        scoreable = touches[touches["touch_type"].isin(_SCOREABLE_TOUCH_TYPES)]
+        scoreable_play_ids = set(scoreable["play_id"].dropna().astype(str))
+    matched = td_play_ids & scoreable_play_ids
+    unmatched = td_play_ids - scoreable_play_ids
     return {
-        "touchdown_stat_pairs": len(td_pairs),
+        "td_plays": len(td_play_ids),
         "matched_to_a_touch": len(matched),
         "unmatched": len(unmatched),
-        "unmatched_sample": sample,
+        "unmatched_sample": sorted(unmatched)[:10],
     }
 
 
@@ -224,6 +215,7 @@ def aggregate_redzone_game_cfb(
     play_stats: list[dict],
     games: list[dict],
     raw_pos_lookup: dict[str, str],
+    td_play_ids: set[str],
     *,
     season: int,
     week: int,
@@ -231,6 +223,9 @@ def aggregate_redzone_game_cfb(
     """
     One row per (player_id, season, week) with red-zone band touch/TD
     counts and the player's share of his offense's red-zone touches.
+
+    `td_play_ids` — offensive-TD playIds from /plays (spec §8a); a touch
+    on one of those plays that is a rush or reception scored.
 
     Rows are emitted for RB / WR / TE and for players not resolvable to
     one of those (position_group = NULL, `extra.unresolved` /
@@ -241,12 +236,12 @@ def aggregate_redzone_game_cfb(
     """
     from roster import POSITION_GROUPS  # local import: avoids a module-load cycle in tests
 
-    touches = _touches(play_stats)
+    touches = _touches(play_stats, td_play_ids)
     diagnostics: dict = {
         "aggregation": "cfb_player_redzone_weekly",
         "season": season, "week": week,
         "touch_rows": int(len(touches)),
-        "td_attribution": _td_attribution_diagnostics(play_stats, touches),
+        "td_attribution": _td_attribution_diagnostics(td_play_ids, touches),
         "stat_type_distribution": stat_type_distribution(play_stats),
     }
     if touches.empty:
@@ -317,7 +312,12 @@ def aggregate_redzone_game_cfb(
         .reset_index()
     )
 
-    merged = ctx.merge(bands, on="athlete_id", how="left")
+    # inner join: `ctx` is built over every non-QB touch (incl. touches
+    # outside the 20 — e.g. a 45-yard catch), `bands` only over athletes
+    # with a real red-zone-band touch. Only the latter get a row —
+    # matches nfl/redzone.py.aggregate_redzone_game, whose `rz` band is
+    # its base frame.
+    merged = ctx.merge(bands, on="athlete_id", how="inner")
     for c in merged.columns:
         if c.endswith(("_touches", "_tds")):
             merged[c] = merged[c].fillna(0).astype(int)
@@ -406,6 +406,7 @@ def aggregate_redzone_allowed_cfb(
     play_stats: list[dict],
     games: list[dict],
     raw_pos_lookup: dict[str, str],
+    td_play_ids: set[str],
     *,
     season: int,
     week: int,
@@ -413,6 +414,8 @@ def aggregate_redzone_allowed_cfb(
     """
     One row per (defense team_id, position_group, season, week) with
     red-zone band touch/TD counts ALLOWED to that position group.
+
+    `td_play_ids` — offensive-TD playIds from /plays (spec §8a).
 
     Only RB / WR / TE rows are emitted (NFL parity — the inner join in
     nfl/redzone.py.aggregate_redzone_allowed). Touches with no resolvable
@@ -422,7 +425,7 @@ def aggregate_redzone_allowed_cfb(
     """
     from roster import POSITION_GROUPS
 
-    touches = _touches(play_stats)
+    touches = _touches(play_stats, td_play_ids)
     diagnostics: dict = {
         "aggregation": "cfb_defense_redzone_allowed_weekly",
         "season": season, "week": week,
@@ -462,7 +465,10 @@ def aggregate_redzone_allowed_cfb(
         )
         .reset_index()
     )
-    merged = ctx.merge(bands, on=keys, how="left")
+    # inner join, same reasoning as aggregate_redzone_game_cfb: a
+    # (defense, position) pair with only out-of-red-zone touches allowed
+    # gets no row (NFL parity).
+    merged = ctx.merge(bands, on=keys, how="inner")
     for c in merged.columns:
         if c.endswith(("_touches", "_tds")):
             merged[c] = merged[c].fillna(0).astype(int)
