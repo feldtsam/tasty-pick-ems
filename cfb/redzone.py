@@ -206,6 +206,17 @@ def _td_attribution_diagnostics(play_stats: list[dict], touches: pd.DataFrame) -
     }
 
 
+def stat_type_distribution(play_stats: list[dict]) -> dict:
+    """Count of every distinct `statType` string in the raw pull — how
+    CFBD actually encodes plays, so a smoke run can confirm the touch /
+    TD stat-type assumptions in spec §8 against real data."""
+    out: dict = {}
+    for r in play_stats:
+        k = str(r.get("statType"))
+        out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+
 # --------------------------------------------------------------------------
 # Aggregation A — cfb_player_redzone_weekly  (TD Opportunity, §2)
 # --------------------------------------------------------------------------
@@ -236,6 +247,7 @@ def aggregate_redzone_game_cfb(
         "season": season, "week": week,
         "touch_rows": int(len(touches)),
         "td_attribution": _td_attribution_diagnostics(play_stats, touches),
+        "stat_type_distribution": stat_type_distribution(play_stats),
     }
     if touches.empty:
         diagnostics["note"] = "no Rush/Target touch rows in the input"
