@@ -174,26 +174,60 @@ def _band_totals(touches: pd.DataFrame) -> dict:
     return d
 
 
-def _td_attribution_diagnostics(td_play_ids: set[str], touches: pd.DataFrame) -> dict:
+def _td_attribution_diagnostics(
+    td_play_ids: set[str], touches: pd.DataFrame, play_stats: list[dict]
+) -> dict:
     """
     How many offensive-TD plays (from /plays, spec §8a) matched a real
     rush/reception touch row. Post-§8a, `unmatched` should be ~0 — every
     rushing/passing TD has a `Rush` or `Reception` stat row on its play.
     A non-trivial `unmatched` count means the /plays -> /plays/stats join
     (or the offensive-TD play-type list) has drifted and needs a look.
+
+    For each unmatched TD play the diagnostic records whether that playId
+    appears in /plays/stats AT ALL (and with which statTypes) — a playId
+    absent entirely points at an id-format mismatch between the two
+    endpoints; a playId present but with only non-touch stat types points
+    at a genuine data gap.
     """
+    all_play_stat_ids: dict[str, set[str]] = {}
+    for r in play_stats:
+        pid = r.get("playId")
+        if pid is None:
+            continue
+        all_play_stat_ids.setdefault(str(pid), set()).add(str(r.get("statType")))
+
     if touches.empty:
         scoreable_play_ids: set[str] = set()
     else:
         scoreable = touches[touches["touch_type"].isin(_SCOREABLE_TOUCH_TYPES)]
         scoreable_play_ids = set(scoreable["play_id"].dropna().astype(str))
+
     matched = td_play_ids & scoreable_play_ids
     unmatched = td_play_ids - scoreable_play_ids
+
+    absent_from_play_stats = 0
+    present_wrong_stat_types = 0
+    unmatched_detail = []
+    for pid in sorted(unmatched):
+        sts = all_play_stat_ids.get(pid)
+        if sts is None:
+            absent_from_play_stats += 1
+            detail = {"play_id": pid, "in_play_stats": False}
+        else:
+            present_wrong_stat_types += 1
+            detail = {"play_id": pid, "in_play_stats": True, "stat_types": sorted(sts)}
+        if len(unmatched_detail) < 15:
+            unmatched_detail.append(detail)
+
     return {
         "td_plays": len(td_play_ids),
         "matched_to_a_touch": len(matched),
         "unmatched": len(unmatched),
-        "unmatched_sample": sorted(unmatched)[:10],
+        "unmatched_absent_from_play_stats": absent_from_play_stats,
+        "unmatched_present_but_no_rush_or_reception": present_wrong_stat_types,
+        "unmatched_detail": unmatched_detail,
+        "play_stats_id_sample": sorted(all_play_stat_ids)[:5],
     }
 
 
@@ -241,7 +275,7 @@ def aggregate_redzone_game_cfb(
         "aggregation": "cfb_player_redzone_weekly",
         "season": season, "week": week,
         "touch_rows": int(len(touches)),
-        "td_attribution": _td_attribution_diagnostics(td_play_ids, touches),
+        "td_attribution": _td_attribution_diagnostics(td_play_ids, touches, play_stats),
         "stat_type_distribution": stat_type_distribution(play_stats),
     }
     if touches.empty:

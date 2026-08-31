@@ -207,6 +207,7 @@ def fetch_scoring_td_play_ids(
 
     seen_play_ids: set[str] = set()
     td_play_ids: set[str] = set()
+    td_plays_detail: list[dict] = []
     play_type_counts: dict[str, int] = {}
     teams_fetched = 0
     plays_seen = 0
@@ -232,6 +233,14 @@ def fetch_scoring_td_play_ids(
             if completed_game_ids is not None and r.get("gameId") not in completed_game_ids:
                 continue
             td_play_ids.add(pid)
+            if len(td_plays_detail) < 50:
+                td_plays_detail.append(
+                    {
+                        "id": pid, "gameId": r.get("gameId"), "playType": pt,
+                        "yardsToGoal": r.get("yardsToGoal"), "offense": r.get("offense"),
+                        "playText": (r.get("playText") or "")[:120],
+                    }
+                )
 
     diagnostics = {
         "offensive_td_play_types_used": list(OFFENSIVE_TD_PLAY_TYPES),
@@ -240,5 +249,6 @@ def fetch_scoring_td_play_ids(
         "distinct_plays_seen": plays_seen,
         "scoring_play_type_counts": dict(sorted(play_type_counts.items(), key=lambda kv: -kv[1])),
         "td_play_ids": len(td_play_ids),
+        "td_plays_detail": td_plays_detail,
     }
     return td_play_ids, diagnostics
