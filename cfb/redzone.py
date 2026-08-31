@@ -430,6 +430,12 @@ def aggregate_redzone_game_cfb(
             "team_name_id_misses": team_name_misses,
             "qb_rz_teams": len(qb_rz_by_team),
             "qb_rz_orphans": qb_rz_orphans,
+            "td_totals": {
+                "rz_tds": sum(x["rz_tds"] for x in rows),
+                "i10_tds": sum(x["i10_tds"] for x in rows),
+                "gl_tds": sum(x["gl_tds"] for x in rows),
+                "qb_rz_tds": sum(v.get("rz_tds", 0) for v in qb_rz_by_team.values()),
+            },
         }
     )
     return rows, diagnostics
@@ -569,6 +575,11 @@ def aggregate_redzone_allowed_cfb(
             "defenses": len({x["team_id"] for x in rows}),
             "defense_name_id_misses": def_name_misses,
             "unclassified_touch_rows": int(len(unclassified)),
+            "td_totals": {
+                "rz_tds_allowed": sum(x["rz_tds_allowed"] for x in rows),
+                "i10_tds_allowed": sum(x["i10_tds_allowed"] for x in rows),
+                "gl_tds_allowed": sum(x["gl_tds_allowed"] for x in rows),
+            },
         }
     )
     return rows, diagnostics
