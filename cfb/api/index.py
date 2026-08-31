@@ -199,6 +199,64 @@ def _debug_perf(season: int, week: int, season_type: str):
         out["plays_stats_5_serial_s"] = round(_t.time() - t4, 3)
         out["plays_stats_avg_call_s"] = round((_t.time() - t4) / n, 3)
 
+    # ---- VERIFICATION: does playType=TD carry the scoring-summary ids? ----
+    # Compare, for the completed games, the td_touch_play_ids that the
+    # per-team approach yields vs. what a single playType=TD call yields.
+    from plays_stats import OFFENSIVE_TD_PLAY_TYPES
+
+    completed_ids = {int(g["id"]) for g in completed if g.get("id") is not None}
+    completed_schools = sorted(
+        {g.get("homeTeam") for g in completed if g.get("homeTeam")}
+        | {g.get("awayTeam") for g in completed if g.get("awayTeam")}
+    )
+
+    # full /plays/stats playId set for the completed games
+    all_ps_ids: set[str] = set()
+    for g in completed:
+        for r in fetch_play_stats_for_game(int(g["id"]), season_type=season_type):
+            if r.get("playId") is not None:
+                all_ps_ids.add(str(r.get("playId")))
+
+    # A) per-team
+    per_team_td_ids: set[str] = set()
+    for s in completed_schools:
+        for p in fetch_plays_for_team(season, week, s, season_type=season_type):
+            if (p.get("scoring") is True and p.get("playType") in OFFENSIVE_TD_PLAY_TYPES
+                    and p.get("gameId") in completed_ids and p.get("id") is not None):
+                per_team_td_ids.add(str(p.get("id")))
+
+    # B) one playType=TD call
+    t5 = _t.time()
+    td_rows = cfbd_get("/plays", {"year": season, "week": week, "classification": "fbs",
+                                  "seasonType": season_type, "playType": "TD"})
+    playtype_call_s = round(_t.time() - t5, 3)
+    playtype_td_ids: set[str] = set()
+    playtype_pt_counts: dict = {}
+    for p in td_rows if isinstance(td_rows, list) else []:
+        pt = p.get("playType")
+        playtype_pt_counts[pt] = playtype_pt_counts.get(pt, 0) + 1
+        if (p.get("scoring") is True and pt in OFFENSIVE_TD_PLAY_TYPES
+                and p.get("gameId") in completed_ids and p.get("id") is not None):
+            playtype_td_ids.add(str(p.get("id")))
+
+    per_team_touch_ids = per_team_td_ids & all_ps_ids
+    playtype_touch_ids = playtype_td_ids & all_ps_ids
+
+    out["td_source_comparison"] = {
+        "playtype_TD_call_s": playtype_call_s,
+        "playtype_TD_total_rows": len(td_rows) if isinstance(td_rows, list) else -1,
+        "playtype_TD_playtype_counts": dict(sorted(playtype_pt_counts.items(), key=lambda kv: -kv[1])),
+        "per_team_raw_td_ids": len(per_team_td_ids),
+        "playtype_raw_td_ids": len(playtype_td_ids),
+        "per_team_td_ids_in_play_stats": len(per_team_touch_ids),
+        "playtype_td_ids_in_play_stats": len(playtype_touch_ids),
+        "identical_after_play_stats_intersection": sorted(per_team_touch_ids) == sorted(playtype_touch_ids),
+        "in_per_team_not_playtype": sorted(per_team_touch_ids - playtype_touch_ids)[:10],
+        "in_playtype_not_per_team": sorted(playtype_touch_ids - per_team_touch_ids)[:10],
+        "spot_check_401858201492_in_playtype_TD": "401858201492" in playtype_td_ids,
+        "spot_check_401858201492_in_play_stats": "401858201492" in all_ps_ids,
+    }
+
     return jsonify(out), 200
 
 
