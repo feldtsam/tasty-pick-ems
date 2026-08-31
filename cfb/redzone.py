@@ -174,77 +174,61 @@ def _band_totals(touches: pd.DataFrame) -> dict:
     return d
 
 
+def _play_stats_play_ids(play_stats: list[dict]) -> set[str]:
+    return {str(r["playId"]) for r in play_stats if r.get("playId") is not None}
+
+
+def _td_touch_play_ids(td_play_ids_raw: set[str], play_stats: list[dict]) -> set[str]:
+    """
+    The offensive-TD playIds that actually carry a player-stat row (spec
+    §8a). CFBD's /plays returns TWO rows per rushing/passing TD — a
+    play-by-play row and a scoring-summary row, different ids, both tagged
+    `playType='… Touchdown'`. Only the scoring-summary id appears in
+    /plays/stats (with the scorer's Rush/Reception row). Intersecting the
+    raw /plays TD-id set with /plays/stats' own playIds drops the
+    play-by-play duplicates and keeps exactly the ids a touch can be
+    attributed to.
+    """
+    return td_play_ids_raw & _play_stats_play_ids(play_stats)
+
+
 def _td_attribution_diagnostics(
-    td_play_ids: set[str], touches: pd.DataFrame, play_stats: list[dict]
+    td_play_ids_raw: set[str], td_touch_play_ids: set[str], touches: pd.DataFrame
 ) -> dict:
     """
-    How many offensive-TD plays (from /plays, spec §8a) matched a real
-    rush/reception touch row. Post-§8a, `unmatched` should be ~0 — every
-    rushing/passing TD has a `Rush` or `Reception` stat row on its play.
-    A non-trivial `unmatched` count means the /plays -> /plays/stats join
-    (or the offensive-TD play-type list) has drifted and needs a look.
+    td_play_ids_raw     — every playId /plays tagged as a rushing/passing
+                           TD (includes the play-by-play duplicates).
+    td_touch_play_ids   — the subset present in /plays/stats (see
+                           _td_touch_play_ids) — what `_touches` actually
+                           scores against.
 
-    For each unmatched TD play the diagnostic records whether that playId
-    appears in /plays/stats AT ALL (and with which statTypes) — a playId
-    absent entirely points at an id-format mismatch between the two
-    endpoints; a playId present but with only non-touch stat types points
-    at a genuine data gap.
+    `credited` should equal `td_touch_play_ids` almost exactly.
+    `in_play_stats_but_no_touch` is the number to watch — a TD play that
+    has a /plays/stats row but no rush/reception on it (data gap, or a
+    return TD that slipped through the offensive-playType filter). ~0
+    expected; a persistent non-zero needs a look.
+    `pbp_duplicates_dropped` is expected and benign — roughly half of
+    td_play_ids_raw.
     """
-    all_play_stat_ids: dict[str, set[str]] = {}
-    for r in play_stats:
-        pid = r.get("playId")
-        if pid is None:
-            continue
-        all_play_stat_ids.setdefault(str(pid), set()).add(str(r.get("statType")))
-
     if touches.empty:
         scoreable_play_ids: set[str] = set()
     else:
         scoreable = touches[touches["touch_type"].isin(_SCOREABLE_TOUCH_TYPES)]
         scoreable_play_ids = set(scoreable["play_id"].dropna().astype(str))
 
-    matched = td_play_ids & scoreable_play_ids
-    unmatched = td_play_ids - scoreable_play_ids
-
-    absent_from_play_stats = 0
-    present_wrong_stat_types = 0
-    unmatched_detail = []
-    for pid in sorted(unmatched):
-        sts = all_play_stat_ids.get(pid)
-        if sts is None:
-            absent_from_play_stats += 1
-            detail = {"play_id": pid, "in_play_stats": False}
-        else:
-            present_wrong_stat_types += 1
-            detail = {"play_id": pid, "in_play_stats": True, "stat_types": sorted(sts)}
-        if len(unmatched_detail) < 15:
-            unmatched_detail.append(detail)
-
-    # Every statType='Touchdown' row in /plays/stats — CFBD *does* emit
-    # these, keyed to the scoring-summary playId (which also carries the
-    # Rush/Reception touch). Counting them here tells us whether they are
-    # a viable standalone TD source vs. needing /plays.
-    td_stat_rows = [
-        {"playId": str(r.get("playId")), "athleteName": r.get("athleteName"),
-         "team": r.get("team"), "yardsToGoal": r.get("yardsToGoal")}
-        for r in play_stats if r.get("statType") == "Touchdown"
-    ]
-    td_stat_play_ids = {r["playId"] for r in td_stat_rows}
-    td_via_stat_matched = td_stat_play_ids & scoreable_play_ids
+    credited = td_touch_play_ids & scoreable_play_ids
+    in_stats_no_touch = sorted(td_touch_play_ids - scoreable_play_ids)
+    tds_credited = 0 if touches.empty else int(touches["own_touchdown"].sum())
 
     return {
-        "td_plays": len(td_play_ids),
-        "matched_to_a_touch": len(matched),
-        "unmatched": len(unmatched),
-        "unmatched_absent_from_play_stats": absent_from_play_stats,
-        "unmatched_present_but_no_rush_or_reception": present_wrong_stat_types,
-        "unmatched_detail": unmatched_detail,
-        "td_plays_present_in_play_stats": len(td_play_ids & set(all_play_stat_ids)),
-        "touchdown_statType_rows": len(td_stat_rows),
-        "touchdown_statType_distinct_plays": len(td_stat_play_ids),
-        "touchdown_statType_matched_to_touch": len(td_via_stat_matched),
-        "touchdown_statType_sample": td_stat_rows[:15],
-        "play_stats_id_sample": sorted(all_play_stat_ids)[:5],
+        "td_plays_from_plays_raw": len(td_play_ids_raw),
+        "td_plays_in_play_stats": len(td_touch_play_ids),
+        "pbp_duplicates_dropped": len(td_play_ids_raw) - len(td_touch_play_ids),
+        "credited": len(credited),
+        "in_play_stats_but_no_touch": len(in_stats_no_touch),
+        "in_play_stats_but_no_touch_sample": in_stats_no_touch[:10],
+        "unmatched": len(in_stats_no_touch),  # kept: the number that matters, post-dedup
+        "total_td_touch_rows_flagged": tds_credited,
     }
 
 
@@ -287,12 +271,13 @@ def aggregate_redzone_game_cfb(
     """
     from roster import POSITION_GROUPS  # local import: avoids a module-load cycle in tests
 
-    touches = _touches(play_stats, td_play_ids)
+    td_touch_play_ids = _td_touch_play_ids(td_play_ids, play_stats)
+    touches = _touches(play_stats, td_touch_play_ids)
     diagnostics: dict = {
         "aggregation": "cfb_player_redzone_weekly",
         "season": season, "week": week,
         "touch_rows": int(len(touches)),
-        "td_attribution": _td_attribution_diagnostics(td_play_ids, touches, play_stats),
+        "td_attribution": _td_attribution_diagnostics(td_play_ids, td_touch_play_ids, touches),
         "stat_type_distribution": stat_type_distribution(play_stats),
     }
     if touches.empty:
@@ -476,7 +461,7 @@ def aggregate_redzone_allowed_cfb(
     """
     from roster import POSITION_GROUPS
 
-    touches = _touches(play_stats, td_play_ids)
+    touches = _touches(play_stats, _td_touch_play_ids(td_play_ids, play_stats))
     diagnostics: dict = {
         "aggregation": "cfb_defense_redzone_allowed_weekly",
         "season": season, "week": week,

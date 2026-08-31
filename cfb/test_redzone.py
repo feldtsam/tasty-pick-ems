@@ -117,10 +117,12 @@ if __name__ == "__main__":
                          rb2.get("rz_touches") == 1 and rb2.get("gl_touches") == 1 and rb2.get("rz_tds") == 1))
 
     td = pdiag["td_attribution"]
-    results.append(check("td_attribution.td_plays = 4", td["td_plays"] == 4))
-    results.append(check("td_attribution.matched_to_a_touch = 4", td["matched_to_a_touch"] == 4))
+    results.append(check("td_attribution.td_plays_in_play_stats = 4", td["td_plays_in_play_stats"] == 4))
+    results.append(check("td_attribution.credited = 4", td["credited"] == 4))
     results.append(check("td_attribution.unmatched = 0 (every TD play has a rush/reception touch)",
                          td["unmatched"] == 0))
+    results.append(check("td_attribution.total_td_touch_rows_flagged = 4",
+                         td["total_td_touch_rows_flagged"] == 4))
     results.append(check("stat_type_distribution present in diagnostics",
                          isinstance(pdiag.get("stat_type_distribution"), dict)
                          and pdiag["stat_type_distribution"].get("Rush") == 4))
@@ -154,12 +156,22 @@ if __name__ == "__main__":
                          and ta_rb.get("gl_touches_allowed") == 1
                          and ta_rb.get("rz_tds_allowed") == 1))
 
-    # ---- TD canary: a TD play with no matching rush/reception touch -----
+    # ---- a /plays TD id absent from /plays/stats is a benign pbp dup ----
     _, pdiag2 = aggregate_redzone_game_cfb(
         PLAY_STATS, GAMES, RAW_POS, TD_PLAY_IDS | {"pGHOST"}, season=2025, week=3
     )
-    results.append(check("TD canary: an offensive-TD playId with no touch shows unmatched = 1",
-                         pdiag2["td_attribution"]["unmatched"] == 1))
+    td2 = pdiag2["td_attribution"]
+    results.append(check("a TD playId not in play_stats -> dropped as a pbp duplicate, not counted as unmatched",
+                         td2["pbp_duplicates_dropped"] == 1 and td2["unmatched"] == 0 and td2["credited"] == 4))
+
+    # ---- a TD id present in play_stats but with only a Target scores 0 --
+    only_target_td = [
+        _row("Team A", "Team B", "pX", "wr1", "Target", 3),
+        _row("Team A", "Team B", "pX", "qb1", "Incompletion", 3),
+    ]
+    _, pdiag3 = aggregate_redzone_game_cfb(only_target_td, GAMES, RAW_POS, {"pX"}, season=2025, week=3)
+    results.append(check("TD play present in play_stats but only an incomplete Target -> in_play_stats_but_no_touch = 1",
+                         pdiag3["td_attribution"]["in_play_stats_but_no_touch"] == 1))
 
     # ---- a Target-only play on a TD playId still cannot score ----------
     only_target = [_row("Team A", "Team B", "pT", "wr1", "Target", 3)]
