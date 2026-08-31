@@ -220,6 +220,18 @@ def _td_attribution_diagnostics(
         if len(unmatched_detail) < 15:
             unmatched_detail.append(detail)
 
+    # Every statType='Touchdown' row in /plays/stats — CFBD *does* emit
+    # these, keyed to the scoring-summary playId (which also carries the
+    # Rush/Reception touch). Counting them here tells us whether they are
+    # a viable standalone TD source vs. needing /plays.
+    td_stat_rows = [
+        {"playId": str(r.get("playId")), "athleteName": r.get("athleteName"),
+         "team": r.get("team"), "yardsToGoal": r.get("yardsToGoal")}
+        for r in play_stats if r.get("statType") == "Touchdown"
+    ]
+    td_stat_play_ids = {r["playId"] for r in td_stat_rows}
+    td_via_stat_matched = td_stat_play_ids & scoreable_play_ids
+
     return {
         "td_plays": len(td_play_ids),
         "matched_to_a_touch": len(matched),
@@ -227,6 +239,11 @@ def _td_attribution_diagnostics(
         "unmatched_absent_from_play_stats": absent_from_play_stats,
         "unmatched_present_but_no_rush_or_reception": present_wrong_stat_types,
         "unmatched_detail": unmatched_detail,
+        "td_plays_present_in_play_stats": len(td_play_ids & set(all_play_stat_ids)),
+        "touchdown_statType_rows": len(td_stat_rows),
+        "touchdown_statType_distinct_plays": len(td_stat_play_ids),
+        "touchdown_statType_matched_to_touch": len(td_via_stat_matched),
+        "touchdown_statType_sample": td_stat_rows[:15],
         "play_stats_id_sample": sorted(all_play_stat_ids)[:5],
     }
 
