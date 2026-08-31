@@ -22,11 +22,13 @@ import requests
 
 CFBD_BASE = "https://apinext.collegefootballdata.com"
 
-# Generous client-side ceiling. A per-gameId /plays/stats call returns
-# ~150-350 rows in practice; an unfiltered call truncates at exactly 2,000
-# (confirmed in the CFBD verification round). If any single response comes
-# back at or above this, something is being called unfiltered — surface it
-# loudly rather than silently aggregating a truncated slice.
+# The 2,000-row response cap applies to /plays/stats specifically: an
+# unfiltered /plays/stats?year=&week= truncates at exactly 2,000 (CFBD
+# verification round), while a per-gameId call returns ~150-350. Other
+# collection endpoints are NOT capped at 2,000 — /roster?classification=fbs
+# alone returns ~15k rows for a full season. So this guard is opt-in per
+# call (truncation_guard=True), used only where a 2,000-row result really
+# would mean a silently-truncated aggregate.
 CFBD_TRUNCATION_ROWS = 2000
 
 REQUEST_TIMEOUT_SECONDS = 20
@@ -49,7 +51,7 @@ def _api_key() -> str:
     return key.strip()
 
 
-def cfbd_get(path: str, params: dict | None = None) -> list | dict:
+def cfbd_get(path: str, params: dict | None = None, *, truncation_guard: bool = False) -> list | dict:
     """
     Authenticated GET against apinext.collegefootballdata.com. Returns the
     parsed JSON body (a list for the collection endpoints this package
@@ -57,6 +59,11 @@ def cfbd_get(path: str, params: dict | None = None) -> list | dict:
     429 / 5xx.
 
     `path` is the leading-slash path only ("/games", "/plays/stats", ...).
+
+    truncation_guard=True raises if the response is a list of >= 2,000 rows
+    — use it ONLY for /plays/stats, where that number means a silently
+    truncated (unfiltered) result. Other endpoints (/roster) legitimately
+    return far more than 2,000 rows.
     """
     url = f"{CFBD_BASE}{path}"
     headers = {"Authorization": f"Bearer {_api_key()}", "Accept": "application/json"}
@@ -87,10 +94,10 @@ def cfbd_get(path: str, params: dict | None = None) -> list | dict:
         except ValueError as e:
             raise CFBDError(f"GET {path} — response was not JSON: {resp.text[:300]}") from e
 
-        if isinstance(body, list) and len(body) >= CFBD_TRUNCATION_ROWS:
+        if truncation_guard and isinstance(body, list) and len(body) >= CFBD_TRUNCATION_ROWS:
             raise CFBDError(
                 f"GET {path} params={params} returned {len(body)} rows (>= the "
-                f"{CFBD_TRUNCATION_ROWS}-row CFBD cap). This call is effectively "
+                f"{CFBD_TRUNCATION_ROWS}-row /plays/stats cap). This call is effectively "
                 f"unfiltered and its result is truncated — never aggregate from it. "
                 f"Fetch per-gameId instead."
             )

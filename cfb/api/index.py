@@ -186,6 +186,7 @@ def ingest_and_write_redzone_endpoint():
         "preview_only": preview_only,
         "games_total": len(games),
         "games_completed": len(completed),
+        "roster_positions_resolved": len(raw_pos),
         "fetch": fetch_diag,
         "player_rows": len(player_rows),
         "defense_rows": len(defense_rows),

@@ -80,7 +80,11 @@ def fetch_play_stats_for_game(game_id: int, *, season_type: str = DEFAULT_SEASON
     Every play-stat row for one game. gameId alone is a unique filter;
     ~150-350 rows, never near the cap.
     """
-    rows = cfbd_get("/plays/stats", {"gameId": int(game_id), "seasonType": season_type})
+    rows = cfbd_get(
+        "/plays/stats",
+        {"gameId": int(game_id), "seasonType": season_type},
+        truncation_guard=True,
+    )
     if not isinstance(rows, list):
         raise TypeError(f"/plays/stats?gameId={game_id} did not return a list: {type(rows)!r}")
     return rows
