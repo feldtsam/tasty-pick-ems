@@ -32,8 +32,13 @@ CFBD_BASE = "https://apinext.collegefootballdata.com"
 CFBD_TRUNCATION_ROWS = 2000
 
 REQUEST_TIMEOUT_SECONDS = 20
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_BACKOFF_SECONDS = 2.0
+# CFBD returns 429 "Too many concurrent requests for this endpoint" under
+# even modest fan-out on /plays/stats. It clears in well under a second,
+# so back off gently but persistently (with jitter so a pool of workers
+# doesn't retry in lockstep) rather than treating it like a 5xx.
+RETRY_BACKOFF_429_SECONDS = 0.6
 
 
 class CFBDError(RuntimeError):
@@ -65,6 +70,8 @@ def cfbd_get(path: str, params: dict | None = None, *, truncation_guard: bool = 
     truncated (unfiltered) result. Other endpoints (/roster) legitimately
     return far more than 2,000 rows.
     """
+    import random
+
     url = f"{CFBD_BASE}{path}"
     headers = {"Authorization": f"Bearer {_api_key()}", "Accept": "application/json"}
 
@@ -82,7 +89,11 @@ def cfbd_get(path: str, params: dict | None = None, *, truncation_guard: bool = 
         if resp.status_code == 429 or resp.status_code >= 500:
             last_err = f"HTTP {resp.status_code}: {resp.text[:300]}"
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                if resp.status_code == 429:
+                    # brief, jittered — the concurrency window clears fast
+                    time.sleep(RETRY_BACKOFF_429_SECONDS * attempt + random.uniform(0, 0.4))
+                else:
+                    time.sleep(RETRY_BACKOFF_SECONDS * attempt)
                 continue
             raise CFBDError(f"GET {path} — {last_err}")
 

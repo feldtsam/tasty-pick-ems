@@ -57,13 +57,19 @@ DEFAULT_SEASON_TYPE = "regular"
 # little for slow weeks / cold connections. Used only by
 # estimate_week_cost() — a guard against silent regression as game/roster
 # counts grow, not a runtime dependency.
+# Concurrency for the per-game /plays/stats fan-out (see fetch_week_play_stats).
+# CFBD 429s ("Too many concurrent requests for this endpoint") at 8 — 8/70
+# games failed a full-week run. 4 clears it (with the jittered 429 retry
+# in cfbd_get as backstop) and still keeps the fan-out to ~10-15s.
+PLAY_STATS_MAX_WORKERS = 4
+
 _LAT = {
-    "games": 0.5,
+    "games": 0.8,
     "play_types": 0.3,
-    "plays_td": 0.6,
-    "roster": 3.5,       # ~15k rows; not precisely timed, deliberately high
-    "play_stats_call": 0.32,
-    "aggregation": 3.0,  # pandas over a full week's ~15k touch rows
+    "plays_td": 2.0,     # ~490 rows; 1.9s observed on a full week
+    "roster": 1.5,       # ~15k rows; 1.2s observed
+    "play_stats_call": 0.5,  # per-call incl. some 429 retry headroom at 4 workers
+    "aggregation": 2.5,  # pandas over a full week's ~7-8k touch rows
     "overhead": 2.0,     # flask, json, pool spin-up, forward POSTs
 }
 VERCEL_MAX_DURATION_S = 120  # keep in sync with cfb/vercel.json
@@ -72,7 +78,7 @@ VERCEL_MAX_DURATION_S = 120  # keep in sync with cfb/vercel.json
 def estimate_week_cost(
     completed_games_count: int,
     *,
-    workers: int = 8,
+    workers: int = PLAY_STATS_MAX_WORKERS,
     roster_cached: bool = False,
 ) -> dict:
     """
@@ -164,15 +170,6 @@ def fetch_play_stats_for_game(game_id: int, *, season_type: str = DEFAULT_SEASON
     if not isinstance(rows, list):
         raise TypeError(f"/plays/stats?gameId={game_id} did not return a list: {type(rows)!r}")
     return rows
-
-
-# Concurrency for the per-game /plays/stats fan-out. ~90 games/week at
-# ~0.27s serial each is ~24s — the dominant cost of a full run. Each
-# requests.get() is independent (no shared Session), so a small thread
-# pool is safe; cfbd_get() already retries 429 with backoff if the burst
-# is too aggressive. 8 keeps a full week's fan-out to ~3-4s without
-# hammering the free tier.
-PLAY_STATS_MAX_WORKERS = 8
 
 
 def fetch_week_play_stats(
