@@ -170,22 +170,38 @@ def ingest_and_write_redzone_endpoint():
                 continue
             seen.add(p.get("id"))
             plays_uniq.append(p)
+
+        ps_ids = {str(r.get("playId")) for r in ps}
+        ps_team_counts: dict = {}
+        for r in ps:
+            ps_team_counts[str(r.get("team"))] = ps_team_counts.get(str(r.get("team")), 0) + 1
+
+        td_plays = [p for p in plays_uniq if p.get("scoring") and "Touchdown" in (p.get("playType") or "")
+                    and p.get("playType") in ("Rushing Touchdown", "Passing Touchdown")]
+
         return jsonify({
             "debug_game": gid,
+            "schools": schools,
             "plays_count": len(plays_uniq),
             "play_stats_count": len(ps),
-            "plays_sample": [
-                {"id": p.get("id"), "playNumber": p.get("playNumber"), "driveNumber": p.get("driveNumber"),
-                 "playType": p.get("playType"), "scoring": p.get("scoring"),
-                 "yardsToGoal": p.get("yardsToGoal"), "playText": (p.get("playText") or "")[:110]}
-                for p in sorted(plays_uniq, key=lambda x: x.get("playNumber") or 0)
-                if p.get("scoring") or "Rush" in (p.get("playType") or "") or "Pass" in (p.get("playType") or "")
-            ][:40],
-            "play_stats_sample": [
+            "play_stats_team_counts": ps_team_counts,
+            "offensive_td_plays": [
+                {"id": str(p.get("id")), "in_play_stats": str(p.get("id")) in ps_ids,
+                 "playType": p.get("playType"), "yardsToGoal": p.get("yardsToGoal"),
+                 "offense": p.get("offense"), "period": p.get("period"),
+                 "playText": (p.get("playText") or "")[:130]}
+                for p in td_plays
+            ],
+            "ford_rows_in_play_stats": [
                 {"playId": r.get("playId"), "statType": r.get("statType"),
-                 "athleteName": r.get("athleteName"), "yardsToGoal": r.get("yardsToGoal")}
-                for r in ps if r.get("statType") in ("Rush", "Reception", "Target")
-            ][:60],
+                 "athleteName": r.get("athleteName"), "team": r.get("team"), "yardsToGoal": r.get("yardsToGoal")}
+                for r in ps if "Ford" in str(r.get("athleteName"))
+            ],
+            "ford_rushes_in_plays": [
+                {"id": str(p.get("id")), "in_play_stats": str(p.get("id")) in ps_ids,
+                 "yardsToGoal": p.get("yardsToGoal"), "playText": (p.get("playText") or "")[:110]}
+                for p in plays_uniq if "M.Ford" in (p.get("playText") or "") and "rush" in (p.get("playText") or "").lower()
+            ],
         }), 200
 
     try:
