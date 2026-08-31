@@ -30,15 +30,28 @@ SECRET = os.environ.get("CFB_PIPELINE_SECRET") or os.environ.get("PIPELINE_INCOM
 ENDPOINT = f"{URL}/api/ingest-and-write-redzone"
 
 
-def fetch_week(season: int, week: int) -> tuple[list[dict], list[dict]]:
-    resp = requests.post(
-        ENDPOINT,
-        json={"season": season, "week": week, "preview_only": True, "full_rows": True},
-        headers={"X-Pipeline-Secret": SECRET, "Content-Type": "application/json"},
-        timeout=180,
-    )
-    resp.raise_for_status()
-    d = resp.json()
+def fetch_week(season: int, week: int, attempts: int = 4) -> tuple[list[dict], list[dict]]:
+    last = None
+    for a in range(1, attempts + 1):
+        try:
+            resp = requests.post(
+                ENDPOINT,
+                json={"season": season, "week": week, "preview_only": True, "full_rows": True},
+                headers={"X-Pipeline-Secret": SECRET, "Content-Type": "application/json"},
+                timeout=180,
+            )
+            if resp.status_code in (502, 503, 504):
+                last = f"HTTP {resp.status_code}"
+                print(f"  week {week}: {last} (attempt {a}/{attempts}) — retrying")
+                continue
+            resp.raise_for_status()
+            d = resp.json()
+            break
+        except requests.RequestException as e:
+            last = f"{type(e).__name__}: {e}"
+            print(f"  week {week}: {last} (attempt {a}/{attempts}) — retrying")
+    else:
+        raise RuntimeError(f"week {week} failed after {attempts} attempts — {last}")
     if d.get("status") != "ok":
         raise RuntimeError(f"week {week}: {d}")
     print(f"  week {week}: {d['games_completed']} games, "
