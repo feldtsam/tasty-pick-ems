@@ -156,8 +156,13 @@ def ingest_and_write_redzone_endpoint():
         raw_pos = raw_position_lookup(season, fallback_teams=schools)
 
         completed_ids = {int(g["id"]) for g in completed if g.get("id") is not None}
+        completed_schools = sorted(
+            {g.get("homeTeam") for g in completed if g.get("homeTeam")}
+            | {g.get("awayTeam") for g in completed if g.get("awayTeam")}
+        )
         td_play_ids, td_diag = fetch_scoring_td_play_ids(
-            season, week, completed_game_ids=completed_ids, season_type=season_type
+            season, week, completed_schools,
+            completed_game_ids=completed_ids, season_type=season_type,
         )
 
         player_rows, player_diag = aggregate_redzone_game_cfb(

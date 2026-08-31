@@ -147,26 +147,24 @@ def fetch_play_types() -> list[dict]:
     return rows if isinstance(rows, list) else []
 
 
-def fetch_plays_by_type(
+def fetch_plays_for_team(
     season: int,
     week: int,
-    play_type: str,
+    team: str,
     *,
     classification: str = DEFAULT_CLASSIFICATION,
     season_type: str = DEFAULT_SEASON_TYPE,
 ) -> list[dict]:
     """
-    /plays for one (season, week) filtered to a single playType. The
-    playType filter keeps the result far under the 2,000-row cap (a
-    week's rushing TDs across all of FBS is a few hundred rows), so this
-    stays cap-safe without a per-game loop — /plays has no gameId filter.
+    /plays for one (season, week) restricted to one team (either side of
+    the play) — ~140-180 rows, well under the 2,000-row cap. /plays has no
+    gameId filter and its `playType` filter wants an abbreviation this
+    package would have to guess, so per-team + in-memory filtering is the
+    robust path. Each `Play` row carries `id` (== /plays/stats `playId`),
+    `gameId`, `scoring` (bool), `playType`, `offense`, `defense`,
+    `yardsToGoal`, `playText`.
     """
-    params = {
-        "year": int(season),
-        "week": int(week),
-        "playType": play_type,
-        "seasonType": season_type,
-    }
+    params = {"year": int(season), "week": int(week), "team": team, "seasonType": season_type}
     if classification:
         params["classification"] = classification
     rows = cfbd_get("/plays", params)
@@ -176,53 +174,71 @@ def fetch_plays_by_type(
 def fetch_scoring_td_play_ids(
     season: int,
     week: int,
+    teams: list[str],
     *,
     completed_game_ids: set[int] | None = None,
     classification: str = DEFAULT_CLASSIFICATION,
     season_type: str = DEFAULT_SEASON_TYPE,
 ) -> tuple[set[str], dict]:
     """
-    The set of `playId`s that were OFFENSIVE touchdowns (Rushing / Passing
-    Touchdown) for the week — the TD source that replaces the almost-never-
-    emitted `statType='Touchdown'` rows (spec §8a).
+    The set of `playId`s that were OFFENSIVE touchdowns (playType in
+    OFFENSIVE_TD_PLAY_TYPES) for the given teams' games — the TD source
+    that replaces the almost-never-emitted `statType='Touchdown'` rows
+    (spec §8a). Pull /plays once per team, dedupe on play `id`, keep only
+    scoring plays whose playType is an offensive rushing/passing TD (the
+    return / recovery / block TD types are defensive or special teams and
+    are excluded — a touch must never inherit one).
 
     Restricted to `completed_game_ids` when given, so the set lines up
-    with the games the /plays/stats pull actually covers.
+    with the games the /plays/stats pull covers.
 
-    Returns (td_play_ids, diagnostics). diagnostics records every
-    touchdown-flavoured play type CFBD exposes, so a drift in the type
-    names is visible without reading code.
+    Returns (td_play_ids, diagnostics).
     """
-    all_td_types = []
+    all_td_types: list[str] = []
     try:
-        all_td_types = [
-            t.get("text") for t in fetch_play_types()
-            if isinstance(t.get("text"), str) and "touchdown" in t["text"].lower()
-        ]
+        all_td_types = sorted(
+            {
+                t["text"] for t in fetch_play_types()
+                if isinstance(t.get("text"), str) and "touchdown" in t["text"].lower()
+            }
+        )
     except Exception as e:  # noqa: BLE001 — diagnostic only, never fatal
         all_td_types = [f"<play/types fetch failed: {type(e).__name__}: {e}>"]
 
+    seen_play_ids: set[str] = set()
     td_play_ids: set[str] = set()
-    per_type: list[dict] = []
-    for pt in OFFENSIVE_TD_PLAY_TYPES:
-        rows = fetch_plays_by_type(season, week, pt, classification=classification, season_type=season_type)
-        kept = 0
+    play_type_counts: dict[str, int] = {}
+    teams_fetched = 0
+    plays_seen = 0
+
+    for team in sorted(set(teams)):
+        rows = fetch_plays_for_team(season, week, team, classification=classification, season_type=season_type)
+        teams_fetched += 1
         for r in rows:
             pid = r.get("id")
             if pid is None:
                 continue
-            if r.get("scoring") is False:
+            pid = str(pid)
+            if pid in seen_play_ids:
+                continue
+            seen_play_ids.add(pid)
+            plays_seen += 1
+            if r.get("scoring") is not True:
+                continue
+            pt = r.get("playType")
+            play_type_counts[pt] = play_type_counts.get(pt, 0) + 1
+            if pt not in OFFENSIVE_TD_PLAY_TYPES:
                 continue
             if completed_game_ids is not None and r.get("gameId") not in completed_game_ids:
                 continue
-            td_play_ids.add(str(pid))
-            kept += 1
-        per_type.append({"play_type": pt, "plays_returned": len(rows), "kept": kept})
+            td_play_ids.add(pid)
 
     diagnostics = {
         "offensive_td_play_types_used": list(OFFENSIVE_TD_PLAY_TYPES),
-        "all_touchdown_play_types_available": sorted(set(all_td_types)),
-        "per_type": per_type,
+        "all_touchdown_play_types_available": all_td_types,
+        "teams_fetched": teams_fetched,
+        "distinct_plays_seen": plays_seen,
+        "scoring_play_type_counts": dict(sorted(play_type_counts.items(), key=lambda kv: -kv[1])),
         "td_play_ids": len(td_play_ids),
     }
     return td_play_ids, diagnostics
