@@ -141,8 +141,52 @@ def ingest_and_write_redzone_endpoint():
         return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
     season_type = str(data.get("season_type") or "regular")
     preview_only = bool(data.get("preview_only"))
+    debug_game = data.get("debug_game")
 
     started = datetime.now(timezone.utc).isoformat()
+
+    # Temporary join-debugging path: dump raw /plays vs /plays/stats for one
+    # game so the playId mismatch between the two endpoints can be seen
+    # directly. Remove once the TD join is settled.
+    if debug_game is not None:
+        from plays_stats import fetch_play_stats_for_game
+        gid = int(debug_game)
+        try:
+            games = fetch_games(season, week, season_type=season_type)
+            g = next((x for x in games if int(x.get("id", -1)) == gid), None)
+            schools = [s for s in (g.get("homeTeam"), g.get("awayTeam")) if s] if g else []
+            plays = []
+            for s in schools:
+                from plays_stats import fetch_plays_for_team
+                plays.extend([p for p in fetch_plays_for_team(season, week, s, season_type=season_type)
+                              if int(p.get("gameId", -1)) == gid])
+            ps = fetch_play_stats_for_game(gid, season_type=season_type)
+        except CFBDError as e:
+            return jsonify({"status": "error", "stage": "cfbd", "error": str(e)}), 502
+        seen = set()
+        plays_uniq = []
+        for p in plays:
+            if p.get("id") in seen:
+                continue
+            seen.add(p.get("id"))
+            plays_uniq.append(p)
+        return jsonify({
+            "debug_game": gid,
+            "plays_count": len(plays_uniq),
+            "play_stats_count": len(ps),
+            "plays_sample": [
+                {"id": p.get("id"), "playNumber": p.get("playNumber"), "driveNumber": p.get("driveNumber"),
+                 "playType": p.get("playType"), "scoring": p.get("scoring"),
+                 "yardsToGoal": p.get("yardsToGoal"), "playText": (p.get("playText") or "")[:110]}
+                for p in sorted(plays_uniq, key=lambda x: x.get("playNumber") or 0)
+                if p.get("scoring") or "Rush" in (p.get("playType") or "") or "Pass" in (p.get("playType") or "")
+            ][:40],
+            "play_stats_sample": [
+                {"playId": r.get("playId"), "statType": r.get("statType"),
+                 "athleteName": r.get("athleteName"), "yardsToGoal": r.get("yardsToGoal")}
+                for r in ps if r.get("statType") in ("Rush", "Reception", "Target")
+            ][:60],
+        }), 200
 
     try:
         games = fetch_games(season, week, season_type=season_type)
