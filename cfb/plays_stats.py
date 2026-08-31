@@ -3,17 +3,19 @@ CFBD /games + /plays/stats + /plays fetchers — the cap-safe ingestion
 front door.
 
 Flow for one (season, week), per the approved Step 1 proposal + the
-2026-08-31 spec §8a amendment:
+2026-08-31 spec §8a/§8b amendments:
 
     1. GET /games?year=&week=&classification=fbs                  # 1 call
-    2. for each game where completed is true:
-         GET /plays/stats?gameId={id}                             # ~1 call/game
-    3. GET /plays?year=&week=&classification=fbs&playType={t}      # ~2 calls
-         for t in ("Rushing Touchdown", "Passing Touchdown")      #   -> TD play ids
+    2. GET /plays?year=&week=&classification=fbs&playType=TD      # 1 call -> TD play ids
+    3. GET /plays/stats?gameId={id}  for each completed game      # ~90 calls, CONCURRENT
+       (fetch_week_play_stats runs these in a thread pool)
 
 Never issues an unfiltered /plays/stats — cfbd_get() raises if any single
-response comes back at the 2,000-row cap (see cfb/ids.py). /plays is
-filtered by playType so its per-call result stays well under the cap too.
+response comes back at the 2,000-row cap (see cfb/ids.py). The
+/plays?playType=TD call carries the same guard.
+
+~94 CFBD calls, ~15s wall-clock for a full ~90-game week (spec §8b).
+estimate_week_cost() projects both for a given slate.
 
 /plays/stats row shape (CFBD `PlayStat`):
     gameId season week team conference opponent teamScore opponentScore
@@ -50,6 +52,69 @@ OFFENSIVE_TD_PLAY_TYPES = ("Rushing Touchdown", "Passing Touchdown")
 
 DEFAULT_CLASSIFICATION = "fbs"
 DEFAULT_SEASON_TYPE = "regular"
+
+# Measured per-call wall-clock (CFBD, 2025 wk3 live probe), padded a
+# little for slow weeks / cold connections. Used only by
+# estimate_week_cost() — a guard against silent regression as game/roster
+# counts grow, not a runtime dependency.
+_LAT = {
+    "games": 0.5,
+    "play_types": 0.3,
+    "plays_td": 0.6,
+    "roster": 3.5,       # ~15k rows; not precisely timed, deliberately high
+    "play_stats_call": 0.32,
+    "aggregation": 3.0,  # pandas over a full week's ~15k touch rows
+    "overhead": 2.0,     # flask, json, pool spin-up, forward POSTs
+}
+VERCEL_MAX_DURATION_S = 120  # keep in sync with cfb/vercel.json
+
+
+def estimate_week_cost(
+    completed_games_count: int,
+    *,
+    workers: int = 8,
+    roster_cached: bool = False,
+) -> dict:
+    """
+    Rough CFBD call-count and wall-clock estimate for one weekly run, so a
+    dry-run / test can flag when a full week is drifting toward the Vercel
+    timeout before it actually starts failing in production.
+
+    calls = /games + /plays/types + /plays?playType=TD (+ /roster unless
+    cached) + one /plays/stats per completed game.
+    wall  = the serial fixed calls + the parallelised /plays/stats
+    fan-out (ceil(games/workers) batches) + aggregation + overhead.
+    """
+    import math
+
+    fixed_calls = 3 + (0 if roster_cached else 1)
+    total_calls = fixed_calls + completed_games_count
+
+    w = max(1, workers)
+    batches = math.ceil(completed_games_count / w) if completed_games_count else 0
+    # 1.35x fudge: GIL + connection setup mean a batch of N doesn't run in
+    # exactly one call's time.
+    play_stats_wall = batches * _LAT["play_stats_call"] * 1.35
+
+    serial_fixed = _LAT["games"] + _LAT["play_types"] + _LAT["plays_td"] + (
+        0.0 if roster_cached else _LAT["roster"]
+    )
+    est_wall = round(serial_fixed + play_stats_wall + _LAT["aggregation"] + _LAT["overhead"], 1)
+
+    return {
+        "completed_games": completed_games_count,
+        "workers": w,
+        "roster_cached": roster_cached,
+        "estimated_cfbd_calls": total_calls,
+        "estimated_wall_clock_s": est_wall,
+        "vercel_max_duration_s": VERCEL_MAX_DURATION_S,
+        "fits_with_margin": est_wall < VERCEL_MAX_DURATION_S * 0.66,
+        # Parallelisation keeps wall-clock well under the timeout even for a
+        # huge slate, so the real ceiling is CFBD call volume: ~1 call per
+        # completed game. >150 in a single run is a bowl-week / bad-input
+        # signal worth a look (and a nudge toward the free-tier monthly cap).
+        "high_call_volume": total_calls > 150,
+    }
 
 
 def fetch_games(
@@ -101,37 +166,61 @@ def fetch_play_stats_for_game(game_id: int, *, season_type: str = DEFAULT_SEASON
     return rows
 
 
+# Concurrency for the per-game /plays/stats fan-out. ~90 games/week at
+# ~0.27s serial each is ~24s — the dominant cost of a full run. Each
+# requests.get() is independent (no shared Session), so a small thread
+# pool is safe; cfbd_get() already retries 429 with backoff if the burst
+# is too aggressive. 8 keeps a full week's fan-out to ~3-4s without
+# hammering the free tier.
+PLAY_STATS_MAX_WORKERS = 8
+
+
 def fetch_week_play_stats(
     completed: list[dict],
     *,
     season_type: str = DEFAULT_SEASON_TYPE,
+    max_workers: int = PLAY_STATS_MAX_WORKERS,
 ) -> tuple[list[dict], dict]:
     """
-    Concatenate per-game /plays/stats for every completed game. Returns
-    (all_rows, diagnostics). One game that 404s / errors is recorded in
-    diagnostics and skipped — it does not take down the rest of the week
-    (same per-item resilience the NFL pipeline's own loaders use).
+    Per-game /plays/stats for every completed game, fetched concurrently.
+    Returns (all_rows, diagnostics). One game that 404s / errors is
+    recorded in diagnostics and skipped — it does not take down the rest
+    of the week (same per-item resilience the NFL pipeline's loaders use).
+
+    Ordering of `all_rows` is not deterministic across runs (games land as
+    their fetches complete) — nothing downstream depends on it: both
+    aggregations group by keys, and the write routes upsert on a natural
+    key.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     all_rows: list[dict] = []
     per_game: list[dict] = []
     errors: list[dict] = []
 
-    for g in completed:
+    def _one(g: dict) -> tuple[int, list[dict] | None, str | None]:
         gid = int(g["id"])
         try:
-            rows = fetch_play_stats_for_game(gid, season_type=season_type)
+            return gid, fetch_play_stats_for_game(gid, season_type=season_type), None
         except Exception as e:  # noqa: BLE001 — deliberately broad, see docstring
-            errors.append({"game_id": gid, "error": f"{type(e).__name__}: {e}"})
-            continue
-        all_rows.extend(rows)
-        per_game.append({"game_id": gid, "rows": len(rows)})
+            return gid, None, f"{type(e).__name__}: {e}"
+
+    workers = max(1, min(max_workers, len(completed))) if completed else 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for gid, rows, err in pool.map(_one, completed):
+            if err is not None:
+                errors.append({"game_id": gid, "error": err})
+                continue
+            all_rows.extend(rows or [])
+            per_game.append({"game_id": gid, "rows": len(rows or [])})
 
     diagnostics = {
         "completed_games": len(completed),
         "games_fetched": len(per_game),
         "games_errored": errors,
         "play_stat_rows_total": len(all_rows),
-        "per_game_row_counts": per_game,
+        "workers": workers,
+        "per_game_row_counts": sorted(per_game, key=lambda x: x["game_id"]),
     }
     return all_rows, diagnostics
 
@@ -147,34 +236,19 @@ def fetch_play_types() -> list[dict]:
     return rows if isinstance(rows, list) else []
 
 
-def fetch_plays_for_team(
-    season: int,
-    week: int,
-    team: str,
-    *,
-    classification: str = DEFAULT_CLASSIFICATION,
-    season_type: str = DEFAULT_SEASON_TYPE,
-) -> list[dict]:
-    """
-    /plays for one (season, week) restricted to one team (either side of
-    the play) — ~140-180 rows, well under the 2,000-row cap. /plays has no
-    gameId filter and its `playType` filter wants an abbreviation this
-    package would have to guess, so per-team + in-memory filtering is the
-    robust path. Each `Play` row carries `id` (== /plays/stats `playId`),
-    `gameId`, `scoring` (bool), `playType`, `offense`, `defense`,
-    `yardsToGoal`, `playText`.
-    """
-    params = {"year": int(season), "week": int(week), "team": team, "seasonType": season_type}
-    if classification:
-        params["classification"] = classification
-    rows = cfbd_get("/plays", params)
-    return rows if isinstance(rows, list) else []
+# /plays' `playType` query param wants the CFBD *abbreviation*. Every
+# touchdown play type — Rushing, Passing, and all four return/recovery
+# types — shares the abbreviation "TD" (confirmed live via /plays/types).
+# So `playType=TD` returns EVERY touchdown play for the week in one call
+# (~450-600 rows for a full FBS week, ~0.25s), and the offensive subset
+# is filtered in memory. Verified equivalent to the old per-team pull:
+# identical td_play_ids set, identical /plays/stats intersection.
+TD_PLAYTYPE_ABBREVIATION = "TD"
 
 
 def fetch_scoring_td_play_ids(
     season: int,
     week: int,
-    teams: list[str],
     *,
     completed_game_ids: set[int] | None = None,
     classification: str = DEFAULT_CLASSIFICATION,
@@ -182,15 +256,14 @@ def fetch_scoring_td_play_ids(
 ) -> tuple[set[str], dict]:
     """
     The set of `playId`s that were OFFENSIVE touchdowns (playType in
-    OFFENSIVE_TD_PLAY_TYPES) for the given teams' games — the TD source
-    that replaces the almost-never-emitted `statType='Touchdown'` rows
-    (spec §8a). Pull /plays once per team, dedupe on play `id`, keep only
-    scoring plays whose playType is an offensive rushing/passing TD (the
-    return / recovery / block TD types are defensive or special teams and
-    are excluded — a touch must never inherit one).
+    OFFENSIVE_TD_PLAY_TYPES) for the week — the TD source that replaces
+    the almost-never-emitted `statType='Touchdown'` rows (spec §8a).
 
-    Restricted to `completed_game_ids` when given, so the set lines up
-    with the games the /plays/stats pull covers.
+    One `/plays?playType=TD` call for the whole week, deduped on play
+    `id`, filtered to offensive rushing/passing TDs (the return /
+    recovery / block TD types are defensive or special teams and are
+    excluded — a touch must never inherit one), and to
+    `completed_game_ids` so the set lines up with the /plays/stats pull.
 
     Returns (td_play_ids, diagnostics).
     """
@@ -205,48 +278,54 @@ def fetch_scoring_td_play_ids(
     except Exception as e:  # noqa: BLE001 — diagnostic only, never fatal
         all_td_types = [f"<play/types fetch failed: {type(e).__name__}: {e}>"]
 
+    params = {
+        "year": int(season), "week": int(week),
+        "playType": TD_PLAYTYPE_ABBREVIATION, "seasonType": season_type,
+    }
+    if classification:
+        params["classification"] = classification
+    # truncation_guard: a 2,000-row result would mean TD plays are being
+    # silently dropped — fail loud rather than under-count TDs.
+    rows = cfbd_get("/plays", params, truncation_guard=True)
+    rows = rows if isinstance(rows, list) else []
+
     seen_play_ids: set[str] = set()
     td_play_ids: set[str] = set()
     td_plays_detail: list[dict] = []
     play_type_counts: dict[str, int] = {}
-    teams_fetched = 0
-    plays_seen = 0
 
-    for team in sorted(set(teams)):
-        rows = fetch_plays_for_team(season, week, team, classification=classification, season_type=season_type)
-        teams_fetched += 1
-        for r in rows:
-            pid = r.get("id")
-            if pid is None:
-                continue
-            pid = str(pid)
-            if pid in seen_play_ids:
-                continue
-            seen_play_ids.add(pid)
-            plays_seen += 1
-            if r.get("scoring") is not True:
-                continue
-            pt = r.get("playType")
-            play_type_counts[pt] = play_type_counts.get(pt, 0) + 1
-            if pt not in OFFENSIVE_TD_PLAY_TYPES:
-                continue
-            if completed_game_ids is not None and r.get("gameId") not in completed_game_ids:
-                continue
-            td_play_ids.add(pid)
-            if len(td_plays_detail) < 50:
-                td_plays_detail.append(
-                    {
-                        "id": pid, "gameId": r.get("gameId"), "playType": pt,
-                        "yardsToGoal": r.get("yardsToGoal"), "offense": r.get("offense"),
-                        "playText": (r.get("playText") or "")[:120],
-                    }
-                )
+    for r in rows:
+        pid = r.get("id")
+        if pid is None:
+            continue
+        pid = str(pid)
+        if pid in seen_play_ids:
+            continue
+        seen_play_ids.add(pid)
+        if r.get("scoring") is not True:
+            continue
+        pt = r.get("playType")
+        play_type_counts[pt] = play_type_counts.get(pt, 0) + 1
+        if pt not in OFFENSIVE_TD_PLAY_TYPES:
+            continue
+        if completed_game_ids is not None and r.get("gameId") not in completed_game_ids:
+            continue
+        td_play_ids.add(pid)
+        if len(td_plays_detail) < 50:
+            td_plays_detail.append(
+                {
+                    "id": pid, "gameId": r.get("gameId"), "playType": pt,
+                    "yardsToGoal": r.get("yardsToGoal"), "offense": r.get("offense"),
+                    "playText": (r.get("playText") or "")[:120],
+                }
+            )
 
     diagnostics = {
         "offensive_td_play_types_used": list(OFFENSIVE_TD_PLAY_TYPES),
         "all_touchdown_play_types_available": all_td_types,
-        "teams_fetched": teams_fetched,
-        "distinct_plays_seen": plays_seen,
+        "plays_call": "/plays?playType=TD (1 call)",
+        "plays_rows_returned": len(rows),
+        "distinct_plays_seen": len(seen_play_ids),
         "scoring_play_type_counts": dict(sorted(play_type_counts.items(), key=lambda kv: -kv[1])),
         "td_play_ids": len(td_play_ids),
         "td_plays_detail": td_plays_detail,

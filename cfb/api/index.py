@@ -37,6 +37,7 @@ import hmac
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,6 +53,7 @@ from ids import CFBDError
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
 from plays_stats import (
     completed_games,
+    estimate_week_cost,
     fetch_games,
     fetch_scoring_td_play_ids,
     fetch_week_play_stats,
@@ -127,139 +129,6 @@ def _forward(rows, secret, url_env, default_url):
     return result
 
 
-def _debug_perf(season: int, week: int, season_type: str):
-    """
-    Temporary perf-investigation path (spec: performance task, Step 1).
-    Times each CFBD call type and probes /plays playType-abbreviation
-    candidates so we can size the real call budget before optimising.
-    """
-    import time as _t
-
-    from ids import CFBD_BASE, cfbd_get
-    from plays_stats import fetch_play_stats_for_game, fetch_play_types, fetch_plays_for_team
-
-    out: dict = {"season": season, "week": week}
-
-    t0 = _t.time()
-    games = fetch_games(season, week, season_type=season_type)
-    out["games_call_s"] = round(_t.time() - t0, 3)
-    completed = completed_games(games)
-    out["games_total"] = len(games)
-    out["games_completed"] = len(completed)
-
-    # /plays/types — full dump for the two offensive TD types
-    types = fetch_play_types()
-    td_types = [t for t in types if isinstance(t.get("text"), str) and "touchdown" in t["text"].lower()]
-    out["play_types_touchdown"] = [
-        {"id": t.get("id"), "text": t.get("text"), "abbreviation": t.get("abbreviation")}
-        for t in td_types
-    ]
-
-    # probe /plays?playType= with candidate identifiers for "Rushing Touchdown"
-    rush_td = next((t for t in td_types if t.get("text") == "Rushing Touchdown"), {})
-    candidates = []
-    for label, val in (
-        ("text", "Rushing Touchdown"),
-        ("abbreviation", rush_td.get("abbreviation")),
-        ("id", rush_td.get("id")),
-        ("text_no_space", "RushingTouchdown"),
-        ("lower_hyphen", "rushing-touchdown"),
-    ):
-        if val is None:
-            continue
-        try:
-            t1 = _t.time()
-            rows = cfbd_get("/plays", {"year": season, "week": week, "classification": "fbs",
-                                       "seasonType": season_type, "playType": val})
-            candidates.append({"as": label, "value": str(val), "rows": len(rows) if isinstance(rows, list) else -1,
-                               "call_s": round(_t.time() - t1, 3)})
-        except Exception as e:  # noqa: BLE001
-            candidates.append({"as": label, "value": str(val), "error": f"{type(e).__name__}: {e}"})
-    out["plays_playtype_probes"] = candidates
-
-    # time one unfiltered-ish /plays?team= call and one /plays/stats?gameId= call
-    if completed:
-        g = completed[0]
-        school = g.get("homeTeam")
-        t2 = _t.time()
-        pt_rows = fetch_plays_for_team(season, week, school, season_type=season_type)
-        out["plays_per_team_call_s"] = round(_t.time() - t2, 3)
-        out["plays_per_team_rows"] = len(pt_rows)
-
-        t3 = _t.time()
-        ps_rows = fetch_play_stats_for_game(int(g["id"]), season_type=season_type)
-        out["plays_stats_per_game_call_s"] = round(_t.time() - t3, 3)
-        out["plays_stats_per_game_rows"] = len(ps_rows)
-
-        # time 5 serial /plays/stats calls to get an average
-        n = min(5, len(completed))
-        t4 = _t.time()
-        for gg in completed[:n]:
-            fetch_play_stats_for_game(int(gg["id"]), season_type=season_type)
-        out["plays_stats_5_serial_s"] = round(_t.time() - t4, 3)
-        out["plays_stats_avg_call_s"] = round((_t.time() - t4) / n, 3)
-
-    # ---- VERIFICATION: does playType=TD carry the scoring-summary ids? ----
-    # Compare, for the completed games, the td_touch_play_ids that the
-    # per-team approach yields vs. what a single playType=TD call yields.
-    from plays_stats import OFFENSIVE_TD_PLAY_TYPES
-
-    completed_ids = {int(g["id"]) for g in completed if g.get("id") is not None}
-    completed_schools = sorted(
-        {g.get("homeTeam") for g in completed if g.get("homeTeam")}
-        | {g.get("awayTeam") for g in completed if g.get("awayTeam")}
-    )
-
-    # full /plays/stats playId set for the completed games
-    all_ps_ids: set[str] = set()
-    for g in completed:
-        for r in fetch_play_stats_for_game(int(g["id"]), season_type=season_type):
-            if r.get("playId") is not None:
-                all_ps_ids.add(str(r.get("playId")))
-
-    # A) per-team
-    per_team_td_ids: set[str] = set()
-    for s in completed_schools:
-        for p in fetch_plays_for_team(season, week, s, season_type=season_type):
-            if (p.get("scoring") is True and p.get("playType") in OFFENSIVE_TD_PLAY_TYPES
-                    and p.get("gameId") in completed_ids and p.get("id") is not None):
-                per_team_td_ids.add(str(p.get("id")))
-
-    # B) one playType=TD call
-    t5 = _t.time()
-    td_rows = cfbd_get("/plays", {"year": season, "week": week, "classification": "fbs",
-                                  "seasonType": season_type, "playType": "TD"})
-    playtype_call_s = round(_t.time() - t5, 3)
-    playtype_td_ids: set[str] = set()
-    playtype_pt_counts: dict = {}
-    for p in td_rows if isinstance(td_rows, list) else []:
-        pt = p.get("playType")
-        playtype_pt_counts[pt] = playtype_pt_counts.get(pt, 0) + 1
-        if (p.get("scoring") is True and pt in OFFENSIVE_TD_PLAY_TYPES
-                and p.get("gameId") in completed_ids and p.get("id") is not None):
-            playtype_td_ids.add(str(p.get("id")))
-
-    per_team_touch_ids = per_team_td_ids & all_ps_ids
-    playtype_touch_ids = playtype_td_ids & all_ps_ids
-
-    out["td_source_comparison"] = {
-        "playtype_TD_call_s": playtype_call_s,
-        "playtype_TD_total_rows": len(td_rows) if isinstance(td_rows, list) else -1,
-        "playtype_TD_playtype_counts": dict(sorted(playtype_pt_counts.items(), key=lambda kv: -kv[1])),
-        "per_team_raw_td_ids": len(per_team_td_ids),
-        "playtype_raw_td_ids": len(playtype_td_ids),
-        "per_team_td_ids_in_play_stats": len(per_team_touch_ids),
-        "playtype_td_ids_in_play_stats": len(playtype_touch_ids),
-        "identical_after_play_stats_intersection": sorted(per_team_touch_ids) == sorted(playtype_touch_ids),
-        "in_per_team_not_playtype": sorted(per_team_touch_ids - playtype_touch_ids)[:10],
-        "in_playtype_not_per_team": sorted(playtype_touch_ids - per_team_touch_ids)[:10],
-        "spot_check_401858201492_in_playtype_TD": "401858201492" in playtype_td_ids,
-        "spot_check_401858201492_in_play_stats": "401858201492" in all_ps_ids,
-    }
-
-    return jsonify(out), 200
-
-
 @app.route("/api/ingest-and-write-redzone", methods=["POST"])
 def ingest_and_write_redzone_endpoint():
     auth_error = check_pipeline_secret()
@@ -274,39 +143,53 @@ def ingest_and_write_redzone_endpoint():
         return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
     season_type = str(data.get("season_type") or "regular")
     preview_only = bool(data.get("preview_only"))
+    dry_run = bool(data.get("dry_run"))
 
     started = datetime.now(timezone.utc).isoformat()
-
-    if data.get("debug_perf"):
-        return _debug_perf(season, week, season_type)
+    clock = time.monotonic
+    timing: dict = {}
 
     try:
+        t = clock()
         games = fetch_games(season, week, season_type=season_type)
         completed = completed_games(games)
+        timing["games_s"] = round(clock() - t, 2)
+
+        if dry_run:
+            est = estimate_week_cost(len(completed))
+            return jsonify({
+                "status": "ok", "dry_run": True, "season": season, "week": week,
+                "games_total": len(games), "games_completed": len(completed),
+                "estimate": est, "games_call_s": timing["games_s"],
+            }), 200
+
+        t = clock()
         play_stats, fetch_diag = fetch_week_play_stats(completed, season_type=season_type)
+        timing["play_stats_s"] = round(clock() - t, 2)
 
         schools = sorted(
             {g.get("homeTeam") for g in games if g.get("homeTeam")}
             | {g.get("awayTeam") for g in games if g.get("awayTeam")}
         )
+        t = clock()
         raw_pos = raw_position_lookup(season, fallback_teams=schools)
+        timing["roster_s"] = round(clock() - t, 2)
 
         completed_ids = {int(g["id"]) for g in completed if g.get("id") is not None}
-        completed_schools = sorted(
-            {g.get("homeTeam") for g in completed if g.get("homeTeam")}
-            | {g.get("awayTeam") for g in completed if g.get("awayTeam")}
-        )
+        t = clock()
         td_play_ids, td_diag = fetch_scoring_td_play_ids(
-            season, week, completed_schools,
-            completed_game_ids=completed_ids, season_type=season_type,
+            season, week, completed_game_ids=completed_ids, season_type=season_type,
         )
+        timing["td_plays_s"] = round(clock() - t, 2)
 
+        t = clock()
         player_rows, player_diag = aggregate_redzone_game_cfb(
             play_stats, games, raw_pos, td_play_ids, season=season, week=week
         )
         defense_rows, defense_diag = aggregate_redzone_allowed_cfb(
             play_stats, games, raw_pos, td_play_ids, season=season, week=week
         )
+        timing["aggregation_s"] = round(clock() - t, 2)
     except CFBDError as e:
         print(f"[ingest-and-write-redzone] season={season} week={week} status=cfbd_error error={e!r}", flush=True)
         return jsonify({"status": "error", "stage": "cfbd", "season": season, "week": week, "error": str(e)}), 502
@@ -325,8 +208,13 @@ def ingest_and_write_redzone_endpoint():
         secret, secret_error = _resolve_secret()
         if secret_error:
             return secret_error
+        t = clock()
         forwards["player"] = _forward(player_rows, secret, PLAYER_WRITE_URL_ENV, DEFAULT_PLAYER_WRITE_URL)
         forwards["defense"] = _forward(defense_rows, secret, DEFENSE_WRITE_URL_ENV, DEFAULT_DEFENSE_WRITE_URL)
+        timing["forward_s"] = round(clock() - t, 2)
+
+    timing["total_s"] = round(sum(v for v in timing.values()), 2)
+    est = estimate_week_cost(len(completed), workers=fetch_diag.get("workers", 8))
 
     result = {
         "status": "ok",
@@ -338,6 +226,8 @@ def ingest_and_write_redzone_endpoint():
         "games_total": len(games),
         "games_completed": len(completed),
         "roster_positions_resolved": len(raw_pos),
+        "timing": timing,
+        "cost_estimate": est,
         "fetch": fetch_diag,
         "td_plays": td_diag,
         "player_rows": len(player_rows),
@@ -356,6 +246,7 @@ def ingest_and_write_redzone_endpoint():
         f"play_stat_rows={fetch_diag['play_stat_rows_total']} "
         f"player_rows={len(player_rows)} defense_rows={len(defense_rows)} "
         f"td_unmatched={player_diag.get('td_attribution', {}).get('unmatched')} "
+        f"timing={timing} "
         f"player_forward={p_fwd.get('success')}/{p_fwd.get('status_code')} "
         f"defense_forward={d_fwd.get('success')}/{d_fwd.get('status_code')} "
         f"player_forward_body={truncate_for_log(p_fwd.get('response_body'), 500)!r} "
@@ -376,12 +267,16 @@ def ingest_and_write_redzone_health_check():
             "status": "ok",
             "usage": (
                 "POST {\"season\": int, \"week\": int, \"season_type\": str "
-                "(optional, default \"regular\"), \"preview_only\": bool (optional)}. "
-                "Auth: X-Pipeline-Secret header. Pulls CFBD /games + per-game "
-                "/plays/stats, aggregates red-zone band touch/TD counts per player "
-                "(cfb_player_redzone_weekly) and per defense+position "
-                "(cfb_defense_redzone_allowed_weekly), and forwards each to its "
-                "Lovable write route in one HMAC-signed POST."
+                "(optional, default \"regular\"), \"preview_only\": bool (optional), "
+                "\"dry_run\": bool (optional — returns only the CFBD call-count / "
+                "wall-clock estimate for the week, no ingest)}. "
+                "Auth: X-Pipeline-Secret header. Pulls CFBD /games, one "
+                "/plays?playType=TD, one /roster, and /plays/stats per completed "
+                "game (fetched concurrently); aggregates red-zone band touch/TD "
+                "counts per player (cfb_player_redzone_weekly) and per "
+                "defense+position (cfb_defense_redzone_allowed_weekly), and "
+                "forwards each to its Lovable write route in one HMAC-signed POST. "
+                "The response carries `timing` and `cost_estimate` blocks."
             ),
             "scope": "TD Opportunity (§2) + Situation defensive-matchup (§3) raw weekly counts only. "
                      "No scoring, no rolling windows, no Environment/Role/Evidence/Market Value.",
