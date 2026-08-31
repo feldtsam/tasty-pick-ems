@@ -161,8 +161,8 @@ if __name__ == "__main__":
         PLAY_STATS, GAMES, RAW_POS, TD_PLAY_IDS | {"pGHOST"}, season=2025, week=3
     )
     td2 = pdiag2["td_attribution"]
-    results.append(check("a TD playId not in play_stats -> dropped as a pbp duplicate, not counted as unmatched",
-                         td2["pbp_duplicates_dropped"] == 1 and td2["unmatched"] == 0 and td2["credited"] == 4))
+    results.append(check("a TD playId absent from play_stats -> td_plays_not_in_play_stats, not unmatched",
+                         td2["td_plays_not_in_play_stats"] == 1 and td2["unmatched"] == 0 and td2["credited"] == 4))
 
     # ---- a TD id present in play_stats but with only a Target scores 0 --
     only_target_td = [

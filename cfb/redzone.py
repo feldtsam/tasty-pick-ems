@@ -196,19 +196,20 @@ def _td_attribution_diagnostics(
     td_play_ids_raw: set[str], td_touch_play_ids: set[str], touches: pd.DataFrame
 ) -> dict:
     """
-    td_play_ids_raw     — every playId /plays tagged as a rushing/passing
-                           TD (includes the play-by-play duplicates).
+    td_play_ids_raw     — every playId /plays tagged as an offensive TD.
     td_touch_play_ids   — the subset present in /plays/stats (see
                            _td_touch_play_ids) — what `_touches` actually
                            scores against.
 
-    `credited` should equal `td_touch_play_ids` almost exactly.
-    `in_play_stats_but_no_touch` is the number to watch — a TD play that
-    has a /plays/stats row but no rush/reception on it (data gap, or a
-    return TD that slipped through the offensive-playType filter). ~0
-    expected; a persistent non-zero needs a look.
-    `pbp_duplicates_dropped` is expected and benign — roughly half of
-    td_play_ids_raw.
+    `credited` should equal `td_touch_play_ids` almost exactly. On fully
+    settled data (the production case) ~all raw ids are in /plays/stats
+    (2025 wk3: 475 raw -> 474). `td_plays_not_in_play_stats` is larger
+    only when either (a) CFBD emitted a separate play-by-play row for the
+    TD whose id differs from the scoring-summary one, or (b) /plays/stats
+    hasn't settled for that game yet — both benign, the summary id still
+    carries the touch. `in_play_stats_but_no_touch` (== `unmatched`) is
+    the number to watch: a TD play with a /plays/stats row but no
+    rush/reception on it. ~0 expected; a persistent non-zero needs a look.
     """
     if touches.empty:
         scoreable_play_ids: set[str] = set()
@@ -223,11 +224,11 @@ def _td_attribution_diagnostics(
     return {
         "td_plays_from_plays_raw": len(td_play_ids_raw),
         "td_plays_in_play_stats": len(td_touch_play_ids),
-        "pbp_duplicates_dropped": len(td_play_ids_raw) - len(td_touch_play_ids),
+        "td_plays_not_in_play_stats": len(td_play_ids_raw) - len(td_touch_play_ids),
         "credited": len(credited),
         "in_play_stats_but_no_touch": len(in_stats_no_touch),
         "in_play_stats_but_no_touch_sample": in_stats_no_touch[:10],
-        "unmatched": len(in_stats_no_touch),  # kept: the number that matters, post-dedup
+        "unmatched": len(in_stats_no_touch),  # the number that matters
         "total_td_touch_rows_flagged": tds_credited,
     }
 
