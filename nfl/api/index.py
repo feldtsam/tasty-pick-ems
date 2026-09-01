@@ -98,7 +98,9 @@ from market_value import (
     parse_attd_event,
     snapshot_scoring_inputs,
 )
+from build_stub_week import build_stub_week
 from reconcile_week import reconcile_week, week_is_complete
+from stub_store import shape_stub_rows, stub_week_snapshot, write_stub_rows
 
 app = Flask(__name__)
 
@@ -456,9 +458,10 @@ def reconcile_week_endpoint():
     already use elsewhere in this file. A failed persistence write
     raises inside reconcile_week() and is caught by the existing
     except block below as a real status="error" response — no new
-    error-handling needed here for that case. archive_stub's own
-    behavior (moving the played stub file, unrelated to this table)
-    is unchanged.
+    error-handling needed here for that case. reconcile_week() also
+    flags this week's nfl_stub_weeks rows `reconciled = true` (Phase A
+    of the weekly-automation plan — replaced the old stub-file archive
+    move); a failure there is logged, not fatal.
 
     SCOPED TO THE TARGET SEASON ONLY (historical_seasons=[season]), not
     reconcile_week()'s own default (backfill_redzone.SEASONS — ALL of
@@ -542,13 +545,153 @@ def reconcile_week_health_check():
         "usage": "POST {\"season\": int, \"week\": int}. Checks week_is_complete() first — if any "
                  "of that week's real games aren't final yet, returns status=\"not_ready\" and never "
                  "runs reconciliation. Only calls reconcile_week() (destructive: upserts this week's "
-                 "rows into nfl_player_redzone_weekly and archives the stub file) once every game is "
-                 "confirmed final.",
+                 "rows into nfl_player_redzone_weekly and flags nfl_stub_weeks.reconciled) once every "
+                 "game is confirmed final.",
         "deployed_via": "github-auto-deploy",
     })
 
 
 STUB_WEEKS_DIR = Path(__file__).resolve().parent.parent / "data" / "stub_weeks"
+
+
+def _load_stub_csv(stub_csv: str) -> pd.DataFrame:
+    """
+    The `--from-csv` escape hatch shared by /api/build-stub-week and
+    /api/curate-and-write-drafts: read a stub week from a CSV instead of
+    the nfl_stub_weeks table, so the committed data/stub_weeks/*.csv
+    fixtures (and any local CSV) stay usable for a real end-to-end test
+    without seeding the table first.
+
+    An http(s) value is read directly; anything else is treated as a
+    filename under data/stub_weeks/ in the deployed bundle (so a caller
+    can pass just "2026_wk1.csv"). Only reachable behind
+    check_pipeline_secret() — a Make.com-only trigger, not a public
+    surface.
+    """
+    if str(stub_csv).startswith(("http://", "https://")):
+        return pd.read_csv(stub_csv)
+    return pd.read_csv(STUB_WEEKS_DIR / Path(str(stub_csv)).name)
+
+
+@app.route("/api/build-stub-week", methods=["POST"])
+def build_stub_week_endpoint():
+    """
+    POST body: {"season": int, "week": int, "preview_only": bool
+    (optional), "stub_csv": str (optional escape hatch)}.
+
+    Builds one upcoming week's pre-game stub rows (build_stub_week ->
+    run_pipeline against real trailing play-by-play, with skeleton rows
+    injected for the not-yet-played week) and upserts them into the
+    nfl_stub_weeks table via stub_store.write_stub_rows(). Phase A of the
+    NFL weekly-automation plan: this replaces the local
+    `python scripts/build_stub_week.py SEASON WEEK` + git commit + Vercel
+    redeploy that a stub refresh used to require.
+
+    AUTH: check_pipeline_secret() — same small-fixed-Make.com-trigger
+    reasoning as /api/reconcile-week and /api/curate-and-write-drafts.
+
+    SINGLE-SEASON SCOPED (historical_seasons=[season]) — identical
+    reasoning to /api/reconcile-week's own scoping: add_rolling_windows
+    groups by (player_id, season) / (defteam, position_group, season),
+    so trailing windows already reset at the season boundary and a
+    stub week never needs another season's play-by-play. Keeps the
+    run_pipeline load to one season (~16-20s measured locally, well
+    inside the function's maxDuration) instead of the 4-season default
+    the CLI still uses.
+
+    preview_only: build + shape the rows and report a small sample, but
+    write nothing to the table.
+
+    stub_csv: skip the build entirely and load the week from a CSV
+    (a URL, or a filename under data/stub_weeks/ in the bundle) — used
+    to seed / re-seed the table from a committed fixture without
+    re-running the pipeline. Ignored fields: still upserts under the
+    (season, week) from the body, not whatever the CSV's own rows say.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        season = int(data.get("season"))
+        week = int(data.get("week"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
+
+    preview_only = bool(data.get("preview_only"))
+    stub_csv = data.get("stub_csv")
+
+    print(f"[build-stub-week] season={season} week={week} preview_only={preview_only} "
+          f"stub_csv={stub_csv!r} status=building", flush=True)
+    try:
+        if stub_csv:
+            stub_week = _load_stub_csv(stub_csv)
+        else:
+            stub_week = build_stub_week(season, week, historical_seasons=[season])
+    except Exception as e:
+        print(f"[build-stub-week] season={season} week={week} status=error error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
+
+    rows = _json_safe(shape_stub_rows(stub_week))
+    row_count = len(rows)
+
+    if preview_only:
+        print(f"[build-stub-week] season={season} week={week} status=preview rows={row_count}", flush=True)
+        return jsonify({
+            "status": "preview",
+            "season": season,
+            "week": week,
+            "preview_only": True,
+            "row_count": row_count,
+            "sample_rows": rows[:3],
+        }), 200
+
+    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+
+    write_result = write_stub_rows(rows, secret)
+    print(
+        f"[build-stub-week] season={season} week={week} rows={row_count} "
+        f"forward_success={write_result['success']} forward_status={write_result['status_code']} "
+        f"forward_error={truncate_for_log(write_result['error'], 500)!r} "
+        f"forward_response_body={truncate_for_log(write_result.get('response_body'))!r}",
+        flush=True,
+    )
+    if write_result["success"] is False:
+        return jsonify({
+            "status": "error",
+            "season": season,
+            "week": week,
+            "row_count": row_count,
+            "forwarded": False,
+            "lovable_status_code": write_result["status_code"],
+            "forward_error": write_result["error"],
+        }), 502
+
+    return jsonify({
+        "status": "success",
+        "season": season,
+        "week": week,
+        "row_count": row_count,
+        "forwarded": True,
+        "lovable_status_code": write_result["status_code"],
+        "forward_response_body": write_result.get("response_body"),
+    }), 200
+
+
+@app.route("/api/build-stub-week", methods=["GET"])
+def build_stub_week_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"season\": int, \"week\": int, \"preview_only\": bool (optional), "
+                 "\"stub_csv\": str (optional)}. Builds the given upcoming week's pre-game stub "
+                 "rows (single-season run_pipeline with skeleton rows for the unplayed week) and "
+                 "upserts them into nfl_stub_weeks. Replaces the old local build_stub_week.py + "
+                 "git commit + redeploy.",
+        "deployed_via": "github-auto-deploy",
+    })
 
 
 def _json_safe(obj):
@@ -590,14 +733,21 @@ def curate_and_write_drafts_endpoint():
     fixed, Make.com-only trigger with no attacker-shaped body worth
     HMAC-signing — see check_pipeline_secret's own docstring).
 
-    DATA SOURCE: nfl/data/stub_weeks/{season}_wk{week}.csv — the real,
-    live, pre-game scored data Phase 1 (build_stub_week.py) and Phase 2
-    (poll_market_value_for_stub.py, the live odds poller) already
-    produce for the CURRENT upcoming week. This is deliberately NOT
-    player_redzone_weekly.csv (the historical, already-reconciled
-    table) — curation is a pre-game, upcoming-picks feature; the stub
-    file is the only real source with live ATTD odds on it at all
-    before a week goes final and gets reconciled away.
+    DATA SOURCE: the nfl_stub_weeks table (Phase A of the NFL weekly-
+    automation plan) via stub_store.stub_week_snapshot() — the real,
+    live, pre-game scored data build_stub_week() produces for the CURRENT
+    upcoming week (and Phase 2's odds poller updates). Replaces the old
+    read of the committed nfl/data/stub_weeks/{season}_wk{week}.csv,
+    which could only be refreshed by a git commit + Vercel redeploy. This
+    is deliberately NOT nfl_player_redzone_weekly (the historical,
+    already-reconciled table) — curation is a pre-game, upcoming-picks
+    feature; the stub week is the only real source with live ATTD odds on
+    it at all before a week goes final and gets reconciled away.
+
+    stub_csv (optional): read the week from a CSV instead of the table
+    (a URL, or a filename under data/stub_weeks/ in the bundle) — keeps
+    the committed fixtures usable for a real preview_only test without
+    seeding the table first.
 
     ALSO fetches nfl_data_py.import_pbp_data([season]) — a NEW load
     this endpoint didn't do before (confirmed directly: not reused from
@@ -662,14 +812,42 @@ def curate_and_write_drafts_endpoint():
         return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
     max_rows_to_write = data.get("max_rows_to_write")
     player_ids_to_write = data.get("player_ids_to_write")
+    stub_csv = data.get("stub_csv")
 
-    stub_path = STUB_WEEKS_DIR / f"{season}_wk{week}.csv"
-    if not stub_path.exists():
+    # DATA SOURCE: the nfl_stub_weeks table (Phase A of the NFL weekly-
+    # automation plan) — stub_week_snapshot() reads one week's rows back
+    # and reconstitutes build_stub_week()'s original frame (typed columns
+    # + `extra` unpacked, reconciled rows dropped). Replaces the old
+    # pd.read_csv() of the committed data/stub_weeks/{season}_wk{week}.csv,
+    # which could only be refreshed by a git commit + redeploy.
+    #
+    # stub_csv (optional): read the week from a CSV instead — a URL, or a
+    # filename under data/stub_weeks/ in the bundle. Keeps the committed
+    # fixtures (2026_wk1.csv, …) usable for a real end-to-end preview_only
+    # test without seeding the table first.
+    #
+    # A read transport failure raises inside stub_week_snapshot and is
+    # caught by the outer curate try/except as a 500; an empty frame
+    # (build_stub_week hasn't run for this week, or every row was
+    # reconciled) is the 404 below — same split the old `.exists()` +
+    # read gave, just sourced from the table.
+    try:
+        if stub_csv:
+            weekly = _load_stub_csv(stub_csv)
+        else:
+            secret_for_read = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+            if not secret_for_read:
+                return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+            weekly = stub_week_snapshot(season, week, secret_for_read)
+    except Exception as e:
+        print(f"[curate-and-write-drafts] season={season} week={week} stub_read_failed error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
+
+    if len(weekly) == 0:
         return jsonify({
-            "error": f"No stub file for season={season} week={week} at {stub_path} — "
-                     f"build_stub_week.py hasn't run for this week yet.",
+            "error": f"No stub rows for season={season} week={week} in nfl_stub_weeks — "
+                     f"/api/build-stub-week hasn't run for this week yet.",
         }), 404
-    weekly = pd.read_csv(stub_path)
 
     try:
         schedules = nfl.import_schedules([season])

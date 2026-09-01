@@ -30,34 +30,28 @@ already NaN-fills gracefully for anything not found (a stub row's
 game_id has no snap_counts entry yet — offense_snaps/snap_share for
 THIS week correctly stay NaN, not fabricated as 0).
 
-STORAGE DECISION: flat file (nfl/data/stub_weeks/{season}_wk{week}.csv),
-following nfl/'s existing flat-file convention (backfill_redzone.py's
-own CSV, and market_value.py's documented-but-not-yet-built snapshot
-design) rather than standing up a real database — this project has no
-database anywhere (checked when market_value.py's storage design was
-written: no connection strings, no schema.sql, no ORM). A stub file is
-small (one week's RB/WR/TE pool, ~150-250 rows) and gets REGENERATED
-wholesale on every run of this script (there's no reason to patch it
-in place for Phase 1 — depth-chart/injury snapshots themselves are
-already "latest wins" semantics upstream, see redzone._new_schema_
-depth_chart, so re-deriving the whole stub fresh each time is both
-simpler and more correct than trying to patch individual fields).
+STORAGE: the nfl_stub_weeks Supabase table (Phase A of the NFL weekly-
+automation plan), written via scripts/stub_store.write_stub_rows(). This
+replaced the original committed flat file
+(nfl/data/stub_weeks/{season}_wk{week}.csv), which could only be
+refreshed by a git commit + Vercel redeploy — Vercel's FS is read-only,
+so nothing deployed could ever write it, and /api/build-stub-week (the
+scheduled path) needs a real sink. A `--csv PATH` flag still dumps the
+same frame locally for inspection; the table write is the default.
 
-TRADE-OFF, flagged rather than silently resolved: Phase 2 (the live
-odds poller) WILL need to update market_value_score on an EXISTING stub
-row repeatedly over the days leading up to kickoff, without touching
-the td_opportunity/role_momentum/situation columns already computed
-here. A full-file rewrite still works for that (this table is small and
-single-process — nothing here needs concurrent-writer safety), but if
-Phase 2 ever needs true partial-field atomic updates from multiple
-concurrent pollers, that's the point to introduce SQLite (still zero
-new ops burden, unlike Postgres/Supabase) — not decided now, since nothing
-in Phase 1's scope requires it and building for a hypothetical
-concurrency need this project doesn't have yet would be pure overhead.
+A stub week is still REGENERATED wholesale on every run — the table
+write is a full-batch upsert on (player_id, season, week), same
+"latest wins" semantics the CSV's full-file rewrite had (depth-chart/
+injury snapshots are already latest-wins upstream, see redzone._new_
+schema_depth_chart), so re-deriving the whole stub fresh each time is
+both simpler and more correct than patching individual fields. Phase 2
+(the live odds poller) updates market_value_score on existing rows;
+that's a separate task and out of scope here.
 
 Usage:
-    python scripts/build_stub_week.py SEASON WEEK
+    python scripts/build_stub_week.py SEASON WEEK [--csv PATH] [--no-write]
 """
+import os
 import sys
 from pathlib import Path
 
@@ -166,16 +160,31 @@ def build_stub_week(
     injuries: pd.DataFrame = None,
     seasonal_rosters: pd.DataFrame = None,
     schedules: pd.DataFrame = None,
-    output_dir: Path = None,
+    to_csv_path: Path = None,
+    write_to_table: bool = False,
+    secret: str = None,
 ) -> pd.DataFrame:
     """
-    Build and write the stub week's rows. Loads fresh nfl_data_py data
-    for whichever of historical_seasons (default: backfill_redzone.
-    SEASONS) plus `season` aren't already passed in — passing the raw
-    tables in directly (all seven, or none) lets a caller reuse data
-    already loaded elsewhere (e.g. this module's own validation script,
-    which needs to build two different pbp/snap_counts variants from
-    the same base pull) without a second live nfl_data_py fetch.
+    Build the stub week's rows and return them as a DataFrame. Loads
+    fresh nfl_data_py data for whichever of historical_seasons (default:
+    backfill_redzone.SEASONS) plus `season` aren't already passed in —
+    passing the raw tables in directly (all seven, or none) lets a
+    caller reuse data already loaded elsewhere without a second live
+    nfl_data_py fetch.
+
+    OUTPUT (both optional, neither on by default — the caller decides):
+      - write_to_table=True: upsert the week into nfl_stub_weeks via
+        stub_store.write_stub_rows(). `secret` falls back to
+        NFL_PIPELINE_WEBHOOK_SECRET; a missing secret or a failed write
+        raises (this is the real persistence path — a silent skip would
+        be worse than a crash). This is what `__main__` does by default.
+      - to_csv_path: also dump the same frame to that CSV path, for
+        local inspection / keeping data/stub_weeks/{season}_wk{week}.csv
+        usable as a test fixture. Not a production data path.
+
+    /api/build-stub-week calls this with neither flag — it owns the
+    shape + write itself so it can support preview_only and structured
+    reporting.
     """
     load_seasons = sorted(set(historical_seasons or SEASONS) | {season})
 
@@ -206,18 +215,50 @@ def build_stub_week(
     stub_week["market_value_score"] = np.nan
     stub_week["market_value_completeness"] = np.nan
 
-    out_dir = output_dir or (Path(__file__).resolve().parent.parent / "data" / "stub_weeks")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{season}_wk{week}.csv"
-    stub_week.to_csv(out_path, index=False)
-    print(f"Wrote {len(stub_week)} stub rows to {out_path}")
+    if to_csv_path is not None:
+        to_csv_path = Path(to_csv_path)
+        to_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        stub_week.to_csv(to_csv_path, index=False)
+        print(f"Wrote {len(stub_week)} stub rows to {to_csv_path}")
+
+    if write_to_table:
+        from stub_store import shape_stub_rows, write_stub_rows
+
+        resolved_secret = secret or os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+        if not resolved_secret:
+            raise RuntimeError(
+                "build_stub_week(write_to_table=True) needs a secret — pass secret= or "
+                "set NFL_PIPELINE_WEBHOOK_SECRET."
+            )
+        result = write_stub_rows(shape_stub_rows(stub_week), resolved_secret)
+        if not result["success"]:
+            raise RuntimeError(
+                f"Persisting {len(stub_week)} stub rows for {season} Week {week} to "
+                f"nfl_stub_weeks failed: status={result['status_code']} error={result['error']!r}"
+            )
+        print(f"Persisted {len(stub_week)} stub rows for {season} Week {week} to nfl_stub_weeks")
 
     return stub_week
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python scripts/build_stub_week.py SEASON WEEK", file=sys.stderr)
-        raise SystemExit(1)
-    season_arg, week_arg = int(sys.argv[1]), int(sys.argv[2])
-    build_stub_week(season_arg, week_arg)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build one (season, week)'s pre-game stub rows.")
+    parser.add_argument("season", type=int)
+    parser.add_argument("week", type=int)
+    parser.add_argument(
+        "--csv", metavar="PATH", default=None,
+        help="also write the stub week to this CSV path (local inspection / test fixture)",
+    )
+    parser.add_argument(
+        "--no-write", action="store_true",
+        help="skip the nfl_stub_weeks table write (pair with --csv for a pure offline run)",
+    )
+    args = parser.parse_args()
+    build_stub_week(
+        args.season,
+        args.week,
+        to_csv_path=Path(args.csv) if args.csv else None,
+        write_to_table=not args.no_write,
+    )

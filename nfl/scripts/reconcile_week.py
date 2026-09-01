@@ -40,17 +40,17 @@ special handling: `reconciled` below comes from run_pipeline's real
 play-by-play aggregation, exactly like every other historical week, so
 a non-touching player is simply absent from it, same as today.
 
-STUB CLEANUP: on successful reconciliation, the week's stub file is
-MOVED (not deleted) to nfl/data/stub_weeks/reconciled/ — see
-reconcile_week's docstring below for the concrete reasoning (a real
-data-loss risk this avoids, not just tidiness).
+STUB CLEANUP: on successful reconciliation, this week's nfl_stub_weeks
+rows are flagged `reconciled = true` (not deleted) via stub_store.mark_
+stub_week_reconciled() — the Phase A replacement for the old
+data/stub_weeks/reconciled/ file-move. stub_week_snapshot() filters
+reconciled rows out of curation; the rows themselves stay for audit.
 
 Usage:
     python scripts/reconcile_week.py SEASON WEEK
 """
 import json
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -71,9 +71,9 @@ from backfill_redzone import (
     load_snap_counts,
     run_pipeline,
 )
-from poll_market_value_for_stub import STUB_DIR
 from market_value import market_value_snapshot_for_reconciliation
 from scoring import CONFIG, score_evidence_quality, score_universal_tpe
+from stub_store import mark_stub_week_reconciled
 
 # player_redzone_weekly.csv itself is NOT touched by this module anymore
 # (see reconcile_week()'s own docstring) — this constant is intentionally
@@ -310,8 +310,7 @@ def reconcile_week(
     season: int,
     week: int,
     historical_seasons: list[int] = None,
-    stub_dir: Path = None,
-    archive_stub: bool = True,
+    mark_reconciled: bool = True,
     pbp: pd.DataFrame = None,
     snap_counts: pd.DataFrame = None,
     id_crosswalk: pd.DataFrame = None,
@@ -386,29 +385,19 @@ def reconcile_week(
     red-zone touch (both real reasons not to reconcile, not something
     to silently paper over).
 
-    STUB CLEANUP REASONING (archive_stub=True by default): the archived
-    copy is moved out of stub_dir, not deleted, and not left in place.
-    Concretely, leaving it in place is a real data-loss risk, not just
-    untidiness: poll_market_value_for_stub.py always does a full drop-
-    then-remerge of MARKET_VALUE_COLUMNS on every call. If someone (or
-    an eventual scheduled job) re-polls an already-played week, The
-    Odds API's /events endpoint won't return a closed game, so the
-    poller would harmlessly fetch zero events — but its own merge logic
-    would still DROP the stub's already-captured real market_value_
-    score first, then re-merge against that empty fetch, silently
-    wiping the exact final-snapshot data this function needs. Moving
-    the file out of stub_dir turns that into a loud, immediate
-    FileNotFoundError for anyone who tries to poll a reconciled week,
-    instead of a silent data loss discovered only later at
-    reconciliation time. Archived rather than deleted so the raw
-    snapshot stays available for later inspection/audit (e.g. "what did
-    the market actually look like before this game") — cheap to keep,
-    consistent with this project's flat-file, no-database convention
-    (a moved file, not a new mechanism).
+    STUB CLEANUP (mark_reconciled=True by default): flips
+    nfl_stub_weeks.reconciled = true for this (season, week) via
+    stub_store.mark_stub_week_reconciled() — the Phase A replacement for
+    the old archive_stub file-move. The stub rows are kept, not deleted:
+    the raw pre-game snapshot stays available for audit ("what did the
+    market look like before this game"), and stub_week_snapshot()
+    filters `reconciled` rows out so a stray re-curate of an
+    already-played week can't pull dead data. A missing secret or a
+    failed flag update is logged loudly but does NOT fail
+    reconciliation — the real work (compute + persist the reconciled
+    historical rows) is already done by this point, same
+    honest-degradation posture as the persistence-write step above.
     """
-    stub_dir = stub_dir or STUB_DIR
-    stub_path = stub_dir / f"{season}_wk{week}.csv"
-
     load_seasons = sorted(set(historical_seasons or SEASONS) | {season})
     if pbp is None:
         pbp = load_pbp(load_seasons)
@@ -509,29 +498,30 @@ def reconcile_week(
         print(f"Persisted {len(rows)} rows for {season} Week {week} to nfl_player_redzone_weekly "
               f"({reconciled['market_value_score'].notna().sum()} with a real final Market Value snapshot)")
 
-    if archive_stub and stub_path.exists():
-        # stub_path may genuinely not exist -- the SEPARATE, still-open
-        # stub_weeks blocker this fix does not address (nothing live
-        # ever creates data/stub_weeks/{season}_wk{week}.csv on Vercel;
-        # see this project's own investigation notes). Archiving is a
-        # local-dev nicety for the Phase 1/2 stub-file workflow, not a
-        # precondition for THIS function's own real job (compute +
-        # persist real reconciled data) -- skipped gracefully, not a
-        # crash, when there's genuinely nothing to archive.
-        #
-        # Relative to the ACTUAL stub_dir this call used, not a fixed
-        # module-level path -- caught directly in testing: an earlier
-        # version hardcoded this against poll_market_value_for_stub's
-        # own STUB_DIR, so a test call with an overridden stub_dir still
-        # silently archived into the real production directory instead
-        # of the test one.
-        reconciled_dir = stub_dir / "reconciled"
-        reconciled_dir.mkdir(parents=True, exist_ok=True)
-        archived_path = reconciled_dir / stub_path.name
-        shutil.move(str(stub_path), str(archived_path))
-        print(f"Archived stub file to {archived_path}")
-    elif archive_stub:
-        print(f"[reconcile_week] No stub file at {stub_path} to archive -- skipping (not an error).")
+    if mark_reconciled:
+        if not resolved_secret:
+            print(
+                f"[reconcile_week] WARNING: no secret available -- skipping the "
+                f"nfl_stub_weeks.reconciled flag update for {season} Week {week}. The real "
+                f"reconciled rows are already persisted; only the stub tombstone was skipped.",
+                flush=True,
+            )
+        else:
+            flag_result = mark_stub_week_reconciled(season, week, resolved_secret)
+            if flag_result["success"]:
+                print(f"[reconcile_week] Marked nfl_stub_weeks rows reconciled for {season} Week {week} "
+                      f"({flag_result.get('response_body')!r})")
+            else:
+                # Not fatal -- the stub rows are just a stale pre-game
+                # placeholder at this point, and stub_week_snapshot()
+                # would still serve them until the next build_stub_week()
+                # run overwrites them. Logged loudly so it's visible.
+                print(
+                    f"[reconcile_week] WARNING: failed to mark nfl_stub_weeks reconciled for "
+                    f"{season} Week {week}: status={flag_result['status_code']} "
+                    f"error={flag_result['error']!r}",
+                    flush=True,
+                )
 
     return reconciled
 
