@@ -1170,6 +1170,7 @@ def curate_nfl_shelves(
 # — cosmetic only, since resolve_url_env's real env-var value already
 # overrides this in practice.
 DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL = "https://tastypickems.com/api/public/nfl-content-drafts-write"
+DEFAULT_NFL_CONTENT_DRAFTS_READ_URL = "https://tastypickems.com/api/public/nfl-content-drafts-read"
 
 
 def write_content_draft_rows(rows: list, secret: str, write_url: str = None):
@@ -1188,6 +1189,51 @@ def write_content_draft_rows(rows: list, secret: str, write_url: str = None):
 
     url = write_url or resolve_url_env("LOVABLE_NFL_CONTENT_DRAFTS_WRITE_URL", DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL)
     return forward_to_lovable(rows, secret, url)
+
+
+def read_content_draft_review_states(season: int, week: int, secret: str, read_url: str = None) -> dict:
+    """
+    Phase C re-run guard pre-flight. One signed POST (body {"season",
+    "week"}) to nfl-content-drafts-read, returns
+    {"ok": bool, "error": str|None, "status_code": int|None,
+     "reviewed_count": int, "rows": [ {player_id, event_id, shelf,
+     writer_type, review_status, reviewed_at}, ... ]}.
+
+    `reviewed_count` is the number of nfl_content_drafts rows for the
+    week whose review_status is NOT 'pending_review' — i.e. rows a human
+    has already approved / rejected / flagged. The curate endpoint
+    refuses to re-run (409) when that is > 0, unless force=True.
+
+    Same forward_to_lovable sign+POST+capture reuse as read_shelf_signal_
+    history (see its docstring) — a read call over the identical
+    HMAC-signed-raw-body mechanic, not a misuse of the "forward rows"
+    naming. A real "no rows for this week yet" response is a valid
+    outcome (reviewed_count=0, rows=[]), not an error.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = read_url or resolve_url_env("LOVABLE_NFL_CONTENT_DRAFTS_READ_URL", DEFAULT_NFL_CONTENT_DRAFTS_READ_URL)
+    result = forward_to_lovable({"season": season, "week": week}, secret, url)
+    if not result["success"]:
+        return {"ok": False, "error": result["error"], "status_code": result["status_code"],
+                "reviewed_count": 0, "rows": []}
+    try:
+        body = json.loads(result["response_body"])
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": False, "error": f"non-JSON response body: {result['response_body']!r}",
+                "status_code": result["status_code"], "reviewed_count": 0, "rows": []}
+    if not body.get("ok"):
+        return {"ok": False, "error": body.get("error", "unknown error"),
+                "status_code": result["status_code"], "reviewed_count": 0, "rows": []}
+    rows = body.get("content_drafts", [])
+    reviewed_count = body.get("reviewed_count")
+    if reviewed_count is None:  # defensive: compute locally if the route didn't
+        reviewed_count = sum(1 for r in rows if r.get("review_status") != "pending_review")
+    return {"ok": True, "error": None, "status_code": result["status_code"],
+            "reviewed_count": reviewed_count, "rows": rows}
 
 
 # ---------------------------------------------------------------------------

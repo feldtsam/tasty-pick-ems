@@ -133,7 +133,12 @@ if __name__ == "__main__":
 
     orig_curate = idx.curate_nfl_shelves
     orig_snap = idx.stub_week_snapshot
+    orig_preflight = idx.read_content_draft_review_states
     idx.curate_nfl_shelves = fake_curate
+    # Phase C re-run guard pre-flight: stub out to "nothing reviewed" so
+    # these Phase A stub-read tests exercise the path they mean to.
+    idx.read_content_draft_review_states = lambda s, w, secret: {
+        "ok": True, "reviewed_count": 0, "rows": [], "error": None, "status_code": 200}
     try:
         # table path
         idx.stub_week_snapshot = lambda s, w, secret: _toy_stub_frame()
@@ -173,6 +178,7 @@ if __name__ == "__main__":
     finally:
         idx.curate_nfl_shelves = orig_curate
         idx.stub_week_snapshot = orig_snap
+        idx.read_content_draft_review_states = orig_preflight
 
     print()
     if all(results):

@@ -87,7 +87,11 @@ import nfl_data_py as nfl
 import numpy as np
 import pandas as pd
 
-from curate_home_shelves import curate_nfl_shelves, write_content_draft_rows
+from curate_home_shelves import (
+    curate_nfl_shelves,
+    read_content_draft_review_states,
+    write_content_draft_rows,
+)
 from intelligence_generate import FAMILIES, generate_and_write_intelligence
 from intelligence_write import process_family, write_intelligence_rows
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
@@ -726,7 +730,20 @@ def _json_safe(obj):
 def curate_and_write_drafts_endpoint():
     """
     POST body: {"season": int, "week": int, "max_rows_to_write": int
-    (optional), "player_ids_to_write": [str, ...] (optional)}.
+    (optional), "player_ids_to_write": [str, ...] (optional),
+    "force": bool (optional)}.
+
+    RE-RUN GUARD (Phase C): before running any curation, the endpoint
+    reads existing nfl_content_drafts review states for (season, week)
+    via read_content_draft_review_states(). If a human has already
+    actioned any row (review_status != 'pending_review'), it returns
+    409 {"status": "locked", "reviewed_rows": N, ...} and runs no
+    curation at all — so the real Tasty Six LLM call is never made for a
+    week already under review. `force: true` skips this pre-flight and
+    proceeds. A structural DB trigger (20260902000000_guard_nfl_content_
+    drafts_review_status.sql) is the backstop: even under force, or via
+    a direct write-route call, an automated writer cannot revert a row's
+    review_status from a non-pending value back to 'pending_review'.
 
     AUTH: check_pipeline_secret() — same mechanism /api/reconcile-week
     already uses for its own incoming trigger, same reasoning (a small,
@@ -813,6 +830,46 @@ def curate_and_write_drafts_endpoint():
     max_rows_to_write = data.get("max_rows_to_write")
     player_ids_to_write = data.get("player_ids_to_write")
     stub_csv = data.get("stub_csv")
+    force = bool(data.get("force"))
+
+    # RE-RUN GUARD (Phase C) — pre-flight before any curation work.
+    # If a human has already started reviewing this week's drafts (any
+    # nfl_content_drafts row for (season, week) with review_status other
+    # than 'pending_review'), a blind re-curate would upsert those rows
+    # back to pending_review via the write route's default and drop
+    # approved picks straight off the live board. Refuse with 409 and run
+    # NO curation — this short-circuits before curate_nfl_shelves(), so
+    # the real Tasty Six LLM call is never made. `force: true` is the
+    # explicit operator override (re-runs anyway; draft content is
+    # refreshed, but the DB trigger still protects each row's review
+    # decision — see 20260902000000_guard_nfl_content_drafts_review_
+    # status.sql). A pre-flight READ failure fails closed for the same
+    # reason: if review state can't be verified, don't risk clobbering it.
+    if not force:
+        preflight_secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+        if not preflight_secret:
+            return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+        preflight = read_content_draft_review_states(season, week, preflight_secret)
+        if not preflight["ok"]:
+            print(f"[curate-and-write-drafts] season={season} week={week} preflight_failed "
+                  f"status={preflight['status_code']} error={preflight['error']!r}", flush=True)
+            return jsonify({
+                "status": "preflight_failed",
+                "season": season,
+                "week": week,
+                "error": f"Could not verify existing review state: {preflight['error']}",
+                "hint": "retry, or pass force:true to skip the pre-flight check",
+            }), 502
+        if preflight["reviewed_count"] > 0:
+            print(f"[curate-and-write-drafts] season={season} week={week} status=locked "
+                  f"reviewed_rows={preflight['reviewed_count']} (curation not run)", flush=True)
+            return jsonify({
+                "status": "locked",
+                "season": season,
+                "week": week,
+                "reviewed_rows": preflight["reviewed_count"],
+                "hint": "pass force:true to overwrite",
+            }), 409
 
     # DATA SOURCE: the nfl_stub_weeks table (Phase A of the NFL weekly-
     # automation plan) — stub_week_snapshot() reads one week's rows back
@@ -944,9 +1001,11 @@ def curate_and_write_drafts_health_check():
     return jsonify({
         "status": "ok",
         "usage": "POST {\"season\": int, \"week\": int, \"max_rows_to_write\": int (optional), "
-                 "\"player_ids_to_write\": [str, ...] (optional)}. Curates the given week's real "
-                 "stub-week data (home-shelf assignment, Tasty Six, real content — including a real "
-                 "Claude call for Tasty Six rows) and writes the result to nfl_content_drafts. "
+                 "\"player_ids_to_write\": [str, ...] (optional), \"force\": bool (optional)}. "
+                 "Curates the given week's real stub-week data (home-shelf assignment, Tasty Six, "
+                 "real content — including a real Claude call for Tasty Six rows) and writes the "
+                 "result to nfl_content_drafts. Returns 409 status=locked (no curation run) if any "
+                 "row for the week has already been reviewed; pass force:true to override. "
                  "max_rows_to_write/player_ids_to_write scope the actual write only; curation always "
                  "runs against the full real pool.",
         "deployed_via": "github-auto-deploy",
