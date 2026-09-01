@@ -24,13 +24,33 @@ from curate_home_shelves import (
     CONFIG,
     ODDS_SHELVES,
     SHELF_ORDER,
+    SHELF_SLUG,
     TREND_SHELVES,
+    _shelf_slug,
+    _shelf_unslug,
     apply_shelf_cap,
     assign_home_shelves,
     curate_nfl_shelves,
     select_tasty_six,
     shape_content_draft_rows,
+    shape_shelf_signal_history_rows,
 )
+
+# The persisted `shelf` / `home_shelf` values MUST match tastypickems'
+# NFL_SHELF_ORDER (src/lib/nfl/mock-nfl-board.ts) exactly — isShelfId()
+# validates against these snake_case slugs, and a mismatch means the
+# curated draft is silently dropped by rowToNflCard() and never renders,
+# even after a human approves it. Kept here as a literal so this test
+# fails loudly if either side drifts.
+FRONTEND_NFL_SHELF_ORDER = [
+    "red_zone_trends",
+    "rb_trends",
+    "wr_trends",
+    "te_trends",
+    "attd_300_499",
+    "attd_500_699",
+    "attd_700_plus",
+]
 
 WEEKLY_PATH = Path(__file__).resolve().parent.parent / "scripts" / "player_redzone_weekly.csv"
 
@@ -169,7 +189,7 @@ if __name__ == "__main__":
     ))
     if non_none:
         results.append(check("every real Tasty Six pick also has a real written content_draft_row with is_tasty_six=True",
-            all(any(r["player_id"] == row["player_id"] and r["shelf"] == shelf and r["is_tasty_six"] for r in draft_rows)
+            all(any(r["player_id"] == row["player_id"] and r["shelf"] == _shelf_slug(shelf) and r["is_tasty_six"] for r in draft_rows)
                 for shelf, row in non_none.items())))
 
     # ============================================================
@@ -181,6 +201,35 @@ if __name__ == "__main__":
     results.append(check("content_draft_rows count matches the uncapped home-assignment count", len(draft_rows) == len(kept)))
     results.append(check("every row has review_status='pending_review'", all(r["review_status"] == "pending_review" for r in draft_rows)))
     results.append(check("every row has a real shelf, rank, and player_id", all(r["shelf"] and r["rank"] and r["player_id"] for r in draft_rows)))
+
+    # ============================================================
+    # SHELF-CASING SERIALIZATION — the persisted `shelf` value must be
+    # the frontend's snake_case slug, never the internal Title-Case name.
+    # A Title-Case value fails isShelfId() -> the draft never renders.
+    # ============================================================
+    results.append(check(
+        "SHELF_SLUG maps the 7 internal names onto exactly the frontend's NFL_SHELF_ORDER slugs",
+        sorted(SHELF_SLUG.values()) == sorted(FRONTEND_NFL_SHELF_ORDER)
+        and sorted(SHELF_SLUG.keys()) == sorted(SHELF_ORDER),
+    ))
+    results.append(check(
+        f"every content_draft_row's `shelf` is a valid frontend slug — never Title-Case "
+        f"(got {sorted({r['shelf'] for r in draft_rows})})",
+        all(r["shelf"] in FRONTEND_NFL_SHELF_ORDER for r in draft_rows),
+    ))
+    ssh_rows = shape_shelf_signal_history_rows(home, season=2025, week=10)
+    results.append(check(
+        f"every nfl_shelf_signal_history row's `home_shelf` is a valid frontend slug "
+        f"(got {sorted({r['home_shelf'] for r in ssh_rows})})",
+        all(r["home_shelf"] in FRONTEND_NFL_SHELF_ORDER for r in ssh_rows)
+        and all(r["pending_shelf"] is None or r["pending_shelf"] in FRONTEND_NFL_SHELF_ORDER for r in ssh_rows),
+    ))
+    results.append(check(
+        "_shelf_slug / _shelf_unslug round-trip every internal name, and pass a division string through untouched",
+        all(_shelf_unslug(_shelf_slug(n)) == n for n in SHELF_ORDER)
+        and _shelf_slug("AFC East") == "AFC East" and _shelf_unslug("AFC East") == "AFC East"
+        and _shelf_slug(None) is None and _shelf_unslug(None) is None,
+    ))
 
     # ============================================================
     # Real write-schema shape (confirmed against the live Lovable

@@ -20,7 +20,13 @@ import numpy as np
 import pandas as pd
 
 import curate_home_shelves
-from curate_home_shelves import STICKINESS_MARGIN, _compute_sticky_assignment, assign_home_shelves, build_prior_state_with_walkback
+from curate_home_shelves import (
+    STICKINESS_MARGIN,
+    _compute_sticky_assignment,
+    assign_home_shelves,
+    build_prior_state_with_walkback,
+    read_shelf_signal_history,
+)
 
 WEEKLY_PATH = Path(__file__).resolve().parent.parent / "scripts" / "player_redzone_weekly.csv"
 
@@ -144,6 +150,49 @@ if __name__ == "__main__":
         f"candidate shelf already IS the current home shelf -- nothing being challenged, any stale "
         f"pending state from a DIFFERENT shelf is cleared (got {same_shelf})",
         same_shelf == {"home_shelf": "Red Zone Trends", "pending_shelf": None, "pending_run_count": 0},
+    ))
+
+    # ============================================================
+    # SHELF-CASING un-slug on read — nfl_shelf_signal_history stores the
+    # frontend's snake_case slug (see shape_shelf_signal_history_rows /
+    # SHELF_SLUG); read_shelf_signal_history must reverse it so the
+    # sticky-assignment comparisons stay in the internal Title-Case
+    # representation. Exercises the REAL read function with a fake
+    # transport.
+    # ============================================================
+    import lovable_forward
+    _real_forward = lovable_forward.forward_to_lovable
+
+    def _fake_forward(payload, secret, url):
+        import json as _json
+        body = {"shelf_signal_history": [
+            {"player_id": "P1", "home_shelf": "rb_trends", "pending_shelf": "red_zone_trends",
+             "qualifying_signals": {}, "pending_run_count": 1},
+            {"player_id": "P2", "home_shelf": "attd_700_plus", "pending_shelf": None,
+             "qualifying_signals": {}, "pending_run_count": 0},
+            {"player_id": "P3", "home_shelf": "AFC East", "pending_shelf": None,
+             "qualifying_signals": {}, "pending_run_count": 0},
+        ]}
+        return {"success": True, "error": None, "status_code": 200, "response_body": _json.dumps(body)}
+
+    lovable_forward.forward_to_lovable = _fake_forward
+    try:
+        read_result = read_shelf_signal_history(2025, 10, "fake", read_url="http://x")
+    finally:
+        lovable_forward.forward_to_lovable = _real_forward
+
+    results.append(check(
+        "read_shelf_signal_history un-slugs a stored slug back to the internal Title-Case name "
+        f"(got home_shelf={read_result['rows'].get('P1', {}).get('home_shelf')!r}, "
+        f"pending_shelf={read_result['rows'].get('P1', {}).get('pending_shelf')!r})",
+        read_result["rows"]["P1"]["home_shelf"] == "RB Trends"
+        and read_result["rows"]["P1"]["pending_shelf"] == "Red Zone Trends"
+        and read_result["rows"]["P2"]["home_shelf"] == "ATTD +700+"
+        and read_result["rows"]["P2"]["pending_shelf"] is None,
+    ))
+    results.append(check(
+        "read_shelf_signal_history passes an Around-the-League division string through un-slug untouched",
+        read_result["rows"]["P3"]["home_shelf"] == "AFC East",
     ))
 
     # ============================================================

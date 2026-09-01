@@ -134,11 +134,62 @@ SHELF_ORDER = [
 TREND_SHELVES = SHELF_ORDER[:4]
 ODDS_SHELVES = SHELF_ORDER[4:]
 
-# The exact shelf-name strings above are this task's own working labels,
-# matching the blueprint's own display names — NOT independently
-# confirmed against nfl_content_drafts' real `shelf` column values,
-# same access limitation as the stickiness persistence question. Flag
-# this if the real schema expects a different string format.
+# The Title-Case names above are the pipeline's INTERNAL identifiers — the
+# keys for PRIMARY_SIGNAL_COL, _DETERMINISTIC_PILLAR_FOR_SHELF,
+# _shelf_qualifying_pools, shelves.py's SECTION_TITLE_BY_SHELF / ODDS_BANDS
+# / ODDS_BAND_ROLE_SIGNALS / NFL_SHELF_PERSONALITIES, _story_for_row's own
+# branch + .split()[0], and _compute_sticky_assignment's comparisons.
+# They deliberately stay Title-Case (several are human-facing — the LLM
+# shelf personalities, prompt context; the odds bands carry range
+# semantics).
+#
+# The FRONTEND (tastypickems: NflShelfId / NFL_SHELF_ORDER / isShelfId)
+# validates the persisted `shelf` value against snake_case slugs. A
+# Title-Case value fails isShelfId(), so rowToNflCard() drops it and the
+# curated draft never renders — even after a human approves it.
+#
+# SHELF_SLUG bridges exactly that gap: it is applied ONLY at the two
+# serialization points (the nfl_content_drafts row's `shelf`, and
+# nfl_shelf_signal_history's `home_shelf`/`pending_shelf`), and reversed
+# on read (see _shelf_unslug / read_shelf_signal_history) so the sticky-
+# assignment loop keeps comparing internal Title-Case. Keep these values
+# byte-identical to tastypickems' NFL_SHELF_ORDER.
+#
+# Around the League's 8 division strings ("AFC East" …) are a SEPARATE
+# valid `shelf` domain the frontend expects Title-Case-with-spaces — they
+# are not in this map and pass through _shelf_slug / _shelf_unslug
+# unchanged via the .get(name, name) fallback.
+SHELF_SLUG = {
+    "Red Zone Trends": "red_zone_trends",
+    "RB Trends": "rb_trends",
+    "WR Trends": "wr_trends",
+    "TE Trends": "te_trends",
+    "ATTD +300-499": "attd_300_499",
+    "ATTD +500-699": "attd_500_699",
+    "ATTD +700+": "attd_700_plus",
+}
+_SLUG_TO_SHELF = {slug: name for name, slug in SHELF_SLUG.items()}
+
+
+def _shelf_slug(name):
+    """Internal Title-Case shelf name -> persisted snake_case slug. A
+    division string (or anything already a slug / unknown) passes through
+    untouched. None -> None (pending_shelf is nullable)."""
+    if name is None:
+        return None
+    return SHELF_SLUG.get(name, name)
+
+
+def _shelf_unslug(slug):
+    """Reverse of _shelf_slug — persisted slug -> internal Title-Case name,
+    for values read back out of nfl_shelf_signal_history so the sticky-
+    assignment comparisons stay in the internal representation. Division
+    strings / unknowns pass through. None -> None."""
+    if slug is None:
+        return None
+    return _SLUG_TO_SHELF.get(slug, slug)
+
+
 PRIMARY_SIGNAL_COL = {
     "Red Zone Trends": "td_opportunity",
     "RB Trends": "role_momentum",
@@ -872,7 +923,10 @@ def shape_content_draft_rows(
         rows.append({
             "player_id": r["player_id"],
             "event_id": event_id,
-            "shelf": r["home_shelf"],
+            # Serialization boundary: persist the frontend's snake_case slug
+            # (isShelfId / NflShelfId), not the internal Title-Case name.
+            # Division strings pass through unchanged. See SHELF_SLUG.
+            "shelf": _shelf_slug(r["home_shelf"]),
             "writer_type": writer_type,
             "is_tasty_six": is_tasty_six,
             "rank": int(r["rank"]),
@@ -1164,9 +1218,12 @@ def shape_shelf_signal_history_rows(home_assignments: pd.DataFrame, season: int,
             "player_id": r["player_id"],
             "season": season,
             "week": week,
-            "home_shelf": r["home_shelf"],
+            # Same serialization boundary as shape_content_draft_rows'
+            # `shelf` — persist the slug, reversed on read (see
+            # read_shelf_signal_history / _shelf_unslug).
+            "home_shelf": _shelf_slug(r["home_shelf"]),
             "qualifying_signals": r["qualifying_signals"],
-            "pending_shelf": r.get("pending_shelf"),
+            "pending_shelf": _shelf_slug(r.get("pending_shelf")),
             "pending_run_count": int(r.get("pending_run_count") or 0),
         })
     return rows
@@ -1220,7 +1277,17 @@ def read_shelf_signal_history(season: int, week: int, secret: str, read_url: str
             "ok": False, "error": f"non-JSON response body: {result['response_body']!r}",
             "status_code": result["status_code"], "rows": {},
         }
-    rows_by_player = {row["player_id"]: row for row in body.get("shelf_signal_history", [])}
+    # Reverse the serialization boundary: nfl_shelf_signal_history stores
+    # snake_case slugs, but the sticky-assignment loop
+    # (_compute_sticky_assignment) compares against internal Title-Case
+    # SHELF_ORDER names. Un-slug on the way in so nothing downstream has to
+    # know the persisted form. Division strings / unknowns pass through.
+    rows_by_player = {}
+    for row in body.get("shelf_signal_history", []):
+        row = dict(row)
+        row["home_shelf"] = _shelf_unslug(row.get("home_shelf"))
+        row["pending_shelf"] = _shelf_unslug(row.get("pending_shelf"))
+        rows_by_player[row["player_id"]] = row
     return {"ok": True, "error": None, "status_code": result["status_code"], "rows": rows_by_player}
 
 
