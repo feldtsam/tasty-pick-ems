@@ -30,6 +30,7 @@ import api.index as idx
 
 AUTH = {"X-Pipeline-Secret": "test-incoming"}
 STUB_CSV = Path(__file__).resolve().parent.parent / "data" / "stub_weeks" / "2026_wk1.csv"
+SYNTH_CSV = Path(__file__).resolve().parent.parent / "data" / "stub_weeks" / "synthetic_smoke_test.csv"
 
 
 def check(label, condition):
@@ -120,6 +121,34 @@ if __name__ == "__main__":
                 and len(written) == 772
                 and all(w["season"] == 2026 and w["week"] == 2 for w in written)
                 and all("week" not in w["extra"] for w in written),  # week is a typed col, never in extra
+            ))
+
+            # THE COLLISION FIX: game_id (-> event_id in curation) is also
+            # rebound, so a rebound fixture's curated rows can never upsert
+            # onto a real production row for the fixture's ORIGINAL week.
+            src_gids = {g for g in pd.read_csv(STUB_CSV)["game_id"].dropna().astype(str)}
+            src_weeks = {g.split("_")[1] for g in src_gids if len(g.split("_")) == 4}
+            rebound_gids = [w["extra"]["game_id"] for w in written if w["extra"].get("game_id")]
+            results.append(check(
+                "build-stub-week: stub_csv rebinds every game_id's {season}_{week} prefix too "
+                f"(source weeks {sorted(src_weeks)} -> all rebound to 2026_02_*)",
+                len(rebound_gids) == 772
+                and all(g.startswith("2026_02_") for g in rebound_gids)
+                and not (set(rebound_gids) & src_gids),  # zero overlap with the source fixture's real game_ids
+            ))
+
+        # the synthetic fixture: unmistakably fake identifiers survive the rebind
+        if SYNTH_CSV.exists():
+            calls.clear()
+            r = client.post("/api/build-stub-week", headers=AUTH,
+                            json={"season": 2026, "week": 5, "stub_csv": "synthetic_smoke_test.csv"})
+            written = calls["write"]["rows"]
+            results.append(check(
+                "build-stub-week: synthetic_smoke_test.csv stays collision-proof after rebind "
+                "(TEST- player_ids, TS-team game_ids, no real gsis ids or team codes)",
+                r.status_code == 200 and len(written) == 772
+                and all(str(w["player_id"]).startswith("TEST-") for w in written)
+                and all(w["extra"]["game_id"].startswith("2026_05_TS") for w in written if w["extra"].get("game_id")),
             ))
 
         # a failed downstream write surfaces as 502

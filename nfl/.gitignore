@@ -1,4 +1,9 @@
-# Pulled/derived data — regenerate with scripts/, don't commit
+# Pulled/derived data — regenerate with scripts/, don't commit.
+# EXCEPTIONS (committed with `git add -f`, small + deterministic, needed
+# in the deployed Vercel bundle for the /api/*/stub_csv test hatch):
+#   data/stub_weeks/2026_wk1.csv          — Phase A validation fixture
+#   data/stub_weeks/synthetic_smoke_test.csv — safe live-smoke-test fixture
+#     (regenerate: python scripts/build_synthetic_smoke_fixture.py)
 *.csv
 data/
 

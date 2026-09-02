@@ -577,6 +577,44 @@ def _load_stub_csv(stub_csv: str) -> pd.DataFrame:
     return pd.read_csv(STUB_WEEKS_DIR / Path(str(stub_csv)).name)
 
 
+def _rebind_stub_frame(stub_week: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
+    """
+    Rebind a stub frame loaded from a fixture (via _load_stub_csv) to a
+    target (season, week): overwrite the season/week partition columns
+    AND rewrite the {season}_{week} prefix of every game_id.
+
+    The game_id rewrite is the part that matters for safety.
+    curate_home_shelves derives event_id DIRECTLY from game_id, and
+    nfl_content_drafts' natural key is (player_id, event_id, shelf,
+    writer_type) — no season/week in it. Without rewriting game_id, a
+    curated draft row from a rebound fixture keeps the SOURCE week's
+    event_id and its write silently upserts onto whatever real
+    production row already exists for that source week. That is exactly
+    what corrupted 4 real Week-1 rows during the first live smoke test
+    (fixture 2026_wk1.csv relabeled to week 18, but game_id stayed
+    2026_01_NE_SEA → collided with the real Week-1 NE@SEA drafts).
+
+    game_id's format is "{season}_{week:02d}_{away}_{home}" (4 tokens,
+    the same shape _matchup_from_game_id parses). Team tokens are left
+    as-is — only the season/week prefix moves. A malformed or non-string
+    game_id is passed through untouched.
+    """
+    out = stub_week.assign(season=season, week=week)
+    if "game_id" in out.columns:
+        prefix = f"{season}_{week:02d}_"
+
+        def _rebind_gid(gid):
+            if not isinstance(gid, str):
+                return gid
+            parts = gid.split("_")
+            if len(parts) != 4:
+                return gid
+            return prefix + parts[2] + "_" + parts[3]
+
+        out["game_id"] = out["game_id"].map(_rebind_gid)
+    return out
+
+
 @app.route("/api/build-stub-week", methods=["POST"])
 def build_stub_week_endpoint():
     """
@@ -609,14 +647,14 @@ def build_stub_week_endpoint():
     stub_csv: skip the build entirely and load the week from a CSV
     (a URL, or a filename under data/stub_weeks/ in the bundle) — used
     to seed / re-seed the table from a committed fixture without
-    re-running the pipeline. The rows are upserted under the (season,
-    week) from the REQUEST BODY, not whatever the CSV's own season/week
-    columns say — so `2026_wk1.csv` can seed an isolated test week
-    (e.g. week 2) without colliding with week 1. NOTE: only the season/
-    week partition keys are rebound; game-level fields inside `extra`
-    (game_id, the resulting event_id, matchups) still reflect the
-    source CSV — this hatch is for seeding/testing, not for producing a
-    real week's data.
+    re-running the pipeline. _rebind_stub_frame() rewrites the season/
+    week columns AND the {season}_{week} prefix of every game_id to the
+    REQUEST BODY values, so the curated draft rows' event_id (= game_id)
+    also lands in the target week and can't upsert onto a real
+    production row for the fixture's original week. Team tokens /
+    matchups still come from the source CSV — use the synthetic
+    synthetic_smoke_test.csv fixture (fake season 2099, fake team
+    codes) for anything that writes to production, never 2026_wk1.csv.
     """
     auth_error = check_pipeline_secret()
     if auth_error:
@@ -636,12 +674,12 @@ def build_stub_week_endpoint():
           f"stub_csv={stub_csv!r} status=building", flush=True)
     try:
         if stub_csv:
-            stub_week = _load_stub_csv(stub_csv)
-            # Rebind the partition keys to the request body so a fixture
-            # from one week can seed another (see docstring). build_stub_
-            # week() already produces correct season/week, so this only
-            # applies on the stub_csv path.
-            stub_week = stub_week.assign(season=season, week=week)
+            # Rebind season/week AND every game_id to the request body so
+            # a fixture from one week can seed another without its curated
+            # draft rows colliding onto real production rows via a stale
+            # event_id (see _rebind_stub_frame). build_stub_week() already
+            # produces correct keys, so this only applies on the stub_csv path.
+            stub_week = _rebind_stub_frame(_load_stub_csv(stub_csv), season, week)
         else:
             stub_week = build_stub_week(season, week, historical_seasons=[season])
     except Exception as e:
