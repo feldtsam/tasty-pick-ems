@@ -609,8 +609,14 @@ def build_stub_week_endpoint():
     stub_csv: skip the build entirely and load the week from a CSV
     (a URL, or a filename under data/stub_weeks/ in the bundle) — used
     to seed / re-seed the table from a committed fixture without
-    re-running the pipeline. Ignored fields: still upserts under the
-    (season, week) from the body, not whatever the CSV's own rows say.
+    re-running the pipeline. The rows are upserted under the (season,
+    week) from the REQUEST BODY, not whatever the CSV's own season/week
+    columns say — so `2026_wk1.csv` can seed an isolated test week
+    (e.g. week 2) without colliding with week 1. NOTE: only the season/
+    week partition keys are rebound; game-level fields inside `extra`
+    (game_id, the resulting event_id, matchups) still reflect the
+    source CSV — this hatch is for seeding/testing, not for producing a
+    real week's data.
     """
     auth_error = check_pipeline_secret()
     if auth_error:
@@ -631,6 +637,11 @@ def build_stub_week_endpoint():
     try:
         if stub_csv:
             stub_week = _load_stub_csv(stub_csv)
+            # Rebind the partition keys to the request body so a fixture
+            # from one week can seed another (see docstring). build_stub_
+            # week() already produces correct season/week, so this only
+            # applies on the stub_csv path.
+            stub_week = stub_week.assign(season=season, week=week)
         else:
             stub_week = build_stub_week(season, week, historical_seasons=[season])
     except Exception as e:

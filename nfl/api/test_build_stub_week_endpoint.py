@@ -68,7 +68,7 @@ if __name__ == "__main__":
         return _toy_stub_frame()
 
     def fake_write(rows, secret, write_url=None):
-        calls["write"] = {"n": len(rows), "secret": secret}
+        calls["write"] = {"n": len(rows), "secret": secret, "rows": rows}
         return {"success": True, "status_code": 200, "error": None,
                 "response_body": json.dumps({"ok": True, "upserted": len(rows)})}
 
@@ -106,6 +106,20 @@ if __name__ == "__main__":
             results.append(check(
                 "build-stub-week: stub_csv reads the fixture and skips build_stub_week()",
                 r.status_code == 200 and "build" not in calls and body["row_count"] == 772,
+            ))
+
+            # stub_csv rebinds season/week to the request body — 2026_wk1.csv
+            # (season=2026, week=1 in its rows) seeds an isolated week 2.
+            calls.clear()
+            r = client.post("/api/build-stub-week", headers=AUTH,
+                            json={"season": 2026, "week": 2, "stub_csv": "2026_wk1.csv"})
+            written = calls["write"]["rows"]
+            results.append(check(
+                "build-stub-week: stub_csv rebinds every row's season/week to the request body (week 1 fixture -> week 2)",
+                r.status_code == 200
+                and len(written) == 772
+                and all(w["season"] == 2026 and w["week"] == 2 for w in written)
+                and all("week" not in w["extra"] for w in written),  # week is a typed col, never in extra
             ))
 
         # a failed downstream write surfaces as 502
