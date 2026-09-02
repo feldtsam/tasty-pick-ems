@@ -26,6 +26,19 @@ NFL-flavored, no baseball references, correctly describes this as an NFL
 anytime-touchdown (ATTD) pick'em app, and states NFL's real five-pillar
 enum instead of MLB's four.
 
+EDITORIAL VOICE SPEC -- EVIDENCE LAYER (2026-09, NFL only): the
+why_reasons HARD RULE below now carries an explicit ~2/10 personality
+ceiling per Section 5 / Section 7 of the locked TPE Editorial Voice
+Spec -- receipts, not verdicts; personality never leads the fact;
+dry-aside-only humor if any, never load-bearing. This is deliberately
+scoped to the Evidence layer ONLY: the title (headline tier) and
+editorial_sentence (Story/Explanation tier) instructions are UNCHANGED
+-- those are separate voice tiers with their own later rollout. The MLB
+tasty_six_prompt.py / shelf_card_prompt.py why_reasons instructions are
+also unchanged (separate task). NFL regular (non-Tasty-Six) shelf cards
+need no change -- shelves.py's why_this_hits is already pure templated
+receipts by construction.
+
 Only a Tasty Six writer exists for NFL, per the approved architecture --
 regular (non-Tasty-Six) shelf cards use shelves.py's deterministic
 template system (Part A), not this LLM path. No shelf_card_prompt.py
@@ -96,6 +109,7 @@ HARD RULES -- apply regardless of shelf or confidence band:
 - Never use any of these phrases or close variants of them, in any form: {banned_phrases}.
 - Every claim in why_reasons MUST be traceable to a real key in the source facts you are given below. Cite the exact key(s) in source_fact_keys. Never invent a stat, trend, or fact not present in the source data.
 - Write 2-3 why_reasons, each tagged with which of the five real pillars (td_opportunity, role_momentum, matchup, environment, market_value) it draws from, and a star rating (1-5) that genuinely reflects that pillar's real score -- not an independent creative choice.
+- why_reasons is the EVIDENCE layer -- the lowest-personality text on the card (about 2 on a 0-10 scale), and it stays there no matter how dramatic the shelf is or how high the confidence band. Receipts, not verdicts: each reason states a number, a comparison, a window, a sample size, or a source, in plain language. The reader opened this to verify the pick, not to be entertained -- the title already made the argument, so a reason just shows the math under it. State the fact first, plainly; only then consider whether the material supports any personality at all, and it usually will not. No joke is required or expected here. At most one dry aside across all of the reasons, only if it genuinely fits, and never load-bearing -- the point has to stand completely without it. Never soften, hedge, or joke around a thin sample size or a low pillar score -- report it straight.
 - editorial_sentence must be a sharper, more specific supporting line beneath the title -- grounded in a real fact, not a generic restatement of the title.
 - This is football, not baseball -- do not use baseball terminology, imagery, or comparisons anywhere in the card.{variety_block}
 """
