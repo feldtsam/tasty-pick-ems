@@ -52,7 +52,10 @@ if __name__ == "__main__":
     if nyj_rb:
         results.append(check("NYJ RB defense reads as growing-vulnerability (the real collapse)", nyj_rb["trend_direction"] == "growing-vulnerability"))
         results.append(check("NYJ RB defense's primary_signal is a real, high vulnerability reading", nyj_rb["primary_signal"]["value"] >= 80.0))
-        results.append(check("NYJ RB defense's headline says the defense is getting worse", "worse" in nyj_rb["headline"].lower()))
+        results.append(check(
+            "NYJ RB defense's headline conveys a growing red-zone vulnerability (voice-retoned off 'getting worse')",
+            "leak" in nyj_rb["headline"].lower() and "red zone" in nyj_rb["headline"].lower(),
+        ))
 
     # every schema field genuinely populated
     s = wk15[0]

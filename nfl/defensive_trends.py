@@ -242,6 +242,16 @@ def _related_players(weekly: pd.DataFrame, season, week, defteam, position_group
 def _headline_and_story(row: pd.Series, direction: str, thin_completeness: bool) -> tuple:
     """
     Story first, per this project's established storytelling hierarchy.
+
+    VOICE (TPE Editorial Voice Spec, Section 3): Defensive Trends sits at
+    a ~4–4.5/10 personality ceiling — pattern recognition with some wit,
+    the recurring pattern is the story, the number carries the weight.
+    headline/story here were re-toned off the earlier flat "getting
+    worse / tightening up" verdict framing (2026-09). thin_completeness
+    still forces the same explicit hedge on the end of `story`,
+    unchanged. supporting_evidence / what_changed / hero_metric are the
+    Evidence tier and are not touched here.
+
     Prefers citing real raw red-zone-TD-allowed counts, but ONLY when
     they genuinely agree in direction with the overall trend being
     claimed — checked directly, not assumed. defensive_matchup_
@@ -275,31 +285,30 @@ def _headline_and_story(row: pd.Series, direction: str, thin_completeness: bool)
             td_agrees = True
 
     if direction == "growing-vulnerability":
-        headline = f"{team}'s defense is getting worse against {pos}s."
+        headline = f"{team}'s {pos} defense has sprung a leak in the red zone."
         if td_agrees:
             story = (
-                f"Opponents have scored {last3:.1f} red-zone TDs per game against {team}'s {pos} defense over the "
-                f"last 3 games, up from a {season_avg:.1f} season average — a real, recent decline, not just a "
-                f"single bad week."
+                f"Opponents have put up {last3:.1f} red-zone TDs per game on {team}'s {pos} defense over the last "
+                f"three, against a {season_avg:.1f} season average. Three weeks running, not one loud Sunday."
             )
         else:
             story = (
-                f"{team}'s {pos} defense has trended clearly more vulnerable over its last 3 games, per the "
-                f"model's combined red-zone/inside-10/goal-line and conversion-rate read — not (yet) showing up "
-                f"as a single standout raw red-zone-TD number, but a real shift in the overall profile."
+                f"No single red-zone-TD number carries this one, but {team}'s {pos} defense has trended clearly "
+                f"more vulnerable over its last 3 games on the model's combined red-zone/inside-10/goal-line and "
+                f"conversion-rate read — a real shift in the profile, just a diffuse one."
             )
     else:
-        headline = f"{team}'s defense is tightening up against {pos}s."
+        headline = f"{team}'s {pos} defense has been shutting the red zone down."
         if td_agrees:
             story = (
-                f"Opponents have scored just {last3:.1f} red-zone TDs per game against {team}'s {pos} defense over "
-                f"the last 3 games, down from a {season_avg:.1f} season average — a real, recent improvement."
+                f"Opponents have managed {last3:.1f} red-zone TDs per game against {team}'s {pos} defense over the "
+                f"last three, down from a {season_avg:.1f} season average."
             )
         else:
             story = (
-                f"{team}'s {pos} defense has trended clearly more resistant over its last 3 games, per the "
-                f"model's combined red-zone/inside-10/goal-line and conversion-rate read — not (yet) showing up "
-                f"as a single standout raw red-zone-TD number, but a real shift in the overall profile."
+                f"No single red-zone-TD number carries this one, but {team}'s {pos} defense has trended clearly "
+                f"more resistant over its last 3 games on the model's combined red-zone/inside-10/goal-line and "
+                f"conversion-rate read — a real shift in the profile, just a diffuse one."
             )
     if thin_completeness:
         story += " Based on a still-developing sample this season — worth confirming as more games are played."

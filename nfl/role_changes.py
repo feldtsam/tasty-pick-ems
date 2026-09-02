@@ -285,6 +285,17 @@ def _headline_and_story(row: pd.Series, opportunity_driven: bool, evidence_kind:
     Language hedges explicitly when thin=True (games_played below
     CONFIG's thin_games_played) — same sample-size-honesty requirement
     Market Intelligence's headline templates already enforce.
+
+    VOICE (TPE Editorial Voice Spec, Section 3): Role Changes has the
+    most room of the three Intelligence families at a ~5–5.5/10 ceiling
+    — the most human/story-driven, a player's opportunity visibly
+    shifting week to week reads as a story almost automatically. The
+    2026-09 voice pass touched this family the LEAST: only the two
+    non-thin, evidence-backed story tails were tightened off slightly
+    over-explained phrasing. The thin branches and the diffuse
+    "trending up, no single number stands out" branch are deliberately
+    left plain — a weak/early case reads below the ceiling, not padded
+    up to it (Section 2: personality follows the story).
     """
     name, position = row["player_name"], row["position_group"]
 
@@ -301,13 +312,13 @@ def _headline_and_story(row: pd.Series, opportunity_driven: bool, evidence_kind:
         else:
             headline = f"{who}'s injury has handed {name} a real opportunity."
             story = (
-                f"With {who} {status.lower()}, {name} ({position}) moves into a clearly larger role — "
-                f"this reading is backed by a full season's worth of usage data, not just an early guess."
+                f"With {who} {status.lower()}, {name} ({position}) steps into a clearly bigger role — and a full "
+                f"season of usage data says it should stick."
             )
     else:
         if evidence_kind != "generic" and evidence_detail:
             headline = f"{name}'s role is genuinely expanding."
-            story = f"{evidence_detail} — a real, visible usage trend, not just a model score moving."
+            story = f"{evidence_detail} — a real, visible shift in how he's being used, not just a model score moving."
         else:
             headline = f"The model sees {name}'s role trending up."
             story = (

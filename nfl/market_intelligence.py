@@ -162,35 +162,45 @@ def _headline_and_story(row: pd.Series, direction: str, pool_rank: int, pool_siz
     sample-size honesty requirement is that a headline itself should
     read differently for a 1-book price than a well-covered one, not
     just carry a lower number in a field nobody's looking at.
+
+    VOICE (TPE Editorial Voice Spec, Section 3): Market Intelligence is
+    the TIGHTEST of the three Intelligence families at a ~3.5–4/10
+    ceiling — observant, skeptical, numbers-forward; the price movement
+    is the story, the copy never competes with the number for attention.
+    The market-favored / not-thin branch was re-toned off the earlier
+    "one of the field's clearest bets to score" verdict (which read as
+    Picks-tier) toward Section 7's register ("Apparently we aren't the
+    only ones who noticed") (2026-09). Every thin branch keeps its
+    explicit "early / one book / thin" hedge, unchanged.
     """
     name = row["player_name_raw"]
     matchup = f"{row['away_team']} @ {row['home_team']}"
 
     if direction == "market-favored":
         if thin:
-            headline = "One early book already has him near the top of the board."
+            headline = "One early line already has him near the top of the board."
             story = (
-                f"A single early line already prices {name} among the field's strongest anytime-TD bets for "
-                f"{matchup} — worth confirming once more books post, but a notable first read."
+                f"A single early line has {name} among the field's strongest anytime-TD bets for {matchup}. "
+                f"One book, though — worth another look once more of them post."
             )
         else:
-            headline = "The market has him as one of the field's clearest bets to score."
+            headline = "Apparently the market noticed him too."
             story = (
-                f"With real multi-book coverage behind it, the market consistently prices {name} near the top "
-                f"of the board for {matchup} — this is a well-supported read, not an early outlier."
+                f"Multiple books have {name} near the top of the board for {matchup}, and they're consistent "
+                f"about it — not one line getting excited early."
             )
     elif direction == "market-longshot":
         if thin:
             headline = "An early, thin line has him near the back of the board."
             story = (
-                f"Only one book has posted on {name} so far for {matchup}, and it's a long price — too early "
-                f"to call this a real market verdict yet."
+                f"Only one book has posted on {name} for {matchup} so far, and it's a long price. Too early to "
+                f"read much into it."
             )
         else:
-            headline = "The market isn't buying it — priced as one of the longer shots on the board."
-            story = f"Multiple books agree: {name} is priced near the bottom of this week's field for {matchup}."
+            headline = "The market isn't sold — priced near the bottom of the board, with the books in agreement."
+            story = f"Multiple books have {name} priced near the bottom of this week's field for {matchup}."
     else:
-        headline = "The market has him priced in the middle of the pack, at least in an early read."
+        headline = "The market has him mid-pack, at least on an early read."
         if thin:
             story = (
                 f"With only one book posted so far, {name} sits at rank {pool_rank} of {pool_size} in this week's "
