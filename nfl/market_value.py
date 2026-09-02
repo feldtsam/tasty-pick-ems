@@ -290,9 +290,10 @@ def new_price_history_rows(
     events near a season boundary), so there is no single correct
     scalar value the way there is for season. Both `matched_snapshot`
     and `unmatched` are expected to already carry a real, resolved
-    per-row `week` column BEFORE this function is called — mirroring
-    poll_market_value_for_stub.py's own existing convention of
-    attaching season/week onto its snapshot before this shaping step,
+    per-row `week` column BEFORE this function is called — mirroring the
+    convention of attaching season/week onto a snapshot before this
+    shaping step (as market_value_snapshot_for_curation /
+    market_value_snapshot_for_reconciliation both do),
     just per-row instead of a single constant, since that caller's own
     week can genuinely vary row to row within one request. If a caller
     doesn't provide it, the column-fill loop below defaults it to None
@@ -427,8 +428,8 @@ def market_value_snapshot_for_reconciliation(season: int, week: int, secret: str
     (the REAL one, grouped by season/week — NOT this module's own unused
     score_market_value(snapshot) above, which has no completeness
     column and a different, single-snapshot reference population) on it
-    — the exact same real function scripts/poll_market_value_for_stub.py
-    already calls, computing market_value_score/market_value_completeness
+    — the exact same real function market_value_snapshot_for_curation
+    also calls, computing market_value_score/market_value_completeness
     fresh, since neither is ever stored in nfl_price_history itself (see
     that module's own confirmed investigation: they're always computed
     on demand from consensus_implied_probability, never persisted raw).
@@ -508,11 +509,10 @@ def market_intelligence_snapshot_for_generation(season: int, week: int, secret: 
     price_history snapshot for (season, week) with EVERY real column intact
     (see latest_price_history_full_per_player), then runs scoring.
     score_market_value() (the REAL one, grouped by season/week) on it —
-    the exact same real function scripts/poll_market_value_for_stub.py's
-    own fetch_and_score_market_value already calls on a fresh live poll;
-    this mirrors that same snapshot_scoring_inputs -> attach season/week ->
-    score_market_value sequence, just reading the poll back from nfl_
-    price_history instead of hitting The Odds API directly.
+    the exact same real function /api/poll-market-value calls on a fresh
+    live poll; this mirrors that same snapshot_scoring_inputs -> attach
+    season/week -> score_market_value sequence, just reading the poll
+    back from nfl_price_history instead of hitting The Odds API directly.
 
     A genuinely empty snapshot (no real polls yet for this week — the
     expected, current state until the Make.com polling scenario is built)
@@ -529,6 +529,95 @@ def market_intelligence_snapshot_for_generation(season: int, week: int, secret: 
         cols = list(PRICE_HISTORY_COLUMNS) + ["market_value_score", "market_value_completeness"]
         return pd.DataFrame(columns=cols)
     return scoring_score_market_value(latest, CONFIG)
+
+
+# Phase B of the NFL weekly-automation plan: the market-value columns
+# /api/curate-and-write-drafts reads off the weekly frame -- the two
+# scored outputs (score_evidence_quality's 4th family, score_universal_
+# tpe's renormalization input) plus consensus_price_american, which
+# curation needs for BOTH the ATTD-shelf eligibility gate
+# (curate_home_shelves._attd_eligible_overall) and the `odds` field on
+# every curated row. This is the same list scripts/poll_market_value_for_
+# stub.py used to merge onto the stub CSV before that poller was retired.
+# A strict superset of what reconcile needs: market_value_snapshot_for_
+# reconciliation() drops consensus_price_american, which is exactly why
+# it can't just be reused for curation.
+CURATION_MARKET_VALUE_COLUMNS = [
+    "n_books", "best_price", "best_book",
+    "consensus_implied_probability", "consensus_price_american",
+    "market_value_score", "market_value_completeness",
+]
+
+_MV_MERGE_KEY = ["player_id", "season", "week"]
+
+
+def market_value_snapshot_for_curation(season: int, week: int, secret: str, read_url: str = None) -> pd.DataFrame:
+    """
+    Live market-value snapshot for /api/curate-and-write-drafts (Phase B)
+    -- the storage-backed replacement for the retired scripts/poll_market_
+    value_for_stub.py pre-merge.
+
+    Same read+score chain as market_intelligence_snapshot_for_generation
+    (read_price_history -> latest_price_history_full_per_player ->
+    scoring.score_market_value -- the REAL grouped one, not this module's
+    own unused score_market_value(snapshot)), narrowed to CURATION_
+    MARKET_VALUE_COLUMNS. Deliberately NOT market_value_snapshot_for_
+    reconciliation(): that drops consensus_price_american, which curation
+    needs for the ATTD eligibility gate and the odds field.
+
+    Empty snapshot (no polls yet for this week -- the normal state until
+    Wed-Thu of a game week) -> a correctly-shaped zero-row frame. The
+    endpoint's left merge then hands every player NaN market columns, and
+    score_universal_tpe's present-columns-only renormalization scores
+    them on the 3 remaining pillars. Not a failure -- just fewer ATTD
+    picks that early.
+    """
+    from scoring import CONFIG, score_market_value as scoring_score_market_value
+
+    result = read_price_history(season, week, secret, read_url)
+    latest = latest_price_history_full_per_player(result["rows"])
+    if len(latest) == 0:
+        return pd.DataFrame(columns=_MV_MERGE_KEY + CURATION_MARKET_VALUE_COLUMNS)
+    latest["season"] = season
+    latest["week"] = week
+    scored = scoring_score_market_value(latest, CONFIG)
+    return scored[_MV_MERGE_KEY + CURATION_MARKET_VALUE_COLUMNS].reset_index(drop=True)
+
+
+def merge_market_value_and_rescore(weekly: pd.DataFrame, mv_snapshot: pd.DataFrame, mv_columns: list) -> pd.DataFrame:
+    """
+    Drop any stale market-value columns from `weekly`, left-merge the
+    fresh snapshot on (player_id, season, week), then re-run score_
+    evidence_quality + score_universal_tpe so evidence_quality /
+    core_score / tpe_score reflect the refreshed 4th pillar.
+
+    The exact sequence reconcile_week() ran inline after its own nfl_
+    price_history read, factored out so /api/curate-and-write-drafts
+    (Phase B) shares one implementation rather than reimplementing it.
+    `mv_columns` is whichever subset of market-value columns `mv_snapshot`
+    carries (reconcile: the 2-col scoring set; curation: CURATION_MARKET_
+    VALUE_COLUMNS) -- market_value_score and market_value_completeness
+    must be among them.
+
+    LEFT merge, same as reconcile: a player with live odds but no row in
+    `weekly` is not added (curation curates the scored pool; the retired
+    poller's outer merge for odds-only rows is deliberately not carried
+    over). Both scoring functions direct-assign their outputs, so calling
+    this on an already-scored frame fully overwrites -- idempotent on a
+    re-run, same as the retired poller's own guarantee.
+    """
+    from scoring import CONFIG, score_evidence_quality, score_universal_tpe
+
+    payload_cols = [c for c in mv_columns if c not in _MV_MERGE_KEY]
+    weekly = weekly.drop(columns=payload_cols, errors="ignore")
+    weekly = weekly.merge(mv_snapshot[_MV_MERGE_KEY + payload_cols], on=_MV_MERGE_KEY, how="left")
+    weekly = score_evidence_quality(weekly, CONFIG)
+    weekly = score_universal_tpe(
+        weekly,
+        market_value=weekly[_MV_MERGE_KEY + ["market_value_score", "market_value_completeness"]],
+        config=CONFIG,
+    )
+    return weekly
 
 
 def score_market_value(snapshot: pd.DataFrame) -> pd.DataFrame:

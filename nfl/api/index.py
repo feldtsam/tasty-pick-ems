@@ -96,8 +96,11 @@ from intelligence_generate import FAMILIES, generate_and_write_intelligence
 from intelligence_write import process_family, write_intelligence_rows
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
 from market_value import (
+    CURATION_MARKET_VALUE_COLUMNS,
     PRICE_HISTORY_COLUMNS,
+    market_value_snapshot_for_curation,
     match_attd_players,
+    merge_market_value_and_rescore,
     new_price_history_rows,
     parse_attd_event,
     snapshot_scoring_inputs,
@@ -186,10 +189,10 @@ def _week_lookup_for_season(season: int, schedules: pd.DataFrame, team_desc: pd.
     to derive from commence_time alone.
 
     REUSES, not invents: the exact (home_team, away_team) exact-order
-    matching convention scripts/poll_market_value_for_stub.py's own
-    fetch_week_events() already established and validated against real
-    data — confirmed directly there (real 2026 Week 1 data: SEA/NE,
-    PIT/ATL, KC/DEN all matched without flipping) that The Odds API's
+    matching convention established and validated against real data
+    during the NFL odds-poller work — confirmed directly (real 2026
+    Week 1 data: SEA/NE, PIT/ATL, KC/DEN all matched without flipping)
+    that The Odds API's
     home_team/away_team already matches nflverse's schedule convention
     exactly. Deliberately NOT falling back to a flipped-orientation
     match: that was tried in that same investigation and caused real
@@ -815,6 +818,20 @@ def curate_and_write_drafts_endpoint():
     the committed fixtures usable for a real preview_only test without
     seeding the table first.
 
+    MARKET VALUE MERGE (Phase B): after loading the stub week, the
+    endpoint drops the stub's (stale) market-value columns and re-merges
+    a fresh snapshot from the live nfl_price_history table
+    (market_value_snapshot_for_curation → the same nfl_price_history the
+    Make.com-scheduled /api/poll-market-value already writes), then
+    re-runs score_evidence_quality + score_universal_tpe — shared with
+    reconcile_week() via market_value.merge_market_value_and_rescore().
+    Replaces the retired scripts/poll_market_value_for_stub.py pre-merge.
+    Thin or absent coverage (normal until mid-week) is not an error:
+    market_value_score goes NaN, tpe_score renormalizes on 3 pillars,
+    and the ATTD shelves just have fewer eligible players. The response's
+    "market_value" block reports price_history_rows / players_with_live_
+    odds / mean_market_value_completeness.
+
     ALSO fetches nfl_data_py.import_pbp_data([season]) — a NEW load
     this endpoint didn't do before (confirmed directly: not reused from
     anywhere else already reachable here) — so WR/TE Trends' target_
@@ -955,6 +972,45 @@ def curate_and_write_drafts_endpoint():
                      f"/api/build-stub-week hasn't run for this week yet.",
         }), 404
 
+    # MARKET VALUE MERGE (Phase B of the NFL weekly-automation plan) —
+    # refresh the 4th pillar from the live nfl_price_history table
+    # (populated by the existing Make.com-scheduled /api/poll-market-
+    # value scenario), replacing the retired scripts/poll_market_value_
+    # for_stub.py pre-merge. Drops the stub's stale market-value columns,
+    # left-merges the fresh snapshot, and re-runs score_evidence_quality
+    # + score_universal_tpe — the exact sequence reconcile_week() runs,
+    # shared via market_value.merge_market_value_and_rescore().
+    #
+    # Thin/empty coverage (the normal state until Wed–Thu of a game week)
+    # is not a failure: every player gets NaN market columns, score_
+    # universal_tpe renormalizes on the 3 remaining pillars, and the ATTD
+    # shelves simply have fewer eligible players. A read failure is
+    # logged and treated the same as empty coverage — curation still
+    # runs, on 3 pillars.
+    mv_secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+    try:
+        if not mv_secret:
+            raise RuntimeError("NFL_PIPELINE_WEBHOOK_SECRET not configured")
+        mv_snapshot = market_value_snapshot_for_curation(season, week, mv_secret)
+    except Exception as e:
+        print(f"[curate-and-write-drafts] season={season} week={week} market_value_read_failed "
+              f"error={e!r} — proceeding on 3 pillars", flush=True)
+        mv_snapshot = pd.DataFrame(columns=["player_id", "season", "week"] + CURATION_MARKET_VALUE_COLUMNS)
+
+    mv_players_with_odds = int(mv_snapshot["consensus_price_american"].notna().sum()) if len(mv_snapshot) else 0
+    weekly = merge_market_value_and_rescore(weekly, mv_snapshot, CURATION_MARKET_VALUE_COLUMNS)
+    # completeness is 100 for a player with a live poll, NaN (from the
+    # left merge) for one without — fill NaN with 0 so the mean reads as
+    # a real pool-wide coverage %, not just the mean over covered rows.
+    mv_completeness_mean = (
+        round(float(weekly["market_value_completeness"].fillna(0).mean()), 1)
+        if "market_value_completeness" in weekly.columns and len(weekly)
+        else 0.0
+    )
+    print(f"[curate-and-write-drafts] season={season} week={week} "
+          f"market_value_rows={len(mv_snapshot)} players_with_live_odds={mv_players_with_odds} "
+          f"mean_market_value_completeness={mv_completeness_mean}", flush=True)
+
     try:
         schedules = nfl.import_schedules([season])
     except Exception as e:
@@ -1033,6 +1089,11 @@ def curate_and_write_drafts_endpoint():
         "season": season,
         "week": week,
         "preview_only": preview_only,
+        "market_value": {
+            "price_history_rows": len(mv_snapshot),
+            "players_with_live_odds": mv_players_with_odds,
+            "mean_market_value_completeness": mv_completeness_mean,
+        },
         "rows_curated": len(all_rows),
         "rows_without_content": rows_without_content,
         "curated_rows": all_rows if preview_only else None,

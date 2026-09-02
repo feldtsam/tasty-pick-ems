@@ -1,10 +1,13 @@
 """
 Tasty Pick Ems — reconcile a played week's stub row into real history
 (Phase 3 of the stub-row work; see scripts/build_stub_week.py for
-Phase 1, scripts/poll_market_value_for_stub.py for Phase 2).
+Phase 1. The live pre-game odds merge is now done inside
+/api/curate-and-write-drafts, Phase B — there is no longer a separate
+poller script.)
 
 Once a game has actually been played, its stub row (Phase 1's pre-game
-placeholder, live-updated by Phase 2's poller) is replaced by a real
+placeholder, odds-refreshed at curation time from nfl_price_history) is
+replaced by a real
 historical row — built exactly the way every other historical row
 always has been (run_pipeline against real play-by-play), with one
 addition: the stub file's FINAL captured Market Value snapshot
@@ -14,11 +17,10 @@ discarded once the game's played.
 
 "FINAL SNAPSHOT" — explicit definition, not assumed: this is the most
 recent Market Value poll that exists for that (player_id, season, week)
-in the stub file AT THE MOMENT reconciliation runs — i.e. whatever
-scripts/poll_market_value_for_stub.py last wrote there. This is "last
-poll on file," NOT "guaranteed last poll before kickoff": Phase 2 has
-no defined polling cadence yet (scheduling was explicitly out of scope
-for that phase), so nothing here guarantees the stub's last write
+in nfl_price_history AT THE MOMENT reconciliation runs — i.e. whatever
+the last /api/poll-market-value run wrote there. This is "last poll on
+file," NOT "guaranteed last poll before kickoff": the Make.com polling
+cadence isn't pinned here, so nothing guarantees the last write
 actually happened right before kickoff rather than, say, a day or a
 week earlier. No interpolation or "true kickoff price" estimation is
 attempted — that would need an actual price-history table this project
@@ -71,8 +73,7 @@ from backfill_redzone import (
     load_snap_counts,
     run_pipeline,
 )
-from market_value import market_value_snapshot_for_reconciliation
-from scoring import CONFIG, score_evidence_quality, score_universal_tpe
+from market_value import market_value_snapshot_for_reconciliation, merge_market_value_and_rescore
 from stub_store import mark_stub_week_reconciled
 
 # player_redzone_weekly.csv itself is NOT touched by this module anymore
@@ -453,18 +454,14 @@ def reconcile_week(
             "player_id", "season", "week", "market_value_score", "market_value_completeness",
             "consensus_implied_probability", "best_price",
         ])
-    market_value_for_scoring = market_value_snapshot[["player_id", "season", "week", "market_value_score", "market_value_completeness"]]
-
-    # Merge market_value_score onto this week's real rows BEFORE
-    # re-scoring -- score_evidence_quality's convergence needs it
-    # already present as a column to pick it up as the 4th family (see
-    # CONFIG["evidence_quality"]["family_score_columns"]), and must run
-    # before the final score_universal_tpe call.
-    reconciled = reconciled.drop(columns=["market_value_score", "market_value_completeness"], errors="ignore")
-    reconciled = reconciled.merge(market_value_for_scoring, on=["player_id", "season", "week"], how="left")
-
-    reconciled = score_evidence_quality(reconciled, CONFIG)
-    reconciled = score_universal_tpe(reconciled, market_value=market_value_for_scoring, config=CONFIG)
+    # Drop stale market-value columns, left-merge the fresh snapshot,
+    # re-run score_evidence_quality + score_universal_tpe so the 4th
+    # pillar is reflected in evidence_quality / core_score / tpe_score.
+    # Factored into market_value.merge_market_value_and_rescore() so
+    # /api/curate-and-write-drafts (Phase B) shares the same sequence.
+    reconciled = merge_market_value_and_rescore(
+        reconciled, market_value_snapshot, ["market_value_score", "market_value_completeness"],
+    )
 
     # The two remaining market-value columns (market_value_score is
     # already present from the scoring step above); market_value_
