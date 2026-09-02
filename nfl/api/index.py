@@ -52,7 +52,7 @@ import hmac
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # Vercel's Python runtime doesn't put this file's own directory (or its
@@ -88,9 +88,11 @@ import numpy as np
 import pandas as pd
 
 from curate_home_shelves import (
+    build_prior_state_with_walkback,
     curate_nfl_shelves,
     read_content_draft_review_states,
     write_content_draft_rows,
+    write_shelf_signal_history_rows,
 )
 from intelligence_generate import FAMILIES, generate_and_write_intelligence
 from intelligence_write import process_family, write_intelligence_rows
@@ -832,6 +834,17 @@ def curate_and_write_drafts_endpoint():
     "market_value" block reports price_history_rows / players_with_live_
     odds / mean_market_value_completeness.
 
+    SHELF STICKINESS (Phase D prerequisite): before curation, reads each
+    player's prior shelf assignment back from nfl_shelf_signal_history
+    (build_prior_state_with_walkback, up to 3 weeks back for a bye) and
+    passes it as prior_assignments so Proposal 2's 2-week sticky hold
+    applies. After a successful (non-preview) run, writes this week's
+    assignments back via write_shelf_signal_history_rows so next week
+    has state to read. Week 1 / empty table / read failure -> first-
+    appearance mode (today's behavior). A write failure is logged, not
+    fatal. The response's "stickiness" block reports prior_assignments_
+    players / signal_history_rows / signal_history_write_ok.
+
     ALSO fetches nfl_data_py.import_pbp_data([season]) — a NEW load
     this endpoint didn't do before (confirmed directly: not reused from
     anywhere else already reachable here) — so WR/TE Trends' target_
@@ -1035,9 +1048,32 @@ def curate_and_write_drafts_endpoint():
 
     anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
 
+    # STICKINESS PRIOR STATE (Phase D prerequisite) — read each player's
+    # most-recent nfl_shelf_signal_history row (walking back up to 3
+    # weeks for a bye gap) so curate_nfl_shelves can apply Proposal 2's
+    # 2-consecutive-week sticky hold instead of reassigning every player
+    # to this week's fresh signal winner. Week 1, an empty table, or a
+    # read failure all collapse to {} -> first-appearance mode, exactly
+    # the behavior before this was wired in. build_prior_state_with_
+    # walkback is a no-op for week 1 (it never reads below week 1).
+    prior_assignments = {}
+    sticky_secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+    if sticky_secret:
+        try:
+            prior_assignments = build_prior_state_with_walkback(
+                season, week, list(weekly["player_id"]), sticky_secret,
+            )
+        except Exception as e:
+            print(f"[curate-and-write-drafts] season={season} week={week} "
+                  f"prior_state_read_failed error={e!r} — first-appearance mode", flush=True)
+            prior_assignments = {}
+    print(f"[curate-and-write-drafts] season={season} week={week} "
+          f"prior_assignments_players={len(prior_assignments)}", flush=True)
+
     try:
         result = curate_nfl_shelves(
             weekly, season, week, schedules=schedules, anthropic_api_key=anthropic_api_key, pbp=pbp,
+            prior_assignments=prior_assignments,
         )
     except Exception as e:
         print(f"[curate-and-write-drafts] season={season} week={week} status=error error={e!r}", flush=True)
@@ -1064,6 +1100,9 @@ def curate_and_write_drafts_endpoint():
         if isinstance(max_rows_to_write, int):
             rows_to_write = rows_to_write[:max_rows_to_write]
 
+    ssh_rows = _json_safe(result["shelf_signal_history_rows"])
+    ssh_write_result = {"success": None, "status_code": None, "error": None}
+
     forward_result = {"success": None, "status_code": None, "error": None}
     if preview_only:
         pass  # real curation still ran (including real Tasty Six generation) -- just never written to Lovable
@@ -1073,6 +1112,23 @@ def curate_and_write_drafts_endpoint():
             return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
         if rows_to_write:
             forward_result = write_content_draft_rows(rows_to_write, secret)
+
+        # STICKINESS STATE PERSIST (Phase D prerequisite) — write this
+        # week's shelf_signal_history so NEXT week's build_prior_state_
+        # with_walkback has prior state to read. Covers EVERY home-
+        # assigned player (not the content-ready subset, and not scoped
+        # by player_ids_to_write / max_rows_to_write — those scope the
+        # content-drafts test write only; next week's sticky comparison
+        # needs every qualifying signal). Upsert on (player_id, season,
+        # week), idempotent on a re-run. A failure is logged, NOT fatal
+        # and NOT a 502 — it's state-tracking for next week, not this
+        # run's deliverable.
+        if ssh_rows:
+            ssh_write_result = write_shelf_signal_history_rows(ssh_rows, secret)
+            if not ssh_write_result["success"]:
+                print(f"[curate-and-write-drafts] season={season} week={week} "
+                      f"shelf_signal_history_write_failed status={ssh_write_result['status_code']} "
+                      f"error={truncate_for_log(ssh_write_result['error'], 300)!r}", flush=True)
 
     print(
         f"[curate-and-write-drafts] season={season} week={week} "
@@ -1093,6 +1149,12 @@ def curate_and_write_drafts_endpoint():
             "price_history_rows": len(mv_snapshot),
             "players_with_live_odds": mv_players_with_odds,
             "mean_market_value_completeness": mv_completeness_mean,
+        },
+        "stickiness": {
+            "prior_assignments_players": len(prior_assignments),
+            "signal_history_rows": len(ssh_rows),
+            "signal_history_written": (not preview_only) and bool(ssh_rows),
+            "signal_history_write_ok": ssh_write_result["success"],
         },
         "rows_curated": len(all_rows),
         "rows_without_content": rows_without_content,
@@ -1120,6 +1182,156 @@ def curate_and_write_drafts_health_check():
                  "runs against the full real pool.",
         "deployed_via": "github-auto-deploy",
     })
+
+
+def _nfl_week_windows(season: int) -> list:
+    """
+    [{season, week, game_type, first_gameday, last_gameday, n_games,
+    all_final}, ...] for one season from nfl_data_py.import_schedules,
+    sorted by week. An empty list when the schedule isn't published yet
+    (import_schedules returns a zero-row frame, not an error, for a
+    future season — confirmed directly) or on any fetch failure.
+
+    all_final mirrors reconcile_week.week_is_complete's own rule: a game
+    is final only when BOTH scores are non-null, and a week with zero
+    games is never "final" (n_games > 0 guard).
+    """
+    try:
+        sched = nfl.import_schedules([season])
+    except Exception as e:
+        print(f"[nfl-current-week] import_schedules({season}) failed: {e!r}", flush=True)
+        return []
+    if sched is None or len(sched) == 0 or "week" not in sched.columns:
+        return []
+    out = []
+    for wk, g in sched.groupby("week"):
+        gd = pd.to_datetime(g["gameday"], errors="coerce")
+        scored = g["home_score"].notna() & g["away_score"].notna()
+        out.append({
+            "season": season,
+            "week": int(wk),
+            "game_type": str(g["game_type"].iloc[0]) if "game_type" in g.columns else "REG",
+            "first_gameday": gd.min().date().isoformat() if gd.notna().any() else None,
+            "last_gameday": gd.max().date().isoformat() if gd.notna().any() else None,
+            "n_games": int(len(g)),
+            "all_final": bool(len(g) > 0 and scored.all()),
+        })
+    return sorted(out, key=lambda w: w["week"])
+
+
+def _resolve_nfl_target_weeks(as_of: date) -> dict:
+    """
+    Given today's date, resolve the two week numbers the weekly pipeline
+    operates on IN THE SAME RUN, so Make.com never does off-by-one math:
+
+      curate_target    — the week to build stubs + curate picks for:
+                         the earliest week whose last game is on or after
+                         `as_of` (the current or next week to be played).
+      reconcile_target — the week to fold into history: the LATEST week
+                         whose last game is strictly before `as_of`
+                         (fully in the past by the calendar).
+
+    Target selection is DATE-based (gameday vs. as_of), not score-based:
+    it's stable regardless of how promptly nfl_data_py ingests final
+    scores, and it's the same answer for a real "today" call as for an
+    ?as_of= backfill call. Whether reconcile_target's games are actually
+    final is a separate check /api/reconcile-week already does
+    (week_is_complete) — `all_final` is carried in the output as info,
+    not used for selection here.
+
+    Both targets are {season, week, game_type, first_gameday,
+    last_gameday, n_games, all_final} or null. Loads the guessed NFL
+    season (Aug–Dec -> that year, Jan–Jul -> prior year) plus the next
+    one, so a January postseason and a pre-Week-1 preseason both resolve.
+
+    reconcile_target_is_recent: true only if that week's last game was
+    0–10 days ago — during the offseason the "latest completed week" is
+    last season's Super Bowl, which Make.com must NOT reconcile.
+
+    status routing hint for Make.com:
+      in_season            — curate_target's games are within ~10 days
+      preseason            — schedule published, curate_target is Week 1
+                             and more than ~10 days out
+      offseason            — no curate_target, or it's far off with no
+                             recent completed week
+      schedule_unavailable — nfl_data_py returned nothing for either season
+    """
+    guess = as_of.year if as_of.month >= 8 else as_of.year - 1
+    weeks = _nfl_week_windows(guess) + _nfl_week_windows(guess + 1)
+    weeks.sort(key=lambda w: (w["season"], w["week"]))
+
+    def _last(w):
+        return date.fromisoformat(w["last_gameday"]) if w["last_gameday"] else None
+
+    curate = next((w for w in weeks if _last(w) and _last(w) >= as_of), None)
+    past = [w for w in weeks if _last(w) and _last(w) < as_of]
+    reconcile = past[-1] if past else None
+
+    reconcile_recent = None
+    if reconcile:
+        reconcile_recent = 0 <= (as_of - _last(reconcile)).days <= 10
+
+    if not weeks:
+        status = "schedule_unavailable"
+    elif curate is None:
+        status = "offseason"
+    else:
+        first = date.fromisoformat(curate["first_gameday"]) if curate["first_gameday"] else None
+        days_to_first = (first - as_of).days if first else 999
+        if days_to_first <= 10:
+            status = "in_season"          # curate_target's games are here or a few days out
+        elif curate["week"] == 1 and days_to_first <= 40:
+            status = "preseason"          # Week 1 within ~6 weeks, schedule known
+        else:
+            status = "offseason"          # nothing worth acting on yet
+
+    return {
+        "as_of": as_of.isoformat(),
+        "status": status,
+        "curate_target": curate,
+        "reconcile_target": reconcile,
+        "reconcile_target_is_recent": reconcile_recent,
+    }
+
+
+@app.route("/api/nfl-current-week", methods=["GET"])
+def nfl_current_week_endpoint():
+    """
+    Target-week resolver for the weekly Make.com scenario — so it never
+    hardcodes a week number. NO AUTH: read-only, GET, no DB, no writes,
+    derives everything from public nfl_data_py schedule data + today's
+    date. Same unauthenticated posture as this file's other GET
+    health-checks.
+
+    Returns _resolve_nfl_target_weeks(today) — curate_target /
+    reconcile_target / reconcile_target_is_recent / status. Degrades to
+    status="schedule_unavailable" (both targets null) rather than 500 if
+    nfl_data_py has no schedule for either candidate season.
+
+    Optional ?as_of=YYYY-MM-DD to resolve for a specific date (testing /
+    backfill).
+    """
+    as_of_param = request.args.get("as_of")
+    try:
+        as_of = date.fromisoformat(as_of_param) if as_of_param else datetime.now(timezone.utc).date()
+    except ValueError:
+        return jsonify({"error": "as_of must be YYYY-MM-DD"}), 400
+
+    try:
+        resolved = _resolve_nfl_target_weeks(as_of)
+    except Exception as e:
+        print(f"[nfl-current-week] resolve failed as_of={as_of} error={e!r}", flush=True)
+        return jsonify({
+            "as_of": as_of.isoformat(),
+            "status": "schedule_unavailable",
+            "curate_target": None,
+            "reconcile_target": None,
+            "reconcile_target_is_recent": None,
+            "error": str(e),
+        }), 200
+
+    resolved["deployed_via"] = "github-auto-deploy"
+    return jsonify(resolved), 200
 
 
 @app.route("/api/write-intelligence", methods=["POST"])
