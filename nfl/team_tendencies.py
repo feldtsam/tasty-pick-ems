@@ -490,6 +490,22 @@ def _related_players_team_wide(
 # Story generation — entity is a TEAM (confirmed against real data,
 # see module docstring: none of these three signals have a natural
 # position-group split of their own, unlike Defensive Trends).
+#
+# VOICE (TPE Editorial Voice Spec, Section 3): Coaching Trends sits at
+# a ~4.5–5/10 personality ceiling — a coaching staff visibly changing
+# how it calls a game reads as a story on its own, so the copy can be
+# a touch more narrative than Defensive/Market Intelligence, but the
+# season-rate -> recent-rate number contrast is what carries each
+# claim. The 2026-09 voice pass re-toned the three _headline_and_story_*
+# functions off the earlier "— a real, recent shift ... not just one
+# X" over-explaining tail in the agrees=True branches (the numbers now
+# stand on their own) and off the "not (yet) showing up as ... but a
+# real shift in the overall tendency" diffuse-branch phrasing (now the
+# tighter "No single X carries this one, but ... — a real shift in
+# tendency, just a diffuse one" shape shared with Defensive Trends).
+# The pace `thin` hedge append is unchanged, verbatim. Headlines were
+# left as-is — plain declarative statements of a play-calling change,
+# already at/below the ceiling.
 # ============================================================
 
 def _headline_and_story_redzone(row: pd.Series, direction: str) -> tuple:
@@ -527,28 +543,26 @@ def _headline_and_story_redzone(row: pd.Series, direction: str) -> tuple:
         if agrees:
             story = (
                 f"{team} has run the ball on {recent_rate*100:.0f}% of its plays inside the 10 over its last 3 "
-                f"games, up from a {season_rate*100:.0f}% season rate{baseline} — a real, recent shift in "
-                f"play-calling."
+                f"games, up from a {season_rate*100:.0f}% season rate{baseline}."
             )
         else:
             story = (
-                f"{team}'s red-zone play-calling has trended clearly more run-heavy per the model's shrunk, "
-                f"league-relative read — not (yet) showing up as a single standout raw split, but a real shift "
-                f"in the overall tendency."
+                f"No single play-call split carries this one, but {team}'s red-zone play-calling has trended "
+                f"clearly more run-heavy on the model's shrunk, league-relative read — a real shift in "
+                f"tendency, just a diffuse one."
             )
     else:
         headline = f"{team} is throwing the ball much more once inside the 10."
         if agrees:
             story = (
                 f"{team} has passed on {100 - recent_rate*100:.0f}% of its plays inside the 10 over its last 3 "
-                f"games, up from a {100 - season_rate*100:.0f}% season rate{baseline} — a real, recent shift in "
-                f"play-calling."
+                f"games, up from a {100 - season_rate*100:.0f}% season rate{baseline}."
             )
         else:
             story = (
-                f"{team}'s red-zone play-calling has trended clearly more pass-heavy per the model's shrunk, "
-                f"league-relative read — not (yet) showing up as a single standout raw split, but a real shift "
-                f"in the overall tendency."
+                f"No single play-call split carries this one, but {team}'s red-zone play-calling has trended "
+                f"clearly more pass-heavy on the model's shrunk, league-relative read — a real shift in "
+                f"tendency, just a diffuse one."
             )
 
     return headline, story, agrees
@@ -579,28 +593,26 @@ def _headline_and_story_fourth_down(row: pd.Series, direction: str) -> tuple:
         if agrees:
             story = (
                 f"{team} has gone for it on {recent_rate*100:.0f}% of realistic 4th-down decisions over its "
-                f"last 3 games, up from a {season_rate*100:.0f}% season rate — a real, recent shift toward "
-                f"aggression, not just one gutsy call."
+                f"last 3 games, up from a {season_rate*100:.0f}% season rate."
             )
         else:
             story = (
-                f"{team}'s 4th-down decision-making has trended clearly more aggressive per the model's "
-                f"shrunk, league-relative read — not (yet) showing up as a single standout raw rate, but a "
-                f"real shift in the overall tendency."
+                f"No single 4th-down rate carries this one, but {team}'s decision-making has trended clearly "
+                f"more aggressive on the model's shrunk, league-relative read — a real shift in tendency, "
+                f"just a diffuse one."
             )
     else:
         headline = f"{team} is playing it much safer on 4th down than usual."
         if agrees:
             story = (
                 f"{team} has gone for it on just {recent_rate*100:.0f}% of realistic 4th-down decisions over "
-                f"its last 3 games, down from a {season_rate*100:.0f}% season rate — a real, recent shift "
-                f"toward caution."
+                f"its last 3 games, down from a {season_rate*100:.0f}% season rate."
             )
         else:
             story = (
-                f"{team}'s 4th-down decision-making has trended clearly more conservative per the model's "
-                f"shrunk, league-relative read — not (yet) showing up as a single standout raw rate, but a "
-                f"real shift in the overall tendency."
+                f"No single 4th-down rate carries this one, but {team}'s decision-making has trended clearly "
+                f"more conservative on the model's shrunk, league-relative read — a real shift in tendency, "
+                f"just a diffuse one."
             )
 
     return headline, story, agrees
@@ -630,25 +642,24 @@ def _headline_and_story_pace(row: pd.Series, direction: str, thin: bool) -> tupl
         if agrees:
             story = (
                 f"{team} is averaging {recent_sec:.1f} seconds per play over its last 3 games, down from a "
-                f"{season_sec:.1f}-second season average — a real, recent increase in tempo, more plays run "
-                f"for both offenses."
+                f"{season_sec:.1f}-second season average — a faster clip, and more plays for both offenses."
             )
         else:
             story = (
-                f"{team}'s pace has trended clearly faster per the model's league-relative weekly read — not "
-                f"(yet) showing up as a single standout raw seconds-per-play number, but a real shift."
+                f"No single seconds-per-play number carries this one, but {team}'s pace has trended clearly "
+                f"faster on the model's league-relative weekly read — a real shift, just a diffuse one."
             )
     else:
         headline = f"{team}'s offense has slowed down recently."
         if agrees:
             story = (
                 f"{team} is averaging {recent_sec:.1f} seconds per play over its last 3 games, up from a "
-                f"{season_sec:.1f}-second season average — a real, recent drop in tempo."
+                f"{season_sec:.1f}-second season average — a slower clip, and fewer plays for both offenses."
             )
         else:
             story = (
-                f"{team}'s pace has trended clearly slower per the model's league-relative weekly read — not "
-                f"(yet) showing up as a single standout raw seconds-per-play number, but a real shift."
+                f"No single seconds-per-play number carries this one, but {team}'s pace has trended clearly "
+                f"slower on the model's league-relative weekly read — a real shift, just a diffuse one."
             )
     if thin:
         story += " Based on a still-developing sample this season — worth confirming as more games are played."

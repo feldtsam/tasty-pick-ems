@@ -209,10 +209,10 @@ def generate_and_write_intelligence(
     every family is fully generated (fetch real data -> build stories ->
     sanity-check -> lifecycle -> shape) BEFORE a single combined write.
 
-    families: which families to run, default ALL of FAMILIES (Coaching
-    Trends is never in FAMILIES at all — see module docstring). An
-    unrecognized name raises via generate_family, same "fail loud on a
-    caller typo" reasoning.
+    families: which families to run, default ALL of FAMILIES — which
+    now includes Coaching Trends (Phase 5), the fourth and final family
+    (see module docstring). An unrecognized name raises via
+    generate_family, same "fail loud on a caller typo" reasoning.
 
     preview_only: real generation still runs in full for every requested
     family (including a real prior_history read-back for lifecycle-

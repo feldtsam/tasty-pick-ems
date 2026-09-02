@@ -1471,9 +1471,8 @@ def generate_and_write_intelligence_endpoint():
 
     POST body: {"season": int, "week": int, "families": [str, ...]
     (optional, default every family in intelligence_generate.FAMILIES —
-    role_changes, defensive_trends, market_intelligence; Coaching Trends
-    is never included, see that module's own docstring), "preview_only":
-    bool (optional)}.
+    coaching_trends, defensive_trends, market_intelligence, role_changes),
+    "preview_only": bool (optional)}.
 
     AUTH: check_pipeline_secret() — same small-fixed-Make.com-trigger
     reasoning as /api/curate-and-write-drafts and /api/write-intelligence.
