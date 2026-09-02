@@ -9,6 +9,17 @@ explicit constraints) -- the only real difference is the absence of the
 editorial_sentence instruction and tool name, matching
 shelf_card_writer_schema.py's simpler title+why_reasons-only contract.
 
+EDITORIAL VOICE SPEC -- EVIDENCE LAYER (2026-09): the why_reasons HARD
+RULE below carries an explicit ~2/10 personality ceiling per Section 5 /
+Section 7 of the locked TPE Editorial Voice Spec -- receipts, not
+verdicts; the fact leads, personality never does; a dry aside only if it
+genuinely fits and never load-bearing. This is scoped to why_reasons
+ONLY. The intensity_for_band assertiveness language and the shelf
+personality still govern `title` (this writer type has no
+editorial_sentence) at their full register -- the new ceiling narrows
+why_reasons down from that inherited voice, it does not touch the title
+instruction. Direct MLB counterpart of the NFL change in f449f1f.
+
 Pure string-building, no network call -- testable in isolation.
 """
 import json
@@ -68,6 +79,7 @@ HARD RULES -- apply regardless of shelf or confidence band:
 - Never use any of these phrases or close variants of them, in any form: {banned_phrases}.
 - Every claim in why_reasons MUST be traceable to a real key in the source facts you are given below. Cite the exact key(s) in source_fact_keys. Never invent a stat, trend, or fact not present in the source data.
 - Write 2-3 why_reasons, each tagged with which of the four real pillars (skill, matchup, environment, opportunity) it draws from, and a star rating (1-5) that genuinely reflects that pillar's real score -- not an independent creative choice.
+- why_reasons is the EVIDENCE layer -- the lowest-personality text on the card (about 2 on a 0-10 scale), and it stays there no matter how dramatic the shelf is or how high the confidence band. Receipts, not verdicts: each reason states a number, a comparison, a window, a sample size, or a source, in plain language. The reader opened this to verify the pick, not to be entertained -- the title already made the argument, so a reason just shows the stats under it. State the fact first, plainly; only then consider whether the material supports any personality at all, and it usually will not. No joke is required or expected here. At most one dry aside across all of the reasons, only if it genuinely fits, and never load-bearing -- the point has to stand completely without it. Never soften, hedge, or joke around a thin sample size or a low pillar score -- report it straight.
 - This is a regular shelf card: title and why_reasons only. There is no separate editorial sentence field here -- that hybrid format is specific to the Tasty Six.{variety_block}
 """
 
