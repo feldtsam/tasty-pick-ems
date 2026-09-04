@@ -72,10 +72,19 @@ def build_player_season(weeks=6):
         rows.append(_player_row("wh", "Workhorse Back", "RB", 10, 20, 2025, wk,
                                 rz_t=2 + wk, rz_td=1 + wk // 3, gl_t=1 + wk // 3, gl_td=wk // 3,
                                 i10_t=1 + wk // 2, i10_td=wk // 3, share=0.62))
-    # committee: flat low usage, no scores
+    # committee: steady mid usage, no scores (rz_t=3 keeps its cumulative
+    # above min_cumulative_rz_touches_for_rate so it's scored on a real
+    # proven_heat, not the thin-sample gate — the workhorse-vs-committee
+    # differential is the point of this fixture)
     for wk in range(1, weeks + 1):
         rows.append(_player_row("cm", "Committee Back", "RB", 11, 21, 2025, wk,
-                                rz_t=2, rz_td=0, gl_t=1, gl_td=0, i10_t=1, i10_td=0, share=0.20))
+                                rz_t=3, rz_td=0, gl_t=1, gl_td=0, i10_t=1, i10_td=0, share=0.20))
+    # spot-touch back: tiny volume, scores most weeks -> pre-gate this rode
+    # a 2-recent-TD count + a great TD/touch rate to the top of the board;
+    # the thin-sample rate gate must neutralize it (the London Montgomery case)
+    for wk in range(1, weeks + 1):
+        rows.append(_player_row("spot", "Spot Back", "RB", 13, 23, 2025, wk,
+                                rz_t=2, rz_td=1, gl_t=1, gl_td=1, i10_t=1, i10_td=1, share=0.15))
     # filler skill players so the percentile scale spans a real range
     for i, (rzt, rztd) in enumerate([(1, 0), (3, 1), (4, 0), (5, 1), (6, 2), (2, 0), (7, 2), (3, 0)]):
         for wk in range(1, weeks + 1):
@@ -179,13 +188,37 @@ if __name__ == "__main__":
     r.append(check("workhorse completeness is a real, non-trivial number at wk6 (>= 60)",
                    wk6.loc["wh", "td_opportunity_completeness"] >= 60))
 
+    # thin-sample rate gate: the spot-touch back (cum rz_touches 10 < 15 by
+    # wk6, but scores nearly every week) must NOT ride a fluke rate/count to
+    # the top — proven_heat neutralized, td_opportunity ~= 50, completeness
+    # well below the workhorse's
+    r.append(check("spot-touch back (thin cum sample) proven_heat is neutralized to ~50 at wk6",
+                   abs(wk6.loc["spot", "proven_heat"] - 50.0) < 1e-6))
+    r.append(check("spot-touch back td_opportunity does NOT beat the workhorse",
+                   wk6.loc["spot", "td_opportunity"] < wk6.loc["wh", "td_opportunity"]))
+    r.append(check("spot-touch back completeness < workhorse completeness (gate registers as incomplete)",
+                   wk6.loc["spot", "td_opportunity_completeness"] < wk6.loc["wh", "td_opportunity_completeness"]))
+    r.append(check("workhorse (cum rz_touches 25 by wk6) is NOT gated — recent_td_production_pct is real, not 50",
+                   abs(wk6.loc["wh", "recent_td_production_pct"] - 50.0) > 1e-6))
+
     # a player with zero history (debut week) -> mostly fallback, low completeness
     debut = build_player_season(weeks=6)
-    debut = pd.concat([debut, pd.DataFrame([_player_row("new", "Debut Guy", "RB", 12, 22, 2025, 6, rz_t=8, rz_td=3, share=0.7)])], ignore_index=True)
+    debut = pd.concat([debut, pd.DataFrame([_player_row("new", "Debut Guy", "RB", 14, 24, 2025, 6, rz_t=8, rz_td=3, share=0.7)])], ignore_index=True)
     ds = score_td_opportunity_cfb(debut)
     newrow = ds[(ds["player_id"] == "new") & (ds["week"] == 6)].iloc[0]
     r.append(check("debut-week player: completeness low (<= 40) despite a big raw line",
                    newrow["td_opportunity_completeness"] <= 40))
+
+    # ---- FBS-opponent filter ----------------------------------------
+    from scoring import drop_non_fbs_opponent_rows
+    mixed = build_player_season(weeks=6)
+    fcs_row = _player_row("fcsgame", "vs FCS", "RB", 10, 999, 2025, 3, rz_t=6, rz_td=4, share=0.8)  # opp 999 = FCS
+    mixed = pd.concat([mixed, pd.DataFrame([fcs_row])], ignore_index=True)
+    filtered = drop_non_fbs_opponent_rows(mixed, fbs_team_ids={10, 11, 13, 20, 21, 23, 30, 31, 32, 33, 34, 35, 36, 37, 40, 41, 42, 43, 44, 45, 46, 47})
+    r.append(check("drop_non_fbs_opponent_rows removes the FCS-opponent (opp 999) row",
+                   not ((filtered["player_id"] == "fcsgame")).any()))
+    r.append(check("drop_non_fbs_opponent_rows keeps every FBS-vs-FBS row",
+                   len(filtered) == len(build_player_season(weeks=6))))
 
     # ---- Defensive Matchup Vulnerability -----------------------------
     players = build_player_season(weeks=6)

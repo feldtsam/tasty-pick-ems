@@ -139,3 +139,22 @@ def team_id_map_from_games(games: list[dict]) -> dict[str, int]:
 def game_index(games: list[dict]) -> dict[int, dict]:
     """{ gameId -> game dict } for O(1) lookup of venue / completion / etc."""
     return {int(g["id"]): g for g in games if g.get("id") is not None}
+
+
+_FBS_IDS_CACHE: dict[int, frozenset[int]] = {}
+
+
+def fbs_team_ids(season: int) -> frozenset[int]:
+    """
+    { stable integer team id } for every FBS program in `season`, from CFBD
+    `/teams/fbs?year=`. Season-cached. Used by
+    scoring.drop_non_fbs_opponent_rows to keep FCS blowout stats out of the
+    scoring reference (see the CFB weeks-1-8 validation).
+    """
+    season = int(season)
+    if season not in _FBS_IDS_CACHE:
+        rows = cfbd_get("/teams/fbs", {"year": season})
+        _FBS_IDS_CACHE[season] = frozenset(
+            int(t["id"]) for t in (rows or []) if isinstance(t, dict) and t.get("id") is not None
+        )
+    return _FBS_IDS_CACHE[season]

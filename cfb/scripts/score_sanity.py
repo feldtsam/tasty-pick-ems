@@ -2,8 +2,10 @@
 Real-data sanity check for cfb/scoring.py.
 
 Pulls a real multi-week slice of the two ingestion tables from the
-deployed CFB endpoint (preview_only + full_rows — no writes), assembles
-them into whole-season frames, runs score_td_opportunity_cfb /
+deployed CFB endpoint (preview_only + full_rows — no writes), drops
+non-FBS-opponent rows (drop_non_fbs_opponent_rows — CFDB blowout stats
+kept out of the reference / rolling windows), assembles them into
+whole-season frames, runs score_td_opportunity_cfb /
 score_defensive_matchup_cfb, and prints the top/bottom 10 of each score
 for the target week WITH the corresponding *_completeness alongside every
 row, so "genuinely scores high" can be told apart from "still mostly
@@ -23,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 import requests
 
-from scoring import score_defensive_matchup_cfb, score_td_opportunity_cfb
+from ids import fbs_team_ids
+from scoring import drop_non_fbs_opponent_rows, score_defensive_matchup_cfb, score_td_opportunity_cfb
 
 URL = os.environ.get("CFB_URL", "https://tasty-pick-ems-cfb.vercel.app").rstrip("/")
 SECRET = os.environ.get("CFB_PIPELINE_SECRET") or os.environ.get("PIPELINE_INCOMING_SECRET")
@@ -81,7 +84,15 @@ if __name__ == "__main__":
 
     players = pd.DataFrame(p_parts)
     defense = pd.DataFrame(d_parts)
-    print(f"\nAssembled: {len(players)} player-rows, {len(defense)} defense-rows "
+    raw_p, raw_d = len(players), len(defense)
+
+    fbs = fbs_team_ids(season)
+    players = drop_non_fbs_opponent_rows(players, fbs)
+    defense = drop_non_fbs_opponent_rows(defense, fbs)
+    print(f"\nFBS filter: player-rows {raw_p} -> {len(players)} "
+          f"({raw_p - len(players)} non-FBS-opponent dropped), "
+          f"defense-rows {raw_d} -> {len(defense)}")
+    print(f"Assembled: {len(players)} player-rows, {len(defense)} defense-rows "
           f"across weeks {first_week}-{target_week}\n")
 
     # ---- score ----

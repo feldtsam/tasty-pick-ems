@@ -17,12 +17,20 @@ are byte-for-byte the NFL versions; add_defensive_matchup_context differs
 only in join keys (CFB uses the stable integer team id, spec §8, and the
 `cfb_defense_redzone_allowed_weekly` columns carry an `_allowed` suffix).
 
-Locked parameters (spec §8): recency weights .35/.30/.20/.15, shrinkage
-k=6, min_rz_touches_for_qualification=15,
-min_touches_allowed_for_qualification=20. `snap_share` has no CFB source
-and is left as a PERMANENT structural fallback — an all-NaN column fed
-through the existing neutral-50 fallback mechanism, which caps
-td_opportunity_completeness at ~90% all season (Evidence Quality audit).
+Parameters: recency weights .35/.30/.20/.15,
+min_rz_touches_for_qualification=15, min_touches_allowed_for_qualification
+=20 (spec §8). Shrinkage k and the thin-sample rate gate were retuned
+2026-09 from the CFB weeks-1-8 real-data validation (k 6->12,
+min_cumulative_rz_touches_for_rate=15 added) — see CONFIG. `snap_share`
+has no CFB source and is left as a PERMANENT structural fallback — an
+all-NaN column fed through the existing neutral-50 fallback mechanism,
+which caps td_opportunity_completeness at ~90% all season (Evidence
+Quality audit).
+
+FBS-OPPONENT FILTER: neither scorer excludes non-FBS-opponent rows on its
+own — the caller drops them first with drop_non_fbs_opponent_rows() so
+FCS blowout stats never enter a player's rolling windows OR the percentile
+reference. Weeks 1-3 are ~25-33% FCS-opponent rows; negligible by week 5.
 
 OUT OF SCOPE here: the environment half of Situation (dome/wind/temp) and
 the `0.7·dmv + 0.3·env` blend; Evidence Quality; Market Value;
@@ -61,12 +69,25 @@ CONFIG = {
     "combination": {
         "bonus_weight": 0.3,
     },
-    # Phantom-touch prior strength for TD-conversion-rate shrinkage (§8).
-    "shrinkage_k": 6,
+    # Phantom-touch prior strength for TD-conversion-rate shrinkage.
+    # 2026-09: raised from the original §8-locked 6 -> 12 after the CFB
+    # weeks-1-8 real-data validation. k=6 let a 2-for-2 goal-line game
+    # percentile-rank at ~95th on a 2-touch sample; CFB players accumulate
+    # red-zone touches far slower than NFL, so the NFL-tuned k under-shrinks
+    # here. Applies to proven_heat's conversion rate AND DMV's
+    # conversion-rate-allowed (both re-validated: DMV intuition unchanged).
+    "shrinkage_k": 12,
     # Season-total red-zone touches for a player's rows to help DEFINE the
     # percentile reference scale. Every row is still scored against the
     # scale regardless of its own sample size (§8).
     "min_rz_touches_for_qualification": 15,
+    # 2026-09: a player's OWN conversion_rate + recent_td_production inputs
+    # are routed through the neutral-50 fallback until his cumulative RZ
+    # touches THROUGH THE PRIOR WEEK clear this. Deliberately equals
+    # min_rz_touches_for_qualification — "enough sample to define the scale"
+    # and "enough sample to trust your own rate" are the same bar. See the
+    # gate in score_td_opportunity_cfb for the why.
+    "min_cumulative_rz_touches_for_rate": 15,
     "defensive_matchup": {
         # Mirrors proven_heat's split + recency weights exactly — same
         # shape, measuring what's ALLOWED instead of produced.
@@ -275,6 +296,31 @@ def add_defensive_matchup_context(weekly: pd.DataFrame, allowed_weekly: pd.DataF
     return out.drop(columns=["_join_def_team_id"])
 
 
+def drop_non_fbs_opponent_rows(weekly: pd.DataFrame, fbs_team_ids: set[int]) -> pd.DataFrame:
+    """
+    Keep only rows where BOTH `team_id` and `opponent_team_id` are FBS.
+
+    Apply this to `cfb_player_redzone_weekly` and `cfb_defense_redzone_
+    allowed_weekly` BEFORE scoring. Dropping the row entirely (not just
+    excluding it from the reference) is deliberate: an FBS RB's 3-TD game
+    against an FCS opponent should not sit in his rolling windows or
+    cumulative rate for the rest of the season, and an FCS team's "allowed"
+    row (or an FBS team's row from an FCS-blowout week) should not help
+    define where the percentile boundaries fall.
+
+    `fbs_team_ids` — CFBD `/teams/fbs?year=<season>` ids for that season
+    (cfb/ids.fbs_team_ids). No-op if the frame has no team-id columns.
+    """
+    ids = set(fbs_team_ids)
+    cols = [c for c in ("team_id", "opponent_team_id") if c in weekly.columns]
+    if not cols:
+        return weekly
+    mask = pd.Series(True, index=weekly.index)
+    for c in cols:
+        mask &= weekly[c].isin(ids)
+    return weekly[mask].copy()
+
+
 # ===========================================================================
 # TD Opportunity (§2)
 # ===========================================================================
@@ -293,8 +339,19 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     3 trend) that were real values rather than neutral-50 fallback. The
     `snap_share` trend input is ALWAYS a fallback for CFB (no data source),
     so completeness is structurally capped at ~90% (Evidence Quality
-    audit); early in a season the two other trend inputs and the thin
-    rolling windows push it lower still.
+    audit); early in a season the two other trend inputs, the thin rolling
+    windows, and the thin-sample rate gate (below) push it lower still.
+
+    THIN-SAMPLE RATE GATE (2026-09): until a player's cumulative RZ touches
+    through the prior week reach config["min_cumulative_rz_touches_for_
+    rate"], his 4 recent-production and 3 conversion-rate inputs are forced
+    to the neutral-50 fallback. Without it a 3-6-touch backup with a
+    couple of recent TDs percentile-ranks at ~90 (real, confirmed persisting
+    through week 8 for the sub-5-game population, since emerging_heat is
+    neutral for them too). With it those rows score ~50 at low completeness
+    — which is what the weeks-1-8 validation showed they should. This is
+    NOT the same as a full "contributes nothing until game 5" cold-start
+    gate on the whole pillar; that decision is still open.
 
     Body identical to nfl/scoring.py.score_td_opportunity apart from
     building the all-NaN `snap_share` column and rolling the windows here
@@ -321,6 +378,21 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     fallback_flags: list = []
     pct = _percentile_fn(weekly, config, track_fallback=fallback_flags)
 
+    # Thin-sample gate (2026-09, from the CFB weeks-1-8 real-data
+    # validation): a player whose cumulative RZ touches THROUGH THE PRIOR
+    # WEEK are below the minimum has no trustworthy rate / recent-production
+    # signal yet — a backup / walk-on / just-arrived transfer with 3-6
+    # touches and a couple recent TDs otherwise rockets to the top of the
+    # board (and emerging_heat is neutral-50 for the same players, so
+    # nothing counterbalances it). NaN those inputs so pct() routes them
+    # through neutral-50 and they register as incomplete. Verified to
+    # persist through week 8 for the sub-5-game population without this.
+    cum_rz_touches = _season_cumulative(weekly, "rz_touches")
+    cum_rz_tds = _season_cumulative(weekly, "rz_tds")
+    thin_rate_sample = cum_rz_touches < config["min_cumulative_rz_touches_for_rate"]
+    for _col in ("rz_tds_last1", "rz_tds_last3", "rz_tds_last5", "rz_tds_season_avg"):
+        weekly.loc[thin_rate_sample, _col] = np.nan
+
     # --- Proven Heat: recent TD production ---
     w = ph_cfg["recent_td_production"]
     recent_td_production_pct = (
@@ -335,16 +407,14 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     cum_gl_tds = _season_cumulative(weekly, "gl_tds")
     cum_i10_touches = _season_cumulative(weekly, "i10_touches")
     cum_i10_tds = _season_cumulative(weekly, "i10_tds")
-    cum_rz_touches = _season_cumulative(weekly, "rz_touches")
-    cum_rz_tds = _season_cumulative(weekly, "rz_tds")
 
     league_avg_gl_rate = _safe_ratio(weekly["gl_tds"].sum(), weekly["gl_touches"].sum())
     league_avg_i10_rate = _safe_ratio(weekly["i10_tds"].sum(), weekly["i10_touches"].sum())
     league_avg_rz_rate = _safe_ratio(weekly["rz_tds"].sum(), weekly["rz_touches"].sum())
 
-    gl_rate = _shrink_rate(cum_gl_tds, cum_gl_touches, league_avg_gl_rate, k)
-    i10_rate = _shrink_rate(cum_i10_tds, cum_i10_touches, league_avg_i10_rate, k)
-    rz_rate = _shrink_rate(cum_rz_tds, cum_rz_touches, league_avg_rz_rate, k)
+    gl_rate = _shrink_rate(cum_gl_tds, cum_gl_touches, league_avg_gl_rate, k).where(~thin_rate_sample)
+    i10_rate = _shrink_rate(cum_i10_tds, cum_i10_touches, league_avg_i10_rate, k).where(~thin_rate_sample)
+    rz_rate = _shrink_rate(cum_rz_tds, cum_rz_touches, league_avg_rz_rate, k).where(~thin_rate_sample)
 
     conversion_rate_pct = pd.concat([pct(gl_rate), pct(i10_rate), pct(rz_rate)], axis=1).mean(axis=1)
 
