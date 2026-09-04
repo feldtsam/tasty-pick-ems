@@ -85,8 +85,10 @@ if __name__ == "__main__":
             and "write" not in calls and len(body["sample_rows"]) == 1,
         ))
         results.append(check(
-            "build-stub-week: build is single-season scoped (historical_seasons=[season])",
-            calls["build"]["historical_seasons"] == [2026],
+            "build-stub-week: build includes the prior season as a fallback "
+            "(historical_seasons=[season - 1, season], fixed 2026-09-04 — a real Week 1 "
+            "with no pbp published yet used to crash on [season] alone)",
+            calls["build"]["historical_seasons"] == [2025, 2026],
         ))
 
         calls.clear()

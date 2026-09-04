@@ -637,14 +637,29 @@ def build_stub_week_endpoint():
     AUTH: check_pipeline_secret() — same small-fixed-Make.com-trigger
     reasoning as /api/reconcile-week and /api/curate-and-write-drafts.
 
-    SINGLE-SEASON SCOPED (historical_seasons=[season]) — identical
-    reasoning to /api/reconcile-week's own scoping: add_rolling_windows
-    groups by (player_id, season) / (defteam, position_group, season),
-    so trailing windows already reset at the season boundary and a
-    stub week never needs another season's play-by-play. Keeps the
-    run_pipeline load to one season (~16-20s measured locally, well
-    inside the function's maxDuration) instead of the 4-season default
-    the CLI still uses.
+    SCOPED TO THE TARGET SEASON PLUS THE ONE BEFORE IT
+    (historical_seasons=[season - 1, season]) — NOT single-season, an
+    earlier version of this docstring claimed "a stub week never needs
+    another season's play-by-play" and that claim was wrong, confirmed
+    by a real crash, not a hypothetical: historical_seasons=[season]
+    alone raises KeyError('rush_attempt') for Week 1 of a season with
+    no games played yet, because nfl_data_py.import_pbp_data([season])
+    comes back genuinely empty — shape (0, 0), zero columns, not just
+    zero rows — and run_pipeline's aggregate_redzone_game indexes
+    pbp["rush_attempt"] unconditionally. There is no other season's data
+    to fall back on when historical_seasons is exactly [season], which
+    is exactly the Week-1-of-a-brand-new-season case this endpoint has
+    to handle correctly. add_rolling_windows still groups by (player_id,
+    season) / (defteam, position_group, season) — a new season's
+    trailing windows still correctly reset to the neutral cold-start
+    fallback regardless of which prior seasons are loaded, so including
+    season - 1 doesn't change a Week 1 stub row's own values, it just
+    gives run_pipeline a real, non-empty, correctly-shaped pbp frame to
+    run on. Verified directly: historical_seasons=[2025, 2026] for a
+    real 2026 Week 1 call succeeds cleanly (799 real stub rows, 111
+    columns, ~30s — still one extra season, not the CLI's 4-season
+    default, so the maxDuration margin this scoping exists for is
+    unaffected).
 
     preview_only: build + shape the rows and report a small sample, but
     write nothing to the table.
@@ -686,7 +701,7 @@ def build_stub_week_endpoint():
             # produces correct keys, so this only applies on the stub_csv path.
             stub_week = _rebind_stub_frame(_load_stub_csv(stub_csv), season, week)
         else:
-            stub_week = build_stub_week(season, week, historical_seasons=[season])
+            stub_week = build_stub_week(season, week, historical_seasons=[season - 1, season])
     except Exception as e:
         print(f"[build-stub-week] season={season} week={week} status=error error={e!r}", flush=True)
         return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
