@@ -158,6 +158,40 @@ CONFIG = {
         # 1.0 = returning / established, < 1.0 = new to team.
         "new_team_completeness_factor": 0.75,
     },
+    # Locked (spec §5): Evidence Quality is a pure meta-layer over the
+    # three pillars' own outputs, ported verbatim from nfl/scoring.py's
+    # score_evidence_quality with only the family/completeness column
+    # lists narrowed to CFB's real 3 pillars (Market Value doesn't exist
+    # for CFB at all — not "present but renormalizing away" the way it
+    # is on the NFL side, so it's never listed here). signal_convergence/
+    # signal_breach are DELIBERATELY NOT ported — spec §5 hard-gates both
+    # ("do not ship these two booleans for CFB until a tuned backfill
+    # exists"); their NFL thresholds were reverse-engineered from an NFL
+    # backfill and have no CFB-data grounding yet.
+    "evidence_quality": {
+        "family_score_columns": ["td_opportunity", "situation", "role_momentum"],
+        "completeness_columns": [
+            "td_opportunity_completeness", "situation_completeness", "role_momentum_completeness",
+        ],
+    },
+    # Locked (spec §0): final CFB v1 pillar weights. Market Value is
+    # DEFERRED TO v2 (spec §6) — simply absent from core_weights, not
+    # present-with-zero, so score_universal_tpe_cfb's present-columns
+    # renormalization never has to special-case it (there's nothing to
+    # renormalize away — unlike NFL, where market_value_score IS listed
+    # here and renormalizes off on every historical row that lacks it).
+    "universal_tpe": {
+        "core_weights": {
+            "td_opportunity": 53,
+            "situation": 35,
+            "role_momentum": 12,
+        },
+        # tpe_score = core_score * (confidence_floor + (1 - confidence_floor) * evidence_quality / 100).
+        # Locked (spec §5 pseudocode) — identical formula and floor to
+        # NFL's own, not re-derived: `confidence_multiplier = 0.5 + 0.5 ·
+        # (evidence_quality / 100)`.
+        "confidence_floor": 0.5,
+    },
 }
 
 
@@ -769,3 +803,147 @@ def _safe_ratio(num, den) -> float:
     except (TypeError, ZeroDivisionError):
         return 0.0
     return r if np.isfinite(r) else 0.0
+
+
+# ===========================================================================
+# Evidence Quality & Universal TPE Score (§5 / §0) — CFB v1
+# ===========================================================================
+# Added 2026-09 (Track B: curation/orchestration layer). Neither function
+# existed for CFB before this — cfb/scoring.py's own module docstring long
+# listed "Evidence Quality... core_weights / any end-to-end pipeline wiring"
+# as OUT OF SCOPE, and every prior reference to score_universal_tpe in this
+# file (Situation's/Role & Momentum's renormalization comments) was pointing
+# at the NFL pattern by ANALOGY, not calling a real CFB function — confirmed
+# directly (grep), not assumed, before writing these. Ported verbatim from
+# nfl/scoring.py's score_evidence_quality/score_universal_tpe — same
+# "duplicate rather than cross-import" rule this whole file already follows
+# — with the family/completeness lists and core_weights narrowed to CFB's
+# real 3 pillars (see CONFIG["evidence_quality"]/CONFIG["universal_tpe"]'s
+# own comments for exactly what changed and why). The orchestration/write
+# layer that calls these (cfb/api/curate_cfb_shelves.py) does not recompute
+# any of this math itself — it only calls these two functions, matching the
+# NFL split between reconcile_week.py (scoring) and curate_home_shelves.py
+# (shelf assignment + write).
+
+
+def score_evidence_quality_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row for Evidence Quality (§5) — a pure meta-layer over
+    TD Opportunity / Situation / Role & Momentum's own outputs. Must run
+    AFTER all three (score_td_opportunity_cfb, score_defensive_matchup_cfb,
+    score_role_momentum_cfb) — reads their *_completeness columns and
+    final scores directly; nothing here is derivable from raw ingested
+    rows.
+
+    completeness = mean(td_opportunity_completeness, situation_completeness,
+                         role_momentum_completeness) — config["evidence_
+                         quality"]["completeness_columns"], read via
+                         column-existence checks (never asserted present),
+                         so a caller that hasn't merged in all three pillars
+                         yet degrades gracefully rather than KeyError-ing.
+
+    convergence = 100 - range(family scores) — direction-agnostic
+                  agreement across however many of config["evidence_
+                  quality"]["family_score_columns"] (td_opportunity,
+                  situation, role_momentum — CFB has no market_value_score
+                  column to include, unlike NFL) are actually present on a
+                  given row. Rows with fewer than 2 real family scores get
+                  neutral-50 convergence (a "range" of one value is
+                  meaningless).
+
+    evidence_quality = sqrt(completeness * convergence) — geometric mean,
+                        not an average, so either axis near zero craters
+                        the combined read. Identical formula to NFL's.
+
+    DELIBERATELY NOT ported: signal_convergence / signal_breach. Spec §5
+    hard-gates both for CFB ("do not ship these two booleans... until a
+    tuned backfill exists") — their NFL thresholds (spread_threshold=80,
+    strength_floor=60) were reverse-engineered from an NFL backfill with
+    no CFB-data grounding. Recomputing them here with borrowed NFL
+    thresholds would be exactly the silently-wrong-number failure mode
+    the spec's hard gate exists to prevent, not a shortcut worth taking.
+
+    Returns weekly with evidence_completeness, evidence_convergence, and
+    evidence_quality appended (0-100 each).
+    """
+    weekly = weekly.copy()
+    eq_cfg = config["evidence_quality"]
+
+    completeness_cols = [c for c in eq_cfg["completeness_columns"] if c in weekly.columns]
+    completeness = weekly[completeness_cols].mean(axis=1)
+
+    family_cols = [c for c in eq_cfg["family_score_columns"] if c in weekly.columns]
+    family_scores = weekly[family_cols]
+    n_present = family_scores.notna().sum(axis=1)
+    score_range = family_scores.max(axis=1) - family_scores.min(axis=1)
+    convergence = fill_neutral(pd.Series(np.where(n_present >= 2, 100.0 - score_range, np.nan), index=weekly.index))
+
+    evidence_quality = np.sqrt(completeness * convergence)
+
+    weekly["evidence_completeness"] = completeness.round(1)
+    weekly["evidence_convergence"] = convergence.round(1)
+    weekly["evidence_quality"] = evidence_quality.round(1)
+
+    return weekly
+
+
+def score_universal_tpe_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row for the final CFB Universal TPE Score (§0/§5). Must
+    run after score_td_opportunity_cfb, score_defensive_matchup_cfb,
+    score_role_momentum_cfb, AND score_evidence_quality_cfb (reads all
+    four's outputs directly) — the last step, not a fourth independent
+    pillar computation.
+
+    No `market_value` parameter, unlike NFL's score_universal_tpe — CFB
+    Market Value is deferred to v2 (spec §6) and has no snapshot table to
+    merge in at all yet, so there is nothing analogous to NFL's optional
+    live-poll merge to thread through here. When v2 adds a real
+    market_value_score column, it need only be added to CONFIG["universal_
+    tpe"]["core_weights"] for the renormalization below to pick it up —
+    no change to this function.
+
+    core_score = weighted sum of td_opportunity/situation/role_momentum,
+                 present-columns-only, weights renormalized to sum to 100
+                 over whichever of CONFIG["universal_tpe"]["core_weights"]
+                 are actually present on a given row. This is the SAME
+                 per-row renormalization score_defensive_matchup_cfb
+                 already uses for Situation's own env sub-component
+                 (spec §3) — here it's what makes Role & Momentum's
+                 current lack of any real deployed ingestion (cfb_player_
+                 role_weekly has no write path yet — 2026-09 investigation)
+                 degrade honestly rather than crash: a row with real
+                 td_opportunity/situation but role_momentum entirely
+                 absent (NaN, not just low-completeness) renormalizes
+                 core_score over the remaining 88 rather than being scored
+                 against a 100-point ceiling it can never reach.
+
+    confidence_multiplier = confidence_floor + (1 - confidence_floor) *
+                             (evidence_quality / 100)
+    tpe_score = core_score * confidence_multiplier
+
+    Returns weekly with core_score, confidence_multiplier, and tpe_score
+    appended.
+    """
+    weekly = weekly.copy()
+    tpe_cfg = config["universal_tpe"]
+    weights = tpe_cfg["core_weights"]
+
+    present_cols = [c for c in weights if c in weekly.columns]
+    scores = weekly[present_cols]
+    weight_vec = pd.Series({c: weights[c] for c in present_cols})
+
+    valid = scores.notna()
+    weighted_sum = (scores.fillna(0) * weight_vec).sum(axis=1)
+    weight_totals = (valid * weight_vec).sum(axis=1)
+    core_score = weighted_sum / weight_totals
+
+    floor = tpe_cfg["confidence_floor"]
+    confidence_multiplier = floor + (1 - floor) * (weekly["evidence_quality"] / 100)
+    tpe_score = core_score * confidence_multiplier
+
+    weekly["core_score"] = core_score.round(1)
+    weekly["confidence_multiplier"] = confidence_multiplier.round(3)
+    weekly["tpe_score"] = tpe_score.round(1)
+
+    return weekly
