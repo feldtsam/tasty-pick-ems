@@ -1,6 +1,6 @@
 """
-CFB v1 scoring — TD Opportunity (§2) and Situation's Defensive Matchup
-Vulnerability half (§3).
+CFB v1 scoring — TD Opportunity (§2), Situation's Defensive Matchup
+Vulnerability half (§3), and the redefined Role & Momentum pillar (§4).
 
 Pure DataFrame-in / DataFrame-out, exactly like nfl/scoring.py. Reads the
 two ingestion tables' rows (assembled by the caller across a whole
@@ -25,8 +25,12 @@ through the existing neutral-50 fallback mechanism, which caps
 td_opportunity_completeness at ~90% all season (Evidence Quality audit).
 
 OUT OF SCOPE here: the environment half of Situation (dome/wind/temp) and
-the `0.7·dmv + 0.3·env` blend; Role & Momentum; Evidence Quality; Market
-Value; core_weights / any end-to-end pipeline wiring.
+the `0.7·dmv + 0.3·env` blend; Evidence Quality; Market Value;
+core_weights / any end-to-end pipeline wiring.
+
+Role & Momentum (§4) consumes `cfb_player_role_weekly` rows assembled by
+cfb/role_momentum.py (a separate, box-score + PPA ingest, unrelated to the
+`/plays/stats` red-zone ingest the other two pillars share).
 """
 from __future__ import annotations
 
@@ -76,6 +80,33 @@ CONFIG = {
         },
     },
     "min_touches_allowed_for_qualification": 20,
+    "role_momentum": {
+        # Locked redefinition (2026-09): NFL's 4 inputs (snap_share_trend,
+        # depth_chart_movement, external_opportunity, touch_share_trend) have
+        # no CFB data path except the last. New structure = 2 scored trend
+        # inputs + 1 completeness modifier.
+        "touch_share_trend_weight": 0.70,
+        "ppa_trend_weight": 0.30,
+        # Both trends are last-`trend_window`-mean vs season-to-date (the
+        # shared _trend_delta), so real values only appear from a player's
+        # (window+1)th game — Role & Momentum is neutral-50 for roughly the
+        # first 4 games of every player-season. Accepted: it is a 12% pillar
+        # and Evidence Quality down-weights its low early-season completeness.
+        "trend_window": 3,
+        # Season-total touches for a player's rows to help DEFINE the
+        # percentile reference scale (every row is still scored against the
+        # scale regardless of its own volume — same rule as the other
+        # pillars' _qualified_mask).
+        "min_touches_for_qualification": 20,
+        # Reliability discount applied to role_momentum_COMPLETENESS ONLY
+        # (never the score) when a player has no prior-season box-score
+        # history for this team — a transfer-in or a true freshman, both a
+        # genuinely thin CFB-team sample. Derived from box-score
+        # id-continuity (cfb/role_momentum.py), NOT a /player/portal or
+        # /player/search call — both were evaluated and passed over.
+        # 1.0 = returning / established, < 1.0 = new to team.
+        "new_team_completeness_factor": 0.75,
+    },
 }
 
 
@@ -452,6 +483,122 @@ def score_defensive_matchup_cfb(
     weekly["defensive_matchup_completeness"] = dmc
     # PLACEHOLDER — equals dmc until the environment half of Situation is built.
     weekly["situation_completeness"] = dmc
+
+    return weekly
+
+
+# ===========================================================================
+# Role & Momentum (§4) — REDEFINED for CFB
+# ===========================================================================
+def score_role_momentum_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row of `cfb_player_role_weekly` (a whole season's rows, one
+    per RB/WR/TE per game — assembled by cfb/role_momentum.py) for Role &
+    Momentum.
+
+        role_momentum = 0.70 * pct(touch_share_trend) + 0.30 * pct(ppa_trend)
+
+    Two scored inputs, both a 3-game-smoothed trend (last-3-game mean minus
+    season-to-date average, the shared _trend_delta), then percentile-
+    normalized against the qualified reference population:
+
+      * touch_share_trend  — player touches / his offense's total touches
+        (rush attempts + receptions, QB keepers included in the
+        denominator), trended. `touch_share` is supplied on the input row.
+      * ppa_trend           — CFBD averagePPA.all per player-game
+        (/ppa/players/games), trended. A CFB-native efficiency axis, no NFL
+        precedent. `ppa` is supplied on the input row; NaN where CFBD
+        attributed no PPA that game (verified ~3% of player-games, almost
+        all 1-touch cameos).
+
+    RENORMALIZATION FALLBACK (mirrors score_universal_tpe's per-row pillar
+    renorm): if a player has NO prior-game PPA at all when the trend is
+    needed — `ppa_trend` NaN while `touch_share_trend` is real — the PPA
+    term is dropped and touch_share_trend carries 100% weight for that row
+    (`_rm_ppa_renormed = True`). This is distinct from thin history (both
+    trends NaN for a player's first `trend_window`+1 games → both fall to
+    neutral 50 → role_momentum ~= 50). Verified rare on real data.
+
+    role_momentum_completeness (0-100) = weight-proportional realness of the
+    two trend inputs (0.70 if only touch_share_trend is real, 1.0 if both,
+    0.0 for a thin-history early-season row) multiplied by a reliability
+    factor: 1.0 for a returning/established player, config's
+    new_team_completeness_factor (< 1.0) for a player with no prior-season
+    box-score history for this team (`is_returning == False` on the input
+    row). The factor touches completeness only, never the score (§4.3).
+
+    DROPPED for CFB, not proxied (no viable data path, and PPA does not
+    conceptually substitute for opportunity context): depth_chart_movement,
+    external_opportunity.
+
+    Only shift(1)'d trend inputs are used — the score reflects what was
+    knowable heading INTO that game. Same DataFrame-in / DataFrame-out shape
+    as score_td_opportunity_cfb / score_defensive_matchup_cfb.
+    """
+    weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
+    rm_cfg = config["role_momentum"]
+    window = rm_cfg["trend_window"]
+    tw = rm_cfg["touch_share_trend_weight"]
+    pw = rm_cfg["ppa_trend_weight"]
+
+    # Degrade cleanly if the ingestion layer didn't attach a column.
+    if "ppa" not in weekly.columns:
+        weekly["ppa"] = np.nan
+    if "is_returning" not in weekly.columns:
+        weekly["is_returning"] = np.nan  # unknown -> no completeness discount
+
+    weekly = add_rolling_windows(
+        weekly, metrics=["touch_share", "ppa"], group_cols=["player_id", "season"]
+    )
+
+    # Percentile scale defined by players whose season-total touches clear
+    # the minimum (the _qualified_mask rule, on `touches` here).
+    season_total_touches = weekly.groupby(["player_id", "season"])["touches"].transform("sum")
+    qualified = season_total_touches >= rm_cfg["min_touches_for_qualification"]
+
+    fallback_flags: list = []
+
+    def pct(values: pd.Series) -> pd.Series:
+        raw = percentile_lookup(values, build_reference_scale(values, qualified))
+        fallback_flags.append(raw.isna())
+        return fill_neutral(raw)
+
+    ts_delta = _trend_delta(weekly, "touch_share", window)
+    ppa_delta = _trend_delta(weekly, "ppa", window)
+
+    ts_pct = pct(ts_delta)
+    ppa_pct = pct(ppa_delta)
+
+    # PPA genuinely absent (no prior-game PPA for this player at all) vs.
+    # merely thin history: touch_share_trend real, ppa_trend NaN. Both share
+    # the same `games_played > window` mask, so ts real => past the mask =>
+    # a NaN ppa_delta here can only mean no prior-game PPA ever existed.
+    ppa_renormed = ppa_delta.isna() & ts_delta.notna()
+
+    blended = tw * ts_pct + pw * ppa_pct
+    role_momentum = pd.Series(
+        np.where(ppa_renormed, ts_pct, blended), index=weekly.index
+    ).clip(0, 100)
+
+    # completeness: weight-proportional input realness, then the team-history
+    # reliability factor.
+    ts_real = ~fallback_flags[0]
+    ppa_real = (~fallback_flags[1]) & (~ppa_renormed)
+    input_realness = tw * ts_real.astype(float) + pw * ppa_real.astype(float)
+    team_factor = np.where(
+        weekly["is_returning"] == False,  # noqa: E712 — explicit: NaN/unknown must NOT discount
+        rm_cfg["new_team_completeness_factor"],
+        1.0,
+    )
+    role_momentum_completeness = pd.Series(
+        input_realness.to_numpy() * team_factor * 100, index=weekly.index
+    )
+
+    weekly["_rm_touch_share_trend_pct"] = ts_pct.round(1)
+    weekly["_rm_ppa_trend_pct"] = ppa_pct.round(1)
+    weekly["_rm_ppa_renormed"] = ppa_renormed
+    weekly["role_momentum"] = role_momentum.round(1)
+    weekly["role_momentum_completeness"] = role_momentum_completeness.round(1)
 
     return weekly
 

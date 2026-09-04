@@ -22,7 +22,7 @@ Derivation: Role & Momentum set directly to 12% (deliberately weaker pillar, not
 | TD Opportunity | 30% | **Strong — clear go** | CFBD `/plays/stats`, filtered by `gameId` |
 | Situation | 20% | **Strong — clear go** | Same `/plays/stats` ingest as TD Opportunity (grouped by `opponent`+`position` instead of ball-carrier), + `/venues` for environment |
 | Evidence Quality & Convergence | 10% | **Mechanically strong** (meta-layer, no independent data) — inherits cold-start effects from the pillars it aggregates | N/A — pure computation over other pillars' outputs |
-| Role & Momentum | 20% | **Redefined** (this document) — weaker than NFL's version, three inputs instead of four | CFBD `/games/players`, `/plays/stats` |
+| Role & Momentum | 20% | **Redefined + built** (§4) — 2 scored trend inputs (touch-share trend 70%, PPA trend 30%) + a returning-player completeness modifier | CFBD `/games/players`, `/ppa/players/games` |
 | Market Value | 20% | **Deferred to v2** — 0/90 games had player props at 4-6 days out (2 sweeps, 2026-08-30); decisive re-poll needed Sep 1-3 within 2 days of kickoff | The Odds API `americanfootball_ncaaf` |
 **v1 ships 4 pillars.** `market_value_score` dropped from `core_weights`; `score_universal_tpe` renormalizes per-row (already-existing behavior, one-line config change). Final weights are locked — see §0.
 ---
@@ -41,28 +41,31 @@ NFL's `role_momentum` has four inputs: `snap_share_trend`, `depth_chart_movement
 | `external_opportunity` | **Unavailable** — needs both of the above plus a CFB injury feed; ESPN CFB rosters have only weak `injuredReserveOrOut`/`suspended` flags, keyless |
 | `touch_share_trend` | **Survives** — derivable from `/games/players` box scores, same as NFL |
 Verdict from the original audit: this pillar needs to be **redefined**, not re-pointed at a new source. Do not port `role_changes.py` as-is.
-### 4.2 New input set
-| Input | Weight within pillar | Source | Notes |
+
+### 4.2 New input set — LOCKED (2026-09), built in `cfb/scoring.py::score_role_momentum_cfb` + `cfb/role_momentum.py`
+Two scored trend inputs + one completeness modifier. `usage_share_weekly` from an earlier draft collapsed into `touch_share_trend` (both are "share of the offense's touches" — one signal). PPA feasibility re-audited via real CFBD calls (both inputs Class A on a shared `athleteId` key).
+
+| Input | Weight | Source | Notes |
 |---|--:|---|---|
-| `touch_share_trend` | **50%** | `/games/players`, week-over-week | Direct port of NFL's proven signal |
-| `ppa_trend` | **25%** | `/plays/stats`, aggregated weekly per player | New signal type (Predicted Points Added), no NFL precedent — CFB-native efficiency metric |
-| `usage_share_weekly` | **25%** | `/plays/stats`, recomputed weekly | `/player/usage` exists but is season-only (no `week` param) — must be recomputed from `/plays/stats` rather than pulled pre-built |
+| `touch_share_trend` | **70%** | `/games/players` box scores (`CAR` + `REC`) / team's total CAR+REC (QB keepers in the denominator), trended | Direct port of NFL's proven signal; the one input with an NFL track record, hence the majority weight |
+| `ppa_trend` | **30%** | `/ppa/players/games` `averagePPA.all`, trended (1 whole-slate call/week) | CFB-native efficiency axis, no NFL precedent. `NaN` where CFBD attributed no PPA (~3% of player-games, almost all 1-touch cameos) |
+
 ```
-role_momentum = 0.50 · pctile(touch_share_trend)
-              + 0.25 · pctile(ppa_trend)
-              + 0.25 · pctile(usage_share_weekly)
+role_momentum = 0.70 · pctile(touch_share_trend)
+              + 0.30 · pctile(ppa_trend)
 ```
-Rationale for the 50/25/25 split: `touch_share_trend` is favored because it's the one input with a validated track record from NFL; the two CFBD-native inputs split the remainder evenly since neither has been battle-tested yet.
-### 4.3 Weeks-of-data completeness gate
-Applies **universally, every season, to every player** — not scoped to transfers/portal entries only. Chosen for simplicity and honesty over a more complex "is this player new" branch.
-| Weeks of current-season data | Role & Momentum weight applied |
-|---|--:|
-| 0–1 | **Excluded** — pillar contributes 0 for this player-week; `role_momentum_completeness` reflects this honestly (real value, not synthetic) |
-| 2–3 | **Partial** — suggest 50% weight |
-| 4+ | **Full** weight |
-**⚠️ Known consequence, not a bug:** because this gate is universal, in **CFB Week 1 every player — including established returning starters — falls into the 0-1-week excluded tier**, since nobody has 2026 in-season touch/PPA/usage data yet. This is expected and honest, but it means Role & Momentum is fully neutral-50 for the entire Week 1 slate, not just noisy.
+Both trends are last-3-game mean vs season-to-date (the shared `_trend_delta`). **Renormalization fallback:** if a player has *no* prior-game PPA at all when the trend is needed, the PPA term is dropped and `touch_share_trend` carries 100% weight for that row — same clean-degrade pattern as `score_universal_tpe`'s per-row pillar renorm. Verified rare (0 of 104 rows on a full real team-season).
+
+**Dropped for CFB, not proxied:** `depth_chart_movement`, `external_opportunity` — no viable free data path, and PPA does not conceptually substitute for opportunity context. This dimension is cut rather than filled with a weak proxy.
+
+### 4.3 Cold start — both inputs are trends, so the pillar is dark for a player's first ~4 games
+`_trend_delta` masks to `NaN` until a player's `(window+1)`th game (window = 3). So real `role_momentum` values appear only from a player's **5th game played** (bye weeks don't count) — before that every row is neutral-50 with `role_momentum_completeness ≈ 0`. This is honest (`track_fallback` reports it), the score doesn't drag the core score (it sits at 50, contributing nothing), and it's a 12% pillar that Evidence Quality further down-weights while completeness is low. Replaces the earlier universal weeks-of-data weight gate.
+
 ### 4.4 `role_momentum_completeness`
-Same `track_fallback` pattern used elsewhere in the pipeline: fraction of the three inputs above that hit real percentile data vs. a neutral-50 fallback for a given player-week. Three inputs instead of NFL's four.
+`input_realness × team_history_factor`, both 0–1, × 100:
+- **`input_realness`** — weight-proportional realness of the two trend inputs: `0.70·(touch_share_trend real) + 0.30·(ppa_trend real)`. 1.0 = both real, 0.70 = PPA renormed/absent, 0.0 = thin-history early-season row.
+- **`team_history_factor`** — `1.0` for a returning/established player; `new_team_completeness_factor` (config, default **0.75**) when the player has **no prior-season box-score row for this team in any stat category** (`is_returning == False`). Transfer-in and true freshman are deliberately conflated — both a genuinely thin CFB-team sample, and the flag touches completeness ONLY, never the score.
+- **`is_returning`** is derived from box-score id-continuity in `cfb/role_momentum.py::prior_season_team_athletes` — **not** a `/player/portal` or `/player/search` call (both evaluated in the 2026-09 feasibility audit and passed over; the id-continuity proxy is Class A at zero marginal API cost — the prior-season box scores are pulled anyway for the trend baseline).
 ---
 ## 5. Evidence Quality & Convergence (10% in NFL) — reference only, not redefined
 No independent data feed — pure meta-layer over the other pillars' `*_completeness` and family-score outputs. Ports mechanically unchanged (Class A) except two card booleans (`signal_convergence`, `signal_breach`) whose thresholds were reverse-engineered from NFL's historical backfill and need re-derivation from a CFB backfill before shipping (Class B) — **hard-gated**, do not ship these two booleans for CFB until a tuned backfill exists.

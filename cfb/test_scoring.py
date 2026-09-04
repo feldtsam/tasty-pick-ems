@@ -28,6 +28,7 @@ from scoring import (
     _trend_delta,
     add_rolling_windows,
     score_defensive_matchup_cfb,
+    score_role_momentum_cfb,
     score_td_opportunity_cfb,
 )
 
@@ -98,6 +99,53 @@ def build_defense_season(weeks=6):
     return pd.DataFrame(rows)
 
 
+# --------------------------------------------------------------------------
+# Role & Momentum synthetic season
+# --------------------------------------------------------------------------
+def _role_row(pid, name, pos, team_id, opp_id, season, week, *, touch_share, ppa, team_touches=50, is_returning=True):
+    return {
+        "player_id": pid, "player_name": name, "position_group": pos,
+        "team_id": team_id, "team": f"T{team_id}", "opponent_team_id": opp_id, "opponent": f"T{opp_id}",
+        "season": season, "week": week, "game_id": 3000 + week,
+        "touches": round((touch_share or 0) * team_touches), "team_touches": team_touches,
+        "touch_share": touch_share, "ppa": ppa, "is_returning": is_returning, "extra": {},
+    }
+
+
+# a rising touch-share trajectory shared by several test players
+_RISING_TS = [0.10, 0.12, 0.15, 0.18, 0.22, 0.26, 0.30, 0.34]
+
+
+def build_role_season(weeks=8):
+    rows = []
+    for w in range(1, weeks + 1):
+        ts = _RISING_TS[w - 1]
+        # A: rising touch share AND rising PPA
+        rows.append(_role_row("A", "Rising Both", "RB", 10, 90, 2025, w, touch_share=ts, ppa=0.05 + 0.10 * w))
+        # B: SAME rising touch share, PPA declining
+        rows.append(_role_row("B", "Rising Touch Flat PPA", "RB", 11, 91, 2025, w, touch_share=ts, ppa=0.95 - 0.10 * w))
+        # C vs D: identical moderate-rising line, only is_returning differs
+        rows.append(_role_row("C_ret", "Returning Guy", "WR", 12, 92, 2025, w, touch_share=0.08 + 0.020 * w, ppa=0.20 + 0.05 * w, is_returning=True))
+        rows.append(_role_row("D_new", "New To Team Guy", "WR", 13, 93, 2025, w, touch_share=0.08 + 0.020 * w, ppa=0.20 + 0.05 * w, is_returning=False))
+        # E: rising touches, no PPA attributed ANY game -> renorm fallback
+        rows.append(_role_row("E_noppa", "No PPA Guy", "RB", 14, 94, 2025, w, touch_share=ts, ppa=None))
+    # fillers so the percentile scale spans a real range of both trends
+    traj = [
+        (lambda w: 0.32 - 0.02 * w, lambda w: 0.85 - 0.09 * w),   # falling / falling
+        (lambda w: 0.20, lambda w: 0.30),                          # flat / flat
+        (lambda w: 0.10 + 0.015 * w, lambda w: 0.10 + 0.05 * w),   # mild rising / rising
+        (lambda w: 0.26 - 0.012 * w, lambda w: 0.50),              # mild falling / flat
+        (lambda w: 0.15, lambda w: 0.95 - 0.08 * w),               # flat / falling
+        (lambda w: 0.04 + 0.030 * w, lambda w: 0.25),              # rising / flat
+        (lambda w: 0.22, lambda w: 0.05 + 0.06 * w),               # flat / rising
+    ]
+    for i, (tf, pf) in enumerate(traj):
+        for w in range(1, weeks + 1):
+            rows.append(_role_row(f"f{i}", f"Filler {i}", "WR" if i % 2 else "RB", 30 + i, 40 + i, 2025, w,
+                                  touch_share=max(0.01, tf(w)), ppa=pf(w)))
+    return pd.DataFrame(rows)
+
+
 if __name__ == "__main__":
     r = []
 
@@ -164,6 +212,86 @@ if __name__ == "__main__":
                    < dscored[(dscored.player_id == "vs_weak") & (dscored.week == 6)]["defensive_matchup_completeness"].iloc[0]))
     r.append(check("every RB facing weakD in wk6 shares one dmv value (matchup property, not player)",
                    dwk6[dwk6["opponent_team_id"] == 500]["defensive_matchup_vulnerability"].nunique() == 1))
+
+    # ---- Role & Momentum --------------------------------------------
+    rm = score_role_momentum_cfb(build_role_season(weeks=8))
+    rwk8 = rm[rm["week"] == 8].set_index("player_id")
+    rwk2 = rm[rm["week"] == 2].set_index("player_id")
+
+    # football intuition: rising touch share AND rising PPA should score
+    # meaningfully higher than the SAME rising touch share with fading PPA
+    r.append(check(
+        "rising touch+PPA (A) outscores rising-touch / fading-PPA (B) at wk8",
+        rwk8.loc["A", "role_momentum"] > rwk8.loc["B", "role_momentum"],
+    ))
+    r.append(check(
+        "  ...and the gap is material (>= 8 points)",
+        rwk8.loc["A", "role_momentum"] - rwk8.loc["B", "role_momentum"] >= 8,
+    ))
+    r.append(check(
+        "A and B share an IDENTICAL touch_share_trend percentile (same touch line)",
+        abs(rwk8.loc["A", "_rm_touch_share_trend_pct"] - rwk8.loc["B", "_rm_touch_share_trend_pct"]) < 1e-6,
+    ))
+    r.append(check(
+        "  ...so the whole gap comes from the PPA term (A's ppa_trend_pct >> B's)",
+        rwk8.loc["A", "_rm_ppa_trend_pct"] - rwk8.loc["B", "_rm_ppa_trend_pct"] >= 30,
+    ))
+
+    # completeness modifier: returning vs new-to-team, identical line
+    r.append(check(
+        "returning (C) and new-to-team (D) with an identical line score IDENTICALLY",
+        abs(rwk8.loc["C_ret", "role_momentum"] - rwk8.loc["D_new", "role_momentum"]) < 1e-6,
+    ))
+    r.append(check(
+        "  ...but new-to-team completeness is the returning one * new_team_completeness_factor",
+        abs(rwk8.loc["D_new", "role_momentum_completeness"]
+            - rwk8.loc["C_ret", "role_momentum_completeness"]
+            * CONFIG["role_momentum"]["new_team_completeness_factor"]) < 0.15,
+    ))
+
+    # renorm fallback: a player with no PPA at all -> 100% touch_share_trend
+    r.append(check(
+        "no-PPA player (E) is flagged _rm_ppa_renormed at wk8",
+        bool(rwk8.loc["E_noppa", "_rm_ppa_renormed"]),
+    ))
+    r.append(check(
+        "  ...and E's role_momentum == its touch_share_trend percentile exactly",
+        abs(rwk8.loc["E_noppa", "role_momentum"] - rwk8.loc["E_noppa", "_rm_touch_share_trend_pct"]) < 1e-6,
+    ))
+    r.append(check(
+        "renorm is rare — it fires for NO other player on this fixture",
+        int(rm[rm["player_id"] != "E_noppa"]["_rm_ppa_renormed"].sum()) == 0,
+    ))
+
+    # cold start: both trends are _trend_delta, so weeks 1-4 are neutral-50
+    r.append(check(
+        "wk2: role_momentum is ~50 for everyone (both trends masked, no signal yet)",
+        bool((rm[rm["week"] == 2]["role_momentum"].between(49.9, 50.1)).all()),
+    ))
+    r.append(check(
+        "wk2: role_momentum_completeness is ~0 (no real trend input exists yet)",
+        bool((rm[rm["week"] == 2]["role_momentum_completeness"] <= 1e-6).all()),
+    ))
+    r.append(check(
+        "completeness climbs across the season (A: wk2 < wk8)",
+        rwk2.loc["A", "role_momentum_completeness"] < rwk8.loc["A", "role_momentum_completeness"],
+    ))
+    r.append(check(
+        "a both-trends-real returning player reaches full completeness (~100) by wk8",
+        rwk8.loc["A", "role_momentum_completeness"] >= 99.0,
+    ))
+
+    # degrade cleanly if the ingestion layer omits a column
+    bare = build_role_season(weeks=8).drop(columns=["ppa", "is_returning"])
+    bs = score_role_momentum_cfb(bare)
+    r.append(check(
+        "no `ppa` column at all -> every row renorms to touch_share, nothing crashes",
+        bool(bs[bs["week"] >= 5]["_rm_ppa_renormed"].all()),
+    ))
+    r.append(check(
+        "no `is_returning` column -> no completeness discount (unknown != False)",
+        bs[bs["week"] == 8].set_index("player_id").loc["A", "role_momentum_completeness"] >= 69.0,
+    ))
 
     print()
     p = sum(r)
