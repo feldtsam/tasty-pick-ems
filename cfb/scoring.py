@@ -81,12 +81,15 @@ CONFIG = {
     # percentile reference scale. Every row is still scored against the
     # scale regardless of its own sample size (§8).
     "min_rz_touches_for_qualification": 15,
-    # 2026-09: a player's OWN conversion_rate + recent_td_production inputs
-    # are routed through the neutral-50 fallback until his cumulative RZ
-    # touches THROUGH THE PRIOR WEEK clear this. Deliberately equals
+    # 2026-09: PILLAR-WIDE cold-start gate. A player-row whose cumulative RZ
+    # touches THROUGH THE PRIOR WEEK are below this contributes nothing to
+    # TD Opportunity — every percentile input (proven_heat's rates AND
+    # emerging_heat's trends) is forced to the neutral-50 fallback and
+    # td_opportunity is exactly 50. Deliberately equals
     # min_rz_touches_for_qualification — "enough sample to define the scale"
-    # and "enough sample to trust your own rate" are the same bar. See the
-    # gate in score_td_opportunity_cfb for the why.
+    # and "enough sample to be scored against it" are the same bar. Same
+    # cold-start pattern as Role & Momentum. (Name kept from the earlier
+    # proven_heat-only version.) See score_td_opportunity_cfb.
     "min_cumulative_rz_touches_for_rate": 15,
     "defensive_matchup": {
         # Mirrors proven_heat's split + recency weights exactly — same
@@ -340,22 +343,33 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     `snap_share` trend input is ALWAYS a fallback for CFB (no data source),
     so completeness is structurally capped at ~90% (Evidence Quality
     audit); early in a season the two other trend inputs, the thin rolling
-    windows, and the thin-sample rate gate (below) push it lower still.
+    windows, and the pillar-wide thin-sample gate (below) push it lower.
 
-    THIN-SAMPLE RATE GATE (2026-09): until a player's cumulative RZ touches
-    through the prior week reach config["min_cumulative_rz_touches_for_
-    rate"], his 4 recent-production and 3 conversion-rate inputs are forced
-    to the neutral-50 fallback. Without it a 3-6-touch backup with a
-    couple of recent TDs percentile-ranks at ~90 (real, confirmed persisting
-    through week 8 for the sub-5-game population, since emerging_heat is
-    neutral for them too). With it those rows score ~50 at low completeness
-    — which is what the weeks-1-8 validation showed they should. This is
-    NOT the same as a full "contributes nothing until game 5" cold-start
-    gate on the whole pillar; that decision is still open.
+    PILLAR-WIDE THIN-SAMPLE GATE (2026-09, from the weeks-1-8 real-data
+    validation): until a player's cumulative RZ touches through the prior
+    week reach config["min_cumulative_rz_touches_for_rate"] (=15), the row
+    contributes NOTHING to the pillar — every one of the 10 percentile
+    inputs is forced to the neutral-50 fallback, `proven_heat` and
+    `emerging_heat` are 50, `td_opportunity` is exactly 50, and
+    td_opportunity_completeness is 0. Same cold-start pattern as Role &
+    Momentum. An earlier version gated only the `proven_heat` (rate /
+    recent-production) inputs; the weeks-1-8 run showed the exact same
+    1-3-touch backups then re-surfaced at the top of the board through
+    `emerging_heat`, because a trend computed on a handful of touches
+    percentile-ranks just as high. `td_opportunity_gated` (bool) and
+    `cum_rz_touches_prior` / `player_games_played` are on the output row so
+    a gated fluke is filterable, not just flagged by completeness.
 
-    Body identical to nfl/scoring.py.score_td_opportunity apart from
-    building the all-NaN `snap_share` column and rolling the windows here
-    (NFL does that upstream in run_pipeline).
+    ACCEPTED TRADEOFF: a genuine low-volume, high-conversion back (a
+    big-play RB whose team spreads its RZ carries) stays neutral all
+    season if he never clears 15 cumulative RZ touches — on that few
+    touches a high conversion rate is not trustworthy, and TD Opportunity
+    is a workload pillar. Such a player still gets his due from the other
+    pillars.
+
+    Body follows nfl/scoring.py.score_td_opportunity apart from building
+    the all-NaN `snap_share` column, rolling the windows here (NFL does
+    that upstream in run_pipeline), and the CFB gate above.
     """
     weekly = weekly.copy()
     # Permanent structural fallback (spec §8): no CFB snap-count source
@@ -378,20 +392,20 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     fallback_flags: list = []
     pct = _percentile_fn(weekly, config, track_fallback=fallback_flags)
 
-    # Thin-sample gate (2026-09, from the CFB weeks-1-8 real-data
-    # validation): a player whose cumulative RZ touches THROUGH THE PRIOR
-    # WEEK are below the minimum has no trustworthy rate / recent-production
-    # signal yet — a backup / walk-on / just-arrived transfer with 3-6
-    # touches and a couple recent TDs otherwise rockets to the top of the
-    # board (and emerging_heat is neutral-50 for the same players, so
-    # nothing counterbalances it). NaN those inputs so pct() routes them
-    # through neutral-50 and they register as incomplete. Verified to
-    # persist through week 8 for the sub-5-game population without this.
+    # Pillar-wide thin-sample gate (2026-09): a player whose cumulative RZ
+    # touches THROUGH THE PRIOR WEEK are below the minimum has no
+    # trustworthy signal on EITHER half — proven_heat's rates and
+    # emerging_heat's trends are all built on a handful of touches. NaN
+    # every percentile input for those rows so pct() routes them through
+    # neutral-50 and they register as incomplete; td_opportunity is then
+    # forced to exactly 50 below. Same cold-start pattern as Role &
+    # Momentum. (An earlier version gated only proven_heat; the weeks-1-8
+    # run showed the same 1-3-touch backups re-surfaced via emerging_heat.)
     cum_rz_touches = _season_cumulative(weekly, "rz_touches")
     cum_rz_tds = _season_cumulative(weekly, "rz_tds")
-    thin_rate_sample = cum_rz_touches < config["min_cumulative_rz_touches_for_rate"]
+    thin_sample = cum_rz_touches < config["min_cumulative_rz_touches_for_rate"]
     for _col in ("rz_tds_last1", "rz_tds_last3", "rz_tds_last5", "rz_tds_season_avg"):
-        weekly.loc[thin_rate_sample, _col] = np.nan
+        weekly.loc[thin_sample, _col] = np.nan
 
     # --- Proven Heat: recent TD production ---
     w = ph_cfg["recent_td_production"]
@@ -412,9 +426,9 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     league_avg_i10_rate = _safe_ratio(weekly["i10_tds"].sum(), weekly["i10_touches"].sum())
     league_avg_rz_rate = _safe_ratio(weekly["rz_tds"].sum(), weekly["rz_touches"].sum())
 
-    gl_rate = _shrink_rate(cum_gl_tds, cum_gl_touches, league_avg_gl_rate, k).where(~thin_rate_sample)
-    i10_rate = _shrink_rate(cum_i10_tds, cum_i10_touches, league_avg_i10_rate, k).where(~thin_rate_sample)
-    rz_rate = _shrink_rate(cum_rz_tds, cum_rz_touches, league_avg_rz_rate, k).where(~thin_rate_sample)
+    gl_rate = _shrink_rate(cum_gl_tds, cum_gl_touches, league_avg_gl_rate, k).where(~thin_sample)
+    i10_rate = _shrink_rate(cum_i10_tds, cum_i10_touches, league_avg_i10_rate, k).where(~thin_sample)
+    rz_rate = _shrink_rate(cum_rz_tds, cum_rz_touches, league_avg_rz_rate, k).where(~thin_sample)
 
     conversion_rate_pct = pd.concat([pct(gl_rate), pct(i10_rate), pct(rz_rate)], axis=1).mean(axis=1)
 
@@ -424,9 +438,11 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     )
 
     # --- Emerging Heat: touch-share / snap-share / touch-volume trend ---
-    touch_share_trend_pct = pct(_trend_delta(weekly, "rz_touch_share", 3))
+    # Gated by the same thin_sample mask as proven_heat — a trend on <15
+    # cumulative touches is noise, not a signal (see the docstring).
+    touch_share_trend_pct = pct(_trend_delta(weekly, "rz_touch_share", 3).where(~thin_sample))
     snap_share_trend_pct = pct(_trend_delta(weekly, "snap_share", 3))       # permanent fallback for CFB
-    touch_volume_trend_pct = pct(_trend_delta(weekly, "rz_touches", 3))
+    touch_volume_trend_pct = pct(_trend_delta(weekly, "rz_touches", 3).where(~thin_sample))
 
     emerging_heat = (
         eh_cfg["touch_share_trend_weight"] * touch_share_trend_pct
@@ -439,6 +455,12 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     lo = np.minimum(proven_heat, emerging_heat)
     td_opportunity = (hi + combo_cfg["bonus_weight"] * lo * (1 - hi / 100)).clip(0, 100)
 
+    # Pillar-wide gate: a thin-sample row is exactly neutral on both halves
+    # and on the final score — it does not rank in a score-sorted view.
+    proven_heat = proven_heat.mask(thin_sample, 50.0)
+    emerging_heat = emerging_heat.mask(thin_sample, 50.0)
+    td_opportunity = td_opportunity.mask(thin_sample, 50.0)
+
     weekly["recent_td_production_pct"] = recent_td_production_pct.round(1)
     weekly["conversion_rate_pct"] = conversion_rate_pct.round(1)
     weekly["proven_heat"] = proven_heat.round(1)
@@ -450,6 +472,14 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
     weekly["td_opportunity_completeness"] = (
         (1 - pd.concat(fallback_flags, axis=1).mean(axis=1)) * 100
     ).round(1)
+
+    # Sample-size context for downstream filtering (Evidence Quality, a
+    # "top RZ backs" view): games played INCLUDING this one, cumulative RZ
+    # touches THROUGH THE PRIOR WEEK (what the gate tests), and whether the
+    # gate fired on this row.
+    weekly["player_games_played"] = weekly.groupby(["player_id", "season"]).cumcount() + 1
+    weekly["cum_rz_touches_prior"] = cum_rz_touches.astype(int)
+    weekly["td_opportunity_gated"] = thin_sample
 
     return weekly
 

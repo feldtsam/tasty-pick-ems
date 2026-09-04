@@ -26,7 +26,9 @@ import pandas as pd
 import requests
 
 from ids import fbs_team_ids
-from scoring import drop_non_fbs_opponent_rows, score_defensive_matchup_cfb, score_td_opportunity_cfb
+from scoring import CONFIG, drop_non_fbs_opponent_rows, score_defensive_matchup_cfb, score_td_opportunity_cfb
+
+CONFIG_MIN = CONFIG["min_cumulative_rz_touches_for_rate"]
 
 URL = os.environ.get("CFB_URL", "https://tasty-pick-ems-cfb.vercel.app").rstrip("/")
 SECRET = os.environ.get("CFB_PIPELINE_SECRET") or os.environ.get("PIPELINE_INCOMING_SECRET")
@@ -106,16 +108,20 @@ if __name__ == "__main__":
     print("=" * 78)
     print(f"TD OPPORTUNITY — {season} week {target_week}")
     print("=" * 78)
-    pc = ["player_name", "position_group", "team", "opponent", "rz_touches", "rz_tds", "rz_touch_share"]
+    pc = ["player_name", "position_group", "team", "opponent", "rz_touches", "rz_tds",
+          "player_games_played", "cum_rz_touches_prior", "td_opportunity_gated"]
 
     rb = tdo_wk[tdo_wk["position_group"] == "RB"].sort_values("td_opportunity", ascending=False)
-    print("\n--- Top 10 RB by td_opportunity (score, completeness) ---")
-    print(_fmt(rb.head(10), "td_opportunity", "td_opportunity_completeness", pc))
-    print("\n--- Bottom 10 RB by td_opportunity ---")
-    print(_fmt(rb.tail(10), "td_opportunity", "td_opportunity_completeness", pc))
+    ungated = rb[~rb["td_opportunity_gated"]]
+    print(f"\n  RB rows this week: {len(rb)}  |  gated (cum RZ touches < "
+          f"{CONFIG_MIN}): {int(rb['td_opportunity_gated'].sum())}  |  scored: {len(ungated)}")
+    print("\n--- Top 10 UNGATED RB by td_opportunity (the view to actually use) ---")
+    print(_fmt(ungated.head(10), "td_opportunity", "td_opportunity_completeness", pc))
+    print("\n--- Bottom 10 UNGATED RB ---")
+    print(_fmt(ungated.tail(10), "td_opportunity", "td_opportunity_completeness", pc))
 
-    allpos = tdo_wk.sort_values("td_opportunity", ascending=False)
-    print("\n--- Top 10 ALL positions by td_opportunity ---")
+    allpos = tdo_wk[~tdo_wk["td_opportunity_gated"]].sort_values("td_opportunity", ascending=False)
+    print("\n--- Top 10 UNGATED, all positions ---")
     print(_fmt(allpos.head(10), "td_opportunity", "td_opportunity_completeness", pc))
 
     # ================= Defensive Matchup Vulnerability =================
@@ -139,12 +145,14 @@ if __name__ == "__main__":
     print("\n" + "=" * 78)
     print("INTUITION CHECKS")
     print("=" * 78)
-    real_rb = rb[rb["td_opportunity_completeness"] >= 50]
+    real_rb = ungated
     if len(real_rb) >= 4:
         top = real_rb.head(3)["td_opportunity"].mean()
         bot = real_rb.tail(3)["td_opportunity"].mean()
-        print(f"  RB td_opportunity (completeness>=50): top-3 mean {top:.1f} vs bottom-3 mean {bot:.1f} "
-              f"-> {'PASS' if top - bot >= 10 else 'WEAK'}")
+        corr = real_rb[["td_opportunity", "rz_touches"]].corr().iloc[0, 1]
+        print(f"  RB td_opportunity (ungated only, n={len(real_rb)}): top-3 mean {top:.1f} vs "
+              f"bottom-3 mean {bot:.1f} -> {'PASS' if top - bot >= 10 else 'WEAK'}   "
+              f"corr(score, rz_touches) = {corr:+.2f}")
     real_d = rb_d[rb_d["defensive_matchup_completeness"] >= 50]
     if len(real_d) >= 4:
         top = real_d.head(3)["defensive_matchup_vulnerability"].mean()

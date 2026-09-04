@@ -188,18 +188,34 @@ if __name__ == "__main__":
     r.append(check("workhorse completeness is a real, non-trivial number at wk6 (>= 60)",
                    wk6.loc["wh", "td_opportunity_completeness"] >= 60))
 
-    # thin-sample rate gate: the spot-touch back (cum rz_touches 10 < 15 by
-    # wk6, but scores nearly every week) must NOT ride a fluke rate/count to
-    # the top — proven_heat neutralized, td_opportunity ~= 50, completeness
-    # well below the workhorse's
-    r.append(check("spot-touch back (thin cum sample) proven_heat is neutralized to ~50 at wk6",
-                   abs(wk6.loc["spot", "proven_heat"] - 50.0) < 1e-6))
-    r.append(check("spot-touch back td_opportunity does NOT beat the workhorse",
+    # pillar-wide thin-sample gate: the spot-touch back (cum rz_touches 10
+    # < 15 by wk6, scores nearly every week) contributes NOTHING — BOTH
+    # halves neutral-50, td_opportunity EXACTLY 50, completeness 0, gate
+    # flag set. A score-sorted view must not surface it.
+    r.append(check("spot-touch back proven_heat == 50.0 exactly (wk6)",
+                   wk6.loc["spot", "proven_heat"] == 50.0))
+    r.append(check("spot-touch back emerging_heat == 50.0 exactly (wk6) — gate is pillar-wide",
+                   wk6.loc["spot", "emerging_heat"] == 50.0))
+    r.append(check("spot-touch back td_opportunity == 50.0 exactly (not 57.5 from the combine)",
+                   wk6.loc["spot", "td_opportunity"] == 50.0))
+    r.append(check("spot-touch back completeness == 0.0 (every input gated)",
+                   wk6.loc["spot", "td_opportunity_completeness"] == 0.0))
+    r.append(check("spot-touch back td_opportunity_gated is True",
+                   bool(wk6.loc["spot", "td_opportunity_gated"])))
+    r.append(check("spot-touch back does NOT outscore the workhorse",
                    wk6.loc["spot", "td_opportunity"] < wk6.loc["wh", "td_opportunity"]))
-    r.append(check("spot-touch back completeness < workhorse completeness (gate registers as incomplete)",
-                   wk6.loc["spot", "td_opportunity_completeness"] < wk6.loc["wh", "td_opportunity_completeness"]))
-    r.append(check("workhorse (cum rz_touches 25 by wk6) is NOT gated — recent_td_production_pct is real, not 50",
-                   abs(wk6.loc["wh", "recent_td_production_pct"] - 50.0) > 1e-6))
+    r.append(check("workhorse (cum rz_touches 25 by wk6) NOT gated — flag False, td_opp != 50",
+                   (not bool(wk6.loc["wh", "td_opportunity_gated"]))
+                   and abs(wk6.loc["wh", "td_opportunity"] - 50.0) > 1e-6))
+
+    # sample-size context columns
+    r.append(check("player_games_played: workhorse's wk6 row is game 6",
+                   int(wk6.loc["wh", "player_games_played"]) == 6))
+    r.append(check("cum_rz_touches_prior: spot back at wk6 = 2 touches x 5 prior games = 10",
+                   int(wk6.loc["spot", "cum_rz_touches_prior"]) == 10))
+    r.append(check("cum_rz_touches_prior: committee back at wk6 = 3 x 5 = 15 (at the gate, NOT gated)",
+                   int(wk6.loc["cm", "cum_rz_touches_prior"]) == 15
+                   and (not bool(wk6.loc["cm", "td_opportunity_gated"]))))
 
     # a player with zero history (debut week) -> mostly fallback, low completeness
     debut = build_player_season(weeks=6)
