@@ -254,8 +254,15 @@ if __name__ == "__main__":
     r.append(check("that gap is material (>= 15)",
                    dwk6.loc["vs_weak", "defensive_matchup_vulnerability"]
                    - dwk6.loc["vs_stingy", "defensive_matchup_vulnerability"] >= 15))
-    r.append(check("situation_completeness == defensive_matchup_completeness (placeholder)",
+    r.append(check("v1 Situation: situation == defensive_matchup_vulnerability exactly (Environment deferred to v2)",
+                   bool((dscored["situation"] == dscored["defensive_matchup_vulnerability"]).all())))
+    r.append(check("v1 Situation: situation_completeness == defensive_matchup_completeness (no environment input)",
                    bool((dscored["situation_completeness"] == dscored["defensive_matchup_completeness"]).all())))
+    r.append(check("v1 Situation: no environment_score column emitted",
+                   "environment_score" not in dscored.columns))
+    r.append(check("Situation blend renormalizes over present sub-components (0.7 weight -> 1.0), not a hardcoded pass-through",
+                   bool(CONFIG["situation"]["sub_weights"]["defensive_matchup_vulnerability"] == 0.7
+                        and "environment_score" in CONFIG["situation"]["sub_weights"])))
     r.append(check("dmv completeness climbs across the season (wk1 < wk6 for a stable matchup)",
                    dscored[(dscored.player_id == "vs_weak") & (dscored.week == 1)]["defensive_matchup_completeness"].iloc[0]
                    < dscored[(dscored.player_id == "vs_weak") & (dscored.week == 6)]["defensive_matchup_completeness"].iloc[0]))

@@ -1,6 +1,6 @@
 """
-CFB v1 scoring — TD Opportunity (§2), Situation's Defensive Matchup
-Vulnerability half (§3), and the redefined Role & Momentum pillar (§4).
+CFB v1 scoring — TD Opportunity (§2), the Situation pillar (§3, v1 =
+defensive-matchup-only), and the redefined Role & Momentum pillar (§4).
 
 Pure DataFrame-in / DataFrame-out, exactly like nfl/scoring.py. Reads the
 two ingestion tables' rows (assembled by the caller across a whole
@@ -32,9 +32,17 @@ own — the caller drops them first with drop_non_fbs_opponent_rows() so
 FCS blowout stats never enter a player's rolling windows OR the percentile
 reference. Weeks 1-3 are ~25-33% FCS-opponent rows; negligible by week 5.
 
-OUT OF SCOPE here: the environment half of Situation (dome/wind/temp) and
-the `0.7·dmv + 0.3·env` blend; Evidence Quality; Market Value;
-core_weights / any end-to-end pipeline wiring.
+DEFERRED TO v2 (not silently dropped — flagged like Market Value, spec
+§3/§6): the Environment sub-component of Situation (dome / wind / temp /
+heat-index). The `0.7·dmv + 0.3·env` blend mechanism is in place now —
+score_defensive_matchup_cfb combines `situation` through the same
+present-columns renormalization score_universal_tpe uses for
+market_value_score, so with no environment_score column `situation ==
+defensive_matchup_vulnerability`, and the blend activates automatically
+when v2 adds that column.
+
+OUT OF SCOPE here: Evidence Quality; Market Value; core_weights / any
+end-to-end pipeline wiring.
 
 Role & Momentum (§4) consumes `cfb_player_role_weekly` rows assembled by
 cfb/role_momentum.py (a separate, box-score + PPA ingest, unrelated to the
@@ -104,6 +112,25 @@ CONFIG = {
         },
     },
     "min_touches_allowed_for_qualification": 20,
+    "situation": {
+        # Sub-component weights for the Situation pillar. NFL's Situation is
+        # `0.7·defensive_matchup_vulnerability + 0.3·environment_score`.
+        # CFB v1 ships ONLY the defensive-matchup sub-component — the
+        # Environment sub-component (dome / wind / temp / heat-index) is
+        # DEFERRED TO v2 alongside Market Value (spec §3, §6). It is not
+        # silently dropped: environment_score simply never becomes a column
+        # in v1, and `situation` is combined by the SAME present-columns
+        # renormalization score_universal_tpe uses for market_value_score's
+        # absence from core_weights — with only defensive_matchup_
+        # vulnerability present its weight renormalizes 0.7/0.7 -> 1.0, so
+        # situation == defensive_matchup_vulnerability exactly. When
+        # environment_score is built and added as a column in v2 the 70/30
+        # blend activates here with no code change.
+        "sub_weights": {
+            "defensive_matchup_vulnerability": 0.7,
+            "environment_score": 0.3,
+        },
+    },
     "role_momentum": {
         # Locked redefinition (2026-09): NFL's 4 inputs (snap_share_trend,
         # depth_chart_movement, external_opportunity, touch_share_trend) have
@@ -485,15 +512,28 @@ def score_td_opportunity_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.
 
 
 # ===========================================================================
-# Situation — Defensive Matchup Vulnerability half only (§3)
+# Situation (§3) — CFB v1: defensive-matchup-only; Environment deferred to v2
 # ===========================================================================
 def score_defensive_matchup_cfb(
     weekly: pd.DataFrame, allowed_weekly: pd.DataFrame, config: dict = CONFIG
 ) -> pd.DataFrame:
     """
-    Score every offensive-player row for Defensive Matchup Vulnerability —
-    the 0.7-weighted half of Situation (§3). The environment half
-    (dome/wind/temp) and the `0.7·dmv + 0.3·env` blend are a separate task.
+    Score every offensive-player row for the Situation pillar (§3).
+
+    NFL's Situation is `0.7·defensive_matchup_vulnerability + 0.3·
+    environment_score`. CFB v1 ships ONLY the defensive-matchup sub-
+    component — the Environment sub-component (dome / wind / temp / heat-
+    index) is DEFERRED TO v2 alongside Market Value (spec §3, §6).
+
+    `situation` is still combined through a sub-weight blend
+    (config["situation"]["sub_weights"]), using the SAME present-columns
+    renormalization score_universal_tpe applies to market_value_score's
+    absence from core_weights — NOT a hardcoded weight-1.0 special case.
+    In v1 only defensive_matchup_vulnerability is a column, so its 0.7
+    weight renormalizes 0.7/0.7 -> 1.0 and `situation ==
+    defensive_matchup_vulnerability` exactly. When an environment_score
+    column is added in v2 the 70/30 blend takes effect here with no code
+    change.
 
     `weekly`         — a whole season's `cfb_player_redzone_weekly` rows
                        (needs opponent_team_id + position_group).
@@ -502,20 +542,19 @@ def score_defensive_matchup_cfb(
                        stored.
 
     Returns `weekly` with recent_tds_allowed_pct, conversion_rate_allowed_pct,
-    defensive_matchup_vulnerability, defensive_matchup_completeness, and
-    situation_completeness appended. Every offensive player facing the same
-    defense at the same position in the same week gets an identical
-    defensive_matchup_vulnerability (it is a property of the matchup, not
-    the player).
+    defensive_matchup_vulnerability, situation, defensive_matchup_completeness,
+    and situation_completeness appended. Every offensive player facing the
+    same defense at the same position in the same week gets an identical
+    defensive_matchup_vulnerability (and, in v1, situation) — it is a
+    property of the matchup, not the player.
 
     Math (percentile fn, shrinkage, qualification at
     min_touches_allowed_for_qualification=20) is the
     nfl/scoring.py.score_situation defensive-matchup block verbatim.
 
-    PLACEHOLDER (design decision c): situation_completeness is set equal to
-    defensive_matchup_completeness for now — when the environment half
-    lands it becomes mean(7 dmv inputs + 1 env input), matching NFL's
-    8-input situation_completeness.
+    situation_completeness equals defensive_matchup_completeness in v1
+    (Situation has no other sub-component). In v2 it becomes mean(7 dmv
+    inputs + 1 env input), matching NFL's 8-input situation_completeness.
     """
     weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
 
@@ -579,9 +618,28 @@ def score_defensive_matchup_cfb(
     weekly["conversion_rate_allowed_pct"] = conversion_rate_allowed_pct.round(1)
     weekly["defensive_matchup_vulnerability"] = defensive_matchup_vulnerability.round(1)
 
+    # --- Situation = present-sub-components renormalized blend (§3). ---
+    # Identical per-row mechanic to score_universal_tpe's core_weights
+    # handling of market_value_score's absence: filter the sub-weight vector
+    # to the sub-components that are actually columns, then divide the
+    # weighted sum by the present weight total. v1 has only
+    # defensive_matchup_vulnerability -> situation == it exactly. v2 adds an
+    # environment_score column and the 0.7/0.3 blend activates with no
+    # change here.
+    sub_weights = config["situation"]["sub_weights"]
+    present_sub = [c for c in sub_weights if c in weekly.columns]
+    sub_scores = weekly[present_sub]
+    sub_wv = pd.Series({c: sub_weights[c] for c in present_sub})
+    sub_valid = sub_scores.notna()
+    situation = (sub_scores.fillna(0) * sub_wv).sum(axis=1) / (sub_valid * sub_wv).sum(axis=1)
+    weekly["situation"] = situation.round(1)
+
     dmc = ((1 - pd.concat(fallback_flags, axis=1).mean(axis=1)) * 100).round(1)
     weekly["defensive_matchup_completeness"] = dmc
-    # PLACEHOLDER — equals dmc until the environment half of Situation is built.
+    # v1: Situation is defensive-matchup-only (Environment deferred to v2,
+    # spec §3/§6), so situation_completeness == defensive_matchup_completeness
+    # with no environment input referenced. v2: mean(7 dmv inputs + 1 env
+    # input), matching NFL's 8-input situation_completeness.
     weekly["situation_completeness"] = dmc
 
     return weekly

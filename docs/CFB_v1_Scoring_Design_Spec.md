@@ -9,18 +9,20 @@
 | Evidence Quality & Convergence | *applied as confidence multiplier, not part of this split* |
 | Market Value | *deferred to v2* |
 Derivation: Role & Momentum set directly to 12% (deliberately weaker pillar, not proportionally scaled). Remaining 88% split between TD Opportunity and Situation proportional to their original NFL weights (30:20 → 3:2 ratio), since both were audited as strong. Evidence Quality sits outside this additive split entirely — it's applied afterward as `tpe_score = core_score × confidence_multiplier`, so it never competes for weight here (this corrects an earlier draft that mistakenly treated it as an additive slice).
+**Situation sub-scope (v1):** Situation ships its **defensive-matchup sub-component only** — `situation = defensive_matchup_vulnerability`. Its Environment sub-component (dome / wind / temp / heat-index) is **deferred to v2 alongside Market Value** — flagged, not silently dropped (see §3). `situation` is blended through the same present-components renormalization `score_universal_tpe` uses for Market Value's absence from `core_weights`, so it renormalizes to DMV cleanly and the 70/30 blend activates automatically once Environment is built. The 35% Situation weight is unchanged by this — Defensive Matchup Vulnerability was the audited-strong sub-component and carries the pillar alone in v1.
 **Known accepted risk:** TD Opportunity alone decides ~53% of every CFB score — a real concentration, consciously accepted rather than capped lower, as a consequence of Market Value's deferral and Role & Momentum's deliberate down-weighting.
 **Companion investigation reports (Claude Code artifacts):**
 - CFB Market Value Findings
 - CFB Stats Sourcing Options
 - CFB Situation Pillar Audit
 - CFB Evidence Quality Audit
+- CFB Environment weather source (NWS) — 2026-09-04, v2 Environment sub-component data path
 ---
 ## 1. Pillar-by-pillar status
 | Pillar | NFL weight | CFB status | Data source |
 |---|--:|---|---|
 | TD Opportunity | 30% | **Strong — clear go** | CFBD `/plays/stats`, filtered by `gameId` |
-| Situation | 20% | **Strong — clear go** | Same `/plays/stats` ingest as TD Opportunity (grouped by `opponent`+`position` instead of ball-carrier), + `/venues` for environment |
+| Situation | 20% | **Built — v1 = defensive-matchup only** (§3); Environment sub-component **deferred to v2** alongside Market Value | Same `/plays/stats` ingest as TD Opportunity (grouped by `opponent`+`position` instead of ball-carrier). Environment (v2): weather source investigated 2026-09 — IEM ASOS / NOAA NCEI, not `/venues`+Open-Meteo |
 | Evidence Quality & Convergence | 10% | **Mechanically strong** (meta-layer, no independent data) — inherits cold-start effects from the pillars it aggregates | N/A — pure computation over other pillars' outputs |
 | Role & Momentum | 20% | **Redefined + built** (§4) — 2 scored trend inputs (touch-share trend 70%, PPA trend 30%) + a returning-player completeness modifier | CFBD `/games/players`, `/ppa/players/games` |
 | Market Value | 20% | **Deferred to v2** — 0/90 games had player props at 4-6 days out (2 sweeps, 2026-08-30); decisive re-poll needed Sep 1-3 within 2 days of kickoff | The Odds API `americanfootball_ncaaf` |
@@ -40,8 +42,21 @@ Confirmed feasible on CFBD. Red-zone touches are derivable (not pre-aggregated) 
 - **The pillar is inert for weeks 1–4** (≈100% of RBs gated; ~83% still gated at week 8). With Role & Momentum also cold-started, CFB September scores lean almost entirely on Situation.
 - **Among *ungated* rows, `emerging_heat` (usage *trajectory*) still dominates the combine for low-conversion backs** — a high-RZ-volume back who rarely scores can rate ~75 off a rising touch trend (the `max(proven, emerging)` combine). Defensible for an *opportunity* pillar, but "TD Opportunity" measures opportunity *momentum* more than *level*. `corr(td_opportunity, rz_touches)` among ungated rows is ~+0.3 at week 8 — improved, not strong.
 
-## 3. Situation (20% in NFL) — reference only, not redefined
-`situation = 0.7·defensive_matchup_vulnerability + 0.3·environment_score`. Defensive Matchup Vulnerability derives from the *same* `/plays/stats` ingest TD Opportunity needs, grouped by `opponent` + `position` instead of by ball-carrier — one ingest, two pillars. Environment: dome detection free via `/venues.dome`; outdoor wind/temp requires either CFBD Tier 1 ($1/mo) or a free `/venues` coords + Open-Meteo workaround (pattern already used for MLB).
+## 3. Situation (20% in NFL) — v1: defensive-matchup only; Environment deferred to v2
+**v1 ships the defensive-matchup sub-component only:** `situation = defensive_matchup_vulnerability`. NFL's full form is `0.7·defensive_matchup_vulnerability + 0.3·environment_score`; the **Environment sub-component (dome / wind / temp / heat-index) is deferred to v2 alongside Market Value (§6)** — flagged here, not silently dropped.
+
+Defensive Matchup Vulnerability derives from the *same* `/plays/stats` ingest TD Opportunity needs, grouped by `opponent` + `position` instead of by ball-carrier — one ingest, two pillars. Math is `nfl/scoring.py::score_situation`'s defensive-matchup block verbatim (percentile fn, shrinkage `k`=12, qualification at `min_touches_allowed_for_qualification`=20).
+
+**Combination mechanism (built now, in `cfb/scoring.py::score_defensive_matchup_cfb`):** `situation` is combined through `CONFIG["situation"]["sub_weights"]` = `{defensive_matchup_vulnerability: 0.7, environment_score: 0.3}` using the **same present-columns renormalization `score_universal_tpe` applies to `market_value_score`'s absence from `core_weights`** — *not* a hardcoded weight-1.0 pass-through. With no `environment_score` column, DMV's 0.7 weight renormalizes 0.7/0.7 → 1.0, so `situation == defensive_matchup_vulnerability` exactly. Adding an `environment_score` column in v2 activates the 70/30 blend with **no code change**. `situation_completeness == defensive_matchup_completeness` in v1 (no environment input referenced anywhere); in v2 it becomes `mean(7 dmv inputs + 1 env input)`, matching NFL's 8-input form.
+
+### 3.1 v2 Environment sub-component — weather source (investigated 2026-09, real API calls)
+Deferred, but the data path is scoped so v2 isn't a cold start:
+- **`api.weather.gov` (NWS) cannot backfill** — forecast + a rolling ~7-day observation window only; no historical archive endpoint. Rejected as the backfill source.
+- **NOAA NCEI** (`local-climatological-data` / `global-hourly`, no token): 2023 and 2024 seasons fully archived with temp + RH (LCD) or temp + dew point (global-hourly). **But the ISD archive runs ~12 months behind** — as of 2026-09 it has *nothing* for the 2025 season (cutoff ~2025-08-27, confirmed across stations). Usable for 2023–24 backfill only until the lag catches up.
+- **Iowa State IEM ASOS archive** (`mesonet.agron.iastate.edu`): same raw NWS/FAA METAR stream, near-real-time, decades deep. Verified end-to-end on the standard test case (Alabama @ FSU, Doak Campbell, 2025-08-30): 19:53Z → 85 °F, dew 70 °F, **RH 61%**, wind 6 kt → **NWS Heat Index ≈ 89 °F**. Public-domain data, soft rate limit (fine for a weekly pull with ~1–2 s throttle). Single university service — best-effort availability, not an SLA.
+- **NWS Heat Index (Rothfusz) needs only temp °F + RH %** — available on every path (RH direct from IEM/LCD; from dew point on global-hourly).
+- **Recommended v2 split:** NCEI LCD for 2023–24 backfill, IEM ASOS for the 2025 season + ongoing weekly post-game pulls. Venue→station via `api.weather.gov/points/{lat,lon}` (nearest station 2–7 mi for every venue tested, rural included) or NCEI `search/v1` bbox. Dome/retractable state still comes from CFBD `/venues.dome` + game-time roof status, not weather.
+- Full detail: **"CFB Environment weather source (NWS)" investigation artifact**, 2026-09-04.
 ---
 ## 4. Role & Momentum (20% in NFL) — REDEFINED for CFB
 ### 4.1 Why NFL's version can't port
@@ -106,6 +121,13 @@ Two independent blockers found, not one:
 2. **Identity/matching layer hard-bound to `nfl_data_py`**: `fetch_week_events` matches teams via `nfl.import_team_desc()`, `match_attd_players` matches via NFL rosters — both return zero matches for CFB regardless of liquidity. This must be rebuilt (CFB schedule + team map + roster source) before any `market_value_score` can compute, independent of the liquidity question.
 Response shape from The Odds API is byte-identical to NFL's — `parse_attd_event` would run unchanged once identity matching is solved.
 **v2 path, contingent on the Sep 1–3 re-poll:** if that poll shows ranked-games-only coverage, build the CFB identity layer and scope Market Value to marquee games at a reduced weight (~10% suggested, not finalized).
+---
+## 7. Situation → Environment sub-component (0.3 of NFL Situation) — deferred to v2
+Same status as Market Value: **built around, not built.** v1 Situation is `defensive_matchup_vulnerability` alone; `score_defensive_matchup_cfb` already combines `situation` through a present-components renormalization (§3), so no `environment_score` column means `situation == defensive_matchup_vulnerability` with zero special-casing, and a v2 `environment_score` column activates the 70/30 blend with no code change.
+
+**Why deferred:** not a data blocker (unlike Market Value) — a scope call. Environment is a 0.3 sub-weight of a 35% pillar (~10.5% of core), the weather-source path needed its own real-API investigation (done 2026-09-04, see §3.1), and heat-index scoring logic + a 2023–25 backfill validation is a self-contained build better done as one v2 unit than bolted on now.
+
+**v2 build, when picked up:** IEM ASOS (2025 + weekly) + NOAA NCEI LCD (2023–24 backfill) → temp + RH → NWS Heat Index (Rothfusz); dome/retractable state from CFBD `/venues.dome` + game-time roof. Full source detail in §3.1 and the "CFB Environment weather source (NWS)" artifact. NFL's `_environment_score` (deterministic wind/temp, cold-only) is a starting reference but its heat-blindness is exactly the gap CFB Environment exists to close — expect a redefinition, not a port.
 ---
 ## 8. Implementation parameters (added 2026-08-30, in response to Claude Code's pre-Step-1 blocking questions)
 **Direct ports from NFL (reuse exactly, no change):**
