@@ -63,6 +63,119 @@ NFL_STAR_PILLAR_SCORE_KEYS = {
 }
 
 # ---------------------------------------------------------------------------
+# Pillar-tag / cited-evidence consistency — REAL GAP found via real Claude
+# validation (NFL Content Generation V1, Part 1's real Week 1 2026 test):
+# a Kyle Williams card tagged one why_reason "role_momentum" while citing
+# snap_share_trend_pct/touch_share_trend_pct/touch_volume_trend_pct/
+# conversion_rate_pct — every one of which this module's own NFL_TOP_LEVEL_
+# CITABLE_FIELDS comment grouping files under td_opportunity's sub-
+# components, not role_momentum's (which has its own separate _role-
+# suffixed fields for the same underlying usage concepts). Every cited
+# number was real and present in source_facts — validate_citations and
+# validate_numeric_grounding both passed clean — so nothing existing caught
+# this: citation-existence and star-consistency-against-the-claimed-
+# pillar's-own-score are checked, but never whether the CITED fields
+# themselves actually belong to the pillar the reason claims.
+#
+# This matters beyond cosmetics now: the Story Archetype Resolver (Part 2)
+# reads these same pillar tags to pick an illustration archetype — a
+# mistagged reason would point the resolver at the wrong archetype for a
+# card that reads correctly to a human, a real, consequential failure
+# mode this check exists specifically to catch before it does.
+#
+# `situation`/`situation_completeness` deliberately appear under BOTH
+# matchup and environment — the real blended 0.7/0.3 composite genuinely
+# belongs to neither half exclusively (see editorial_lenses.py's own
+# docstring for the same situation/matchup+environment reconciliation).
+# ---------------------------------------------------------------------------
+NFL_PILLAR_FIELD_GROUPS = {
+    "td_opportunity": frozenset({
+        "td_opportunity", "proven_heat", "emerging_heat", "recent_td_production_pct", "conversion_rate_pct",
+        "touch_share_trend_pct", "snap_share_trend_pct", "touch_volume_trend_pct", "td_opportunity_completeness",
+        "i10_touches_trail3", "gl_touches_trail3", "rz_tds_trail3",
+    }),
+    "role_momentum": frozenset({
+        "role_momentum", "role_trend", "external_opportunity", "touch_share_trend_pct_role",
+        "snap_share_trend_pct_role", "depth_chart_movement_pct", "role_momentum_completeness",
+        "snap_share_last1_pct", "snap_share_season_avg_pct", "teammates_ahead_injury_status",
+    }),
+    "matchup": frozenset({
+        "defensive_matchup_vulnerability", "recent_tds_allowed_pct", "conversion_rate_allowed_pct",
+        "defensive_matchup_completeness", "situation", "situation_completeness",
+    }),
+    "environment": frozenset({
+        "environment_score", "temp", "wind", "roof", "situation", "situation_completeness",
+    }),
+    "market_value": frozenset({
+        "market_value_score", "consensus_price_american", "market_value_completeness",
+    }),
+}
+
+# Citable under ANY pillar without counting for or against consistency —
+# generic identity/context facts (player_name, posteam, position_group)
+# plus the two fields that are real and citable but structurally not any
+# ONE pillar's own evidence (evidence_quality/tpe_score — see this
+# module's own docstring: evidence_quality is deliberately excluded from
+# NFL_PILLAR_NAMES itself for the identical reason). A reason citing only
+# these, with no pillar-specific field at all, has nothing for this check
+# to evaluate either way — not itself a violation, since a pure identity/
+# context citation alongside real prose isn't a false-pillar claim.
+NFL_UNIVERSAL_CITABLE_FIELDS = frozenset({"player_name", "posteam", "position_group", "evidence_quality", "tpe_score"})
+
+
+def validate_pillar_field_consistency(why_reasons: list) -> list[dict]:
+    """
+    A reason is flagged when it cites at least one real pillar-specific
+    field, but NONE of its cited pillar-specific fields belong to the
+    pillar it's tagged with — the exact real shape of the Kyle Williams
+    bug (see this module's own docstring above): every cited field
+    belonged to a DIFFERENT pillar's own group, none to the claimed one.
+
+    Deliberately NOT "every cited field must belong to the claimed
+    pillar" — a reason citing one field from its own pillar PLUS a real
+    supporting/context field from elsewhere (e.g. a role_momentum reason
+    that also cites teammates_ahead_injury_status alongside a matchup
+    fact for context) is a legitimate compound reason, not a mismatch;
+    requiring exclusivity would flag real, honest writing this check was
+    never meant to catch.
+
+    A reason with an invalid/missing `pillar` (not one of NFL_PILLAR_
+    NAMES) is skipped here, not flagged again — that's validate_schema_
+    shape's own job (see nfl_shelf_card_writer_schema.py/nfl_tasty_six_
+    writer_schema.py), and this function has no real field group to
+    check a nonexistent pillar name against anyway.
+
+    Returns a list of violation dicts (empty = clean), same "explainable,
+    not a black box" discipline as every other validator in this pipeline.
+    """
+    violations = []
+    for i, reason in enumerate(why_reasons):
+        pillar = reason.get("pillar")
+        if pillar not in NFL_PILLAR_FIELD_GROUPS:
+            continue
+
+        cited = [k for k in (reason.get("source_fact_keys") or []) if k not in NFL_UNIVERSAL_CITABLE_FIELDS]
+        if not cited:
+            continue  # only universal fields cited -- nothing pillar-specific to check
+
+        own_group = NFL_PILLAR_FIELD_GROUPS[pillar]
+        if any(k in own_group for k in cited):
+            continue  # at least one real cited field genuinely backs this pillar tag
+
+        other_pillars = sorted(
+            p for p, fields in NFL_PILLAR_FIELD_GROUPS.items() if p != pillar and any(k in fields for k in cited)
+        )
+        violations.append({
+            "reason_index": i,
+            "issue": (
+                f"why_reasons[{i}] is tagged pillar={pillar!r} but cites {cited!r}, none of which belong to "
+                f"{pillar!r}'s own real column group"
+                + (f" -- they belong to {other_pillars} instead" if other_pillars else "")
+            ),
+        })
+    return violations
+
+# ---------------------------------------------------------------------------
 # Citable fields — every real, flat column a why_reasons citation may
 # point at. Verified directly against player_redzone_weekly.csv's real
 # columns (not assumed from scoring.py's docstrings alone) before this

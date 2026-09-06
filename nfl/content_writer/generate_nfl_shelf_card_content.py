@@ -55,6 +55,7 @@ from nfl_writer_common import (  # noqa: E402
     NFL_STAR_PILLAR_SCORE_KEYS,
     build_nfl_writer_candidate,
     nfl_tolerance_for_key,
+    validate_pillar_field_consistency,
 )
 from nfl_shelf_card_prompt import build_system_prompt, build_user_prompt  # noqa: E402
 from nfl_shelf_card_writer_schema import NFL_SHELF_CARD_TOOL_SCHEMA, validate_schema_shape  # noqa: E402
@@ -102,8 +103,12 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     Same combination as generate_tasty_six_content.py's version, minus
     editorial_sentence: schema shape first (nothing else is safe to
     check against a malformed shape), then citations, numeric grounding,
-    and star consistency (all via card_writer_common's shared,
-    parameterized functions), then banned language checked against
+    star consistency (all via card_writer_common's shared, parameterized
+    functions), and pillar-field consistency (nfl_writer_common's own —
+    see its docstring for the real Kyle Williams bug this closes: a
+    reason's cited evidence must actually belong to the pillar it's
+    tagged with, not just cite SOME real key and pass a real star check
+    against a DIFFERENT field), then banned language checked against
     title and every reason_text.
     """
     issues = []
@@ -118,6 +123,7 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     issues.extend({"check": "citation", **v} for v in validate_citations(why_reasons, source_facts))
     issues.extend({"check": "numeric_grounding", **v} for v in validate_numeric_grounding(why_reasons, source_facts, nfl_tolerance_for_key))
     issues.extend({"check": "star_consistency", **v} for v in validate_star_consistency(why_reasons, source_facts, NFL_PILLAR_NAMES, NFL_STAR_PILLAR_SCORE_KEYS))
+    issues.extend({"check": "pillar_field_consistency", **v} for v in validate_pillar_field_consistency(why_reasons))
 
     banned_targets = [("title", output["title"])]
     banned_targets += [(f"why_reasons[{i}].reason_text", r["reason_text"]) for i, r in enumerate(why_reasons)]

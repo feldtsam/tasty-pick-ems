@@ -75,6 +75,7 @@ from nfl_writer_common import (  # noqa: E402
     NFL_TOP_LEVEL_CITABLE_FIELDS,
     build_nfl_writer_candidate,
     nfl_tolerance_for_key,
+    validate_pillar_field_consistency,
 )
 from nfl_tasty_six_prompt import build_system_prompt, build_user_prompt  # noqa: E402
 from nfl_tasty_six_writer_schema import NFL_TASTY_SIX_TOOL_SCHEMA, validate_schema_shape  # noqa: E402
@@ -92,10 +93,17 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     """
     Every deterministic check, combined into one real violation list --
     schema shape first (nothing else is safe to check against a malformed
-    shape), then citations, numeric grounding, and star consistency
-    (all three via Part B's parameterized card_writer_common functions,
-    with NFL's own parameters wired in below), then banned language
-    checked against every real user-facing string the card produces.
+    shape), then citations, numeric grounding, star consistency (all via
+    Part B's parameterized card_writer_common functions, with NFL's own
+    parameters wired in below), and pillar-field consistency (nfl_writer_
+    common's own -- see its docstring for the real Kyle Williams bug this
+    closes on the regular shelf-card writer, and why the same check
+    applies here too: nothing about star_consistency's own real-score
+    check would catch a reason tagged one pillar while citing another
+    pillar's evidence, since the star rating can still land inside a
+    real, valid range for whichever pillar it's tagged with regardless
+    of what was actually cited), then banned language checked against
+    every real user-facing string the card produces.
 
     No `candidate` parameter here (unlike MLB's version, which still
     accepts one, unused, for call-site-stability reasons specific to
@@ -116,6 +124,7 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     issues.extend({"check": "citation", **v} for v in validate_citations(why_reasons, source_facts))
     issues.extend({"check": "numeric_grounding", **v} for v in validate_numeric_grounding(why_reasons, source_facts, nfl_tolerance_for_key))
     issues.extend({"check": "star_consistency", **v} for v in validate_star_consistency(why_reasons, source_facts, NFL_PILLAR_NAMES, NFL_STAR_PILLAR_SCORE_KEYS))
+    issues.extend({"check": "pillar_field_consistency", **v} for v in validate_pillar_field_consistency(why_reasons))
 
     banned_targets = [("title", output["title"]), ("editorial_sentence", output["editorial_sentence"])]
     banned_targets += [(f"why_reasons[{i}].reason_text", r["reason_text"]) for i, r in enumerate(why_reasons)]
