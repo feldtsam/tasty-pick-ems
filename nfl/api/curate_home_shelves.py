@@ -125,6 +125,7 @@ from shelves import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
 from generate_tasty_six_content import generate_nfl_tasty_six_draft  # noqa: E402
+from generate_nfl_shelf_card_content import generate_nfl_shelf_card_draft  # noqa: E402
 from nfl_writer_common import nfl_confidence_band_for_score, nfl_regular_row_confidence_band_for_score  # noqa: E402
 
 SHELF_ORDER = [
@@ -705,6 +706,28 @@ def _deterministic_why_reasons(row: pd.Series, shelf_name: str, story: dict) -> 
     }]
 
 
+def _llm_why_reasons_for_write(raw_reasons: list) -> list:
+    """
+    Translation layer: an LLM writer's internal shape (reason_text/
+    source_fact_keys, matching card_writer_common.py's shared
+    validators, which stay untouched) -> the real nfl_content_drafts
+    column shape (text/citation) — see _deterministic_why_reasons' own
+    docstring for how that real shape was confirmed. Factored out here
+    (NFL Content Generation V1, Part 1) since it's now used by BOTH the
+    Tasty Six writer and the new regular shelf card writer — was inline
+    only in the Tasty Six branch before Part 1 needed it a second time.
+    """
+    return [
+        {
+            "pillar": wr.get("pillar"),
+            "stars": wr.get("stars"),
+            "text": wr.get("reason_text"),
+            "citation": wr.get("source_fact_keys"),
+        }
+        for wr in (raw_reasons or [])
+    ]
+
+
 def _matchup_from_game_id(game_id) -> str | None:
     """"{away} @ {home}", parsed directly from nflverse's own game_id
     convention ("{season}_{week}_{away}_{home}") — no schedules lookup
@@ -848,6 +871,20 @@ def shape_content_draft_rows(
     history_lookup = add_td_opportunity_history_lookup(history_weekly)
 
     rows = []
+    # REAL CROSS-BATCH VARIETY STATE (NFL Content Generation V1, Part 1)
+    # -- grown across EVERY row in this one curation run, Tasty Six and
+    # regular cards alike, and fed back into every subsequent real LLM
+    # call as avoid_headlines/avoid_opening_phrases (see nfl_shelf_card_
+    # prompt.py's own docstring for the real angle-level repetition this
+    # closes). Shared across writer types deliberately, not one list per
+    # type -- a Tasty Six title and a regular card's title can collide
+    # just as easily as two regular cards' can, and they're generated in
+    # the same batch either way. Titles only (not why_reasons prose),
+    # same real scope MLB's own content_draft_generation_live.py already
+    # established this pattern at.
+    generated_titles = []
+    generated_opening_phrases = []
+
     for _, r in capped_assignments[~capped_assignments["capped"]].iterrows():
         is_tasty_six = tasty_lookup.get(r["home_shelf"]) == r["player_id"]
         full_row = weekly_lookup.get(r["player_id"])
@@ -891,34 +928,84 @@ def shape_content_draft_rows(
             if full_row is not None and anthropic_api_key:
                 band = nfl_confidence_band_for_score(full_row.get("tpe_score"))
                 if band is not None:
-                    draft = generate_nfl_tasty_six_draft(full_row.to_dict(), r["home_shelf"], band, anthropic_api_key)
+                    # REAL RESILIENCE FIX (NFL Content Generation V1, Part
+                    # 1) -- confirmed, previously-flagged gap (see this
+                    # function's own module docstring history): a Claude
+                    # API failure, rate limit, or malformed response for
+                    # ONE Tasty Six pick used to raise straight out of
+                    # this loop and abort curation for the ENTIRE week,
+                    # including every other shelf's already-successful
+                    # rows. Now caught and degraded to this row's own
+                    # deterministic content instead -- one bad LLM call
+                    # never sinks the whole real batch, matching MLB's own
+                    # content_draft_generation_live.py's per-candidate
+                    # try/except discipline. avoid_headlines is threaded
+                    # through here too -- previously never passed at all
+                    # despite generate_nfl_tasty_six_draft() already
+                    # supporting it, a real, live gap this fix also closes.
+                    try:
+                        draft = generate_nfl_tasty_six_draft(
+                            full_row.to_dict(), r["home_shelf"], band, anthropic_api_key,
+                            avoid_headlines=generated_titles,
+                        )
+                    except Exception as e:
+                        print(
+                            f"[shape_content_draft_rows] tasty_six LLM generation failed for "
+                            f"player_id={r['player_id']!r} shelf={r['home_shelf']!r}: {e!r} -- "
+                            f"falling back to this row's deterministic content instead",
+                            flush=True,
+                        )
+                        title = story["headline"] if story is not None else None
+                        why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story) if story is not None else []
+                    else:
+                        title = draft.get("title")
+                        editorial_sentence = draft.get("editorial_sentence")
+                        why_reasons = _llm_why_reasons_for_write(draft.get("why_reasons"))
+                        confidence_band = draft.get("confidence_band") or confidence_band
+                        model_name = draft.get("model_name")
+                        validation_passed = bool(draft.get("validation_passed", True))
+                        validation_issues = draft.get("validation_issues") or []
+        elif full_row is not None:
+            confidence_band = nfl_regular_row_confidence_band_for_score(full_row.get("tpe_score"))
+            if anthropic_api_key:
+                # Same per-row resilience discipline as the Tasty Six
+                # branch above -- a bad Claude call for one regular card
+                # (of which there are many more per batch than Tasty Six
+                # picks) degrades to THIS row's own existing deterministic
+                # template, never the whole week's curation run.
+                try:
+                    draft = generate_nfl_shelf_card_draft(
+                        full_row.to_dict(), r["home_shelf"], confidence_band, anthropic_api_key,
+                        avoid_headlines=generated_titles, avoid_opening_phrases=generated_opening_phrases,
+                    )
+                except Exception as e:
+                    print(
+                        f"[shape_content_draft_rows] shelf_card LLM generation failed for "
+                        f"player_id={r['player_id']!r} shelf={r['home_shelf']!r}: {e!r} -- "
+                        f"falling back to this row's deterministic content instead",
+                        flush=True,
+                    )
+                    draft = None
+                if draft is not None:
                     title = draft.get("title")
-                    editorial_sentence = draft.get("editorial_sentence")
-                    # Translation layer: Part C's internal shape (reason_
-                    # text/source_fact_keys, matching card_writer_common.
-                    # py's shared validators, which stay untouched) ->
-                    # the real column's shape (text/citation) -- ONLY at
-                    # this write-shaping boundary, not upstream.
-                    raw_reasons = draft.get("why_reasons") or []
-                    why_reasons = [
-                        {
-                            "pillar": wr.get("pillar"),
-                            "stars": wr.get("stars"),
-                            "text": wr.get("reason_text"),
-                            "citation": wr.get("source_fact_keys"),
-                        }
-                        for wr in raw_reasons
-                    ]
+                    why_reasons = _llm_why_reasons_for_write(draft.get("why_reasons"))
                     confidence_band = draft.get("confidence_band") or confidence_band
                     model_name = draft.get("model_name")
                     validation_passed = bool(draft.get("validation_passed", True))
                     validation_issues = draft.get("validation_issues") or []
-        elif full_row is not None:
-            title = story["headline"]
-            why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
-            confidence_band = nfl_regular_row_confidence_band_for_score(full_row.get("tpe_score"))
+                    if draft.get("opening_phrase"):
+                        generated_opening_phrases.append(draft["opening_phrase"])
+                else:
+                    title = story["headline"]
+                    why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
+            else:
+                title = story["headline"]
+                why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
         else:
             confidence_band = nfl_regular_row_confidence_band_for_score(None)
+
+        if title:
+            generated_titles.append(title)
 
         rows.append({
             "player_id": r["player_id"],
