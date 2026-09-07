@@ -122,6 +122,7 @@ from shelves import (
     add_whole_game_target_share_trend, eligible_pool, odds_band_eligible, odds_band_story,
     position_story, red_zone_story, section_title_for_shelf, td_opportunity_trend_for_row,
 )
+from story_archetype import resolve_archetype
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
 from generate_tasty_six_content import generate_nfl_tasty_six_draft  # noqa: E402
@@ -932,6 +933,25 @@ def shape_content_draft_rows(
         role_signals = story["role_signals"] if story is not None else []
         td_opportunity_trend = td_opportunity_trend_for_row(full_row, history_lookup) if full_row is not None else []
         section_title = section_title_for_shelf(r["home_shelf"])
+        # NFL Phase D, Part 1 -- story_archetype.py's resolver was fully
+        # built and validated earlier but never actually called anywhere in
+        # this pipeline until now (confirmed zero hits before this change).
+        # Wired in here because this is the one place that already has both
+        # the shelf (r["home_shelf"], the exact internal Title-Case name
+        # resolve_archetype/resolve_editorial_lens expect -- e.g. "ATTD
+        # +700+", not the slugged write-schema value) and the enriched
+        # per-player row (full_row) resolve_archetype's own docstring
+        # requires. resolve_archetype() itself is untouched -- only called.
+        # Same "missing input -> honest default, never a guess" convention
+        # as every other full_row-derived field above: a row with no
+        # enriched data degrades to GENERIC/no position, matching exactly
+        # what resolve_archetype() itself already returns when it has
+        # nothing real to work with, rather than inventing a fallback here.
+        archetype_result = (
+            resolve_archetype(r["home_shelf"], full_row)
+            if full_row is not None
+            else {"archetype": "GENERIC", "position_variant": None, "confidence": None}
+        )
 
         if is_tasty_six:
             writer_type = "tasty_six"
@@ -1067,6 +1087,10 @@ def shape_content_draft_rows(
             # signal_convergence directly above (scoring.score_signal_breach) --
             # None (not False) when full_row is missing, same reasoning.
             "signal_breach": full_row.get("signal_breach") if full_row is not None else None,
+            # NFL Phase D, Part 1 -- straight through from archetype_result
+            # above (resolve_archetype()'s own output, untouched here).
+            "archetype": archetype_result["archetype"],
+            "position_variant": archetype_result["position_variant"],
         })
     return rows
 
