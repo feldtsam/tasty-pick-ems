@@ -4,10 +4,17 @@ the endpoint pre-flight (409 status=locked when review has started, no
 curation run, LLM never invoked) and its force override, plus the
 read_content_draft_review_states() helper in isolation.
 
+Also tests this endpoint's half of the force_review_reset fix (real
+behavioral bug, confirmed via a real production run: a forced re-run's
+regenerated content used to silently inherit an already-approved row's
+review_status) -- specifically, that force_review_reset=True is set on
+every row this endpoint hands to write_content_draft_rows() when (and
+only when) force is true.
+
 The DB-level backstop (the protect_nfl_content_draft_review_status
-trigger) is verified separately by
-supabase/tests/nfl_content_drafts_review_guard.test.sql against a real
-Postgres — it can't be exercised from Python.
+trigger, including the force_review_reset exception) is verified
+separately by supabase/tests/nfl_content_drafts_review_guard.test.sql
+against a real Postgres — it can't be exercised from Python.
 
 Run: python3 nfl/api/test_curation_rerun_guard.py
 """
@@ -107,10 +114,21 @@ if __name__ == "__main__":
 
     def fake_curate(weekly, season, week, **kw):
         calls["curate"] = calls.get("curate", 0) + 1
-        return {"content_draft_rows": [], "shelf_signal_history_rows": []}
+        # A real, minimal content-ready row (title present, matching the
+        # content_ready_rows filter) -- so rows_to_write is non-empty and
+        # force_review_reset's real assignment logic actually runs, not
+        # just skipped because there was nothing to write.
+        return {
+            "content_draft_rows": [{
+                "player_id": "00-0000001", "title": "Test headline",
+                "why_reasons": [], "is_tasty_six": False,
+            }],
+            "shelf_signal_history_rows": [],
+        }
 
     def fake_write(rows, secret, write_url=None):
         calls["write"] = calls.get("write", 0) + 1
+        calls["write_rows"] = rows
         return {"success": True, "status_code": 200, "error": None, "response_body": "{}"}
 
     orig_curate = idx.curate_nfl_shelves
@@ -180,6 +198,45 @@ if __name__ == "__main__":
         r = client.post("/api/curate-and-write-drafts", headers=AUTH, json={"season": 2026, "week": 5, "force": True, "preview_only": True})
         results.append(check("endpoint: force:true proceeds even when the pre-flight route is down",
                              r.status_code == 200 and calls.get("curate") == 1))
+
+        # 6. force_review_reset -- real behavioral fix, confirmed via a
+        # real production run: a forced re-run's regenerated content was
+        # silently inheriting an already-approved row's review_status
+        # (root cause: the DB trigger protect_nfl_content_draft_review_
+        # status() blocks EVERY reset to pending_review on a reviewed row,
+        # with no way to tell an accidental re-run apart from an
+        # explicit, human-authorized force:true one). force_review_reset
+        # is the new signal that closes that gap on the DB side -- these
+        # two checks cover this endpoint's half of it: is the flag
+        # actually set on the rows this endpoint writes, only when force
+        # is true. (The trigger's own behavior -- that setting the flag
+        # actually unblocks the reset, and that a normal write still gets
+        # blocked -- is verified separately against a real Postgres by
+        # supabase/tests/nfl_content_drafts_review_guard.test.sql, same
+        # split as the rest of this file's own docstring already
+        # describes for the guard itself.)
+        #
+        # NOT preview_only this time -- preview_only never reaches
+        # write_content_draft_rows at all, so it can't exercise this.
+        calls.clear()
+        idx.read_content_draft_review_states = lambda s, w, secret: {"ok": True, "reviewed_count": 0, "rows": [], "error": None, "status_code": 200}
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH, json={"season": 2026, "week": 5, "force": True})
+        written_rows = calls.get("write_rows") or []
+        results.append(check(
+            "endpoint: force:true -> every row handed to write_content_draft_rows carries force_review_reset=True",
+            r.status_code == 200 and len(written_rows) > 0 and all(row.get("force_review_reset") is True for row in written_rows),
+        ))
+
+        # 6b. the same real row, written WITHOUT force -> no flag at all,
+        # matching today's default upsert payload exactly (never a
+        # regression on the normal path).
+        calls.clear()
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH, json={"season": 2026, "week": 5})
+        written_rows = calls.get("write_rows") or []
+        results.append(check(
+            "endpoint: a normal (non-forced) write never sets force_review_reset on any row",
+            r.status_code == 200 and len(written_rows) > 0 and all("force_review_reset" not in row for row in written_rows),
+        ))
     finally:
         idx.curate_nfl_shelves = orig_curate
         idx.write_content_draft_rows = orig_write

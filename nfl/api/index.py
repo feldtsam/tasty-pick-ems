@@ -1115,6 +1115,29 @@ def curate_and_write_drafts_endpoint():
         if isinstance(max_rows_to_write, int):
             rows_to_write = rows_to_write[:max_rows_to_write]
 
+    # FORCE REVIEW RESET — real behavioral fix, confirmed via a real
+    # production run: a forced re-run's regenerated content was silently
+    # inheriting an already-'approved' row's review_status instead of
+    # resetting to 'pending_review'. Root cause traced to the Postgres
+    # trigger that guards review_status (protect_nfl_content_draft_
+    # review_status(), tastypickems' 20260903000000_freeze_reviewed_row_
+    # partition.sql) — it blocks EVERY attempt to reset an already-
+    # reviewed row back to pending_review, with no way to tell an
+    # accidental automated re-run apart from an explicit, human-
+    # authorized force:true regeneration. force_review_reset is the new,
+    # real signal that closes that gap on the DB side: true only when
+    # this endpoint is running under force, read by the trigger itself.
+    # Safe to set on every row in the batch, not just ones that happen to
+    # overwrite an approved row — the trigger only fires on UPDATE (never
+    # on a genuinely new row's INSERT) and only actually intervenes when
+    # the existing row's review_status isn't 'pending_review' already, so
+    # this has zero effect on new rows or already-pending ones. Never set
+    # when force is False, so a normal non-forced re-run keeps today's
+    # exact protective behavior — the core protection stays intact.
+    if force:
+        for r in rows_to_write:
+            r["force_review_reset"] = True
+
     ssh_rows = _json_safe(result["shelf_signal_history_rows"])
     ssh_write_result = {"success": None, "status_code": None, "error": None}
 
