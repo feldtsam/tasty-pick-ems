@@ -26,6 +26,7 @@ from curate_home_shelves import (
     SHELF_ORDER,
     SHELF_SLUG,
     TREND_SHELVES,
+    _llm_why_reasons_for_write,
     _shelf_slug,
     _shelf_unslug,
     apply_shelf_cap,
@@ -62,12 +63,58 @@ def check(label, condition):
 
 
 if __name__ == "__main__":
+    results = []
+
+    # ============================================================
+    # REGRESSION — _llm_why_reasons_for_write(): a real production crash
+    # (500 on /api/curate-and-write-drafts: "'str' object has no
+    # attribute 'get'"). Confirmed root cause: a Claude tool-call can
+    # return why_reasons in a shape validate_schema_shape() correctly
+    # flags (validation_passed=False), but generate_nfl_tasty_six_
+    # draft()/generate_nfl_shelf_card_draft() still return it as-is in
+    # the draft dict, and this function used to iterate it
+    # unconditionally regardless of that flag. A plain STRING (iterating
+    # yields characters, .get() on a character raises exactly the real
+    # crash text) or a list containing a non-dict item both reproduced
+    # the bug pre-fix. Pure function, no real data fixture needed — runs
+    # unconditionally, before the WEEKLY_PATH-dependent checks below,
+    # so it can never be silently skipped by a missing CSV in some
+    # other environment.
+    # ============================================================
+    results.append(check(
+        "REGRESSION: why_reasons as a plain string (the real crash shape) degrades to [] instead of raising",
+        _llm_why_reasons_for_write("Player has strong red zone usage this week.") == [],
+    ))
+    results.append(check(
+        "REGRESSION: why_reasons as a list containing a non-dict item drops just that item, keeps the real one",
+        _llm_why_reasons_for_write([
+            {"pillar": "td_opportunity", "stars": 4, "reason_text": "Real reason.", "source_fact_keys": ["k"]},
+            "a malformed non-dict item",
+        ]) == [{"pillar": "td_opportunity", "stars": 4, "text": "Real reason.", "citation": ["k"]}],
+    ))
+    results.append(check(
+        "why_reasons as None still degrades to [] (unchanged pre-fix behavior for the one legitimate falsy case)",
+        _llm_why_reasons_for_write(None) == [],
+    ))
+    results.append(check(
+        "why_reasons as a well-formed list is completely unaffected by the fix",
+        _llm_why_reasons_for_write([
+            {"pillar": "role_momentum", "stars": 5, "reason_text": "Good reason.", "source_fact_keys": ["a", "b"]},
+        ]) == [{"pillar": "role_momentum", "stars": 5, "text": "Good reason.", "citation": ["a", "b"]}],
+    ))
+
     if not WEEKLY_PATH.exists():
-        print(f"SKIPPED — {WEEKLY_PATH} not present in this environment.")
+        print(f"SKIPPED remaining real-data checks — {WEEKLY_PATH} not present in this environment.")
+        print()
+        if all(results):
+            print(f"All {len(results)} checks passed.")
+        else:
+            failed = len(results) - sum(results)
+            print(f"{failed} of {len(results)} checks FAILED — see above.")
+            raise SystemExit(1)
         raise SystemExit(0)
 
     weekly = pd.read_csv(WEEKLY_PATH)
-    results = []
 
     # ============================================================
     # Real 2025 Week 10, synthetic odds re-attached (real seasons never

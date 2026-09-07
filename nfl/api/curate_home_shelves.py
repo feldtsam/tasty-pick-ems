@@ -706,7 +706,7 @@ def _deterministic_why_reasons(row: pd.Series, shelf_name: str, story: dict) -> 
     }]
 
 
-def _llm_why_reasons_for_write(raw_reasons: list) -> list:
+def _llm_why_reasons_for_write(raw_reasons) -> list:
     """
     Translation layer: an LLM writer's internal shape (reason_text/
     source_fact_keys, matching card_writer_common.py's shared
@@ -716,7 +716,26 @@ def _llm_why_reasons_for_write(raw_reasons: list) -> list:
     (NFL Content Generation V1, Part 1) since it's now used by BOTH the
     Tasty Six writer and the new regular shelf card writer — was inline
     only in the Tasty Six branch before Part 1 needed it a second time.
+
+    REAL BUG FIX — confirmed production crash root cause: a Claude tool-
+    call can return why_reasons in a shape validate_schema_shape()
+    correctly flags (validation_passed=False), but generate_nfl_tasty_
+    six_draft()/generate_nfl_shelf_card_draft() still return it as-is in
+    the draft dict, and this function used to iterate it unconditionally
+    regardless. A malformed why_reasons that came back as a plain STRING
+    (instead of a list) crashed with "'str' object has no attribute
+    'get'" — iterating a string yields characters, and .get() on a
+    character raises exactly that. A list containing a non-dict item hit
+    the same failure per-item. Both degrade to being skipped now, same
+    "one bad response never crashes the whole batch" resilience already
+    used one layer up (the try/except around the Claude call itself) —
+    this closes the real gap where a validation FAILURE (not a raised
+    exception) still reached this function untouched. Reproduced and
+    confirmed against the real crash text before this fix; see this
+    module's regression tests for the locked-in cases.
     """
+    if not isinstance(raw_reasons, list):
+        return []
     return [
         {
             "pillar": wr.get("pillar"),
@@ -724,7 +743,8 @@ def _llm_why_reasons_for_write(raw_reasons: list) -> list:
             "text": wr.get("reason_text"),
             "citation": wr.get("source_fact_keys"),
         }
-        for wr in (raw_reasons or [])
+        for wr in raw_reasons
+        if isinstance(wr, dict)
     ]
 
 
