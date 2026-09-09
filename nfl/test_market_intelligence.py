@@ -1,34 +1,33 @@
 """
-Tests for intelligence_schema.py + market_intelligence.py — the first
-NFL Intelligence family and the shared story-object schema the other
-three (Role Changes, Defensive Trends, Coaching Trends) will reuse.
+Tests for market_intelligence.py — Market Trends V1, Deviation only.
 
-Two kinds of checks, deliberately: schema-genericity checks (does
-build_story actually work for a shape that ISN'T Market Intelligence's
-own, proving the schema isn't secretly Market-specific) use small
-synthetic fixtures; Market Intelligence's own story content is checked
-against REAL data (the same cached NE@SEA snapshot already validated
-earlier this session), not synthetic price data — the whole point of
-sample-size honesty is that it has to hold on a real, currently-thin
-real-world market, not just a contrived test case.
+Covers exactly what the spec's own rules require be checked independently:
+peer-tier grouping correctness (on-field pillars only, Market Value
+excluded), the deviation eligibility floor and magnitude bands (§4),
+evidence_state's independence from both signal_type and magnitude (§3b),
+and freshness exclusion applied upstream of scoring (§6). All synthetic —
+no cached real-event fixture, since this family's own real market snapshot
+comes from nfl_price_history, which has no real rows to test against yet
+(see market_value.py's own docstring).
 
 Run: python3 nfl/test_market_intelligence.py
 """
-import json
 import sys
-from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
 
 import pandas as pd
 
-from intelligence_schema import STORY_FIELDS, build_story
-from market_intelligence import CONFIG, build_market_intelligence_stories
-
-CACHED_EVENT_PATH = Path(
-    "/private/tmp/claude-501/-Users-samfeldt-Claude-Code/63cf71ee-ff8a-4b41-9fc4-0e0f4d5c91b0/scratchpad/ne_sea_attd_raw.json"
+from intelligence_schema import STORY_FIELDS
+from market_intelligence import (
+    CONFIG,
+    _assign_peer_tiers,
+    _evidence_state_for_row,
+    _freshness_gate,
+    _magnitude_band,
+    _peer_tier_core_score,
+    build_deviation_stories,
 )
 
 
@@ -38,247 +37,204 @@ def check(label, condition):
     return condition
 
 
-if __name__ == "__main__":
-    results = []
+NOW = pd.Timestamp("2026-09-14T18:00:00Z")
 
-    # ============================================================
-    # Schema genericity — build_story must work for a shape that is
-    # NOT Market Intelligence's own (proves the schema doesn't secretly
-    # assume "entity is always a player" or similar).
-    # ============================================================
-    try:
-        defense_story = build_story(
-            intelligence_family="defensive_trends", entity={"type": "defense", "team": "SEA"},
-            headline="Test", story="Test story.", primary_signal={"name": "allowed_rz_tds_last3", "value": 4.0},
-            supporting_evidence=["x"], trend_direction="worsening", trend_strength=70.0,
-            sample_size=6, completeness=90.0, confidence=85.0, time_window="Last 3 games",
-            related_players=[],
-        )
-        results.append(check("build_story works for a non-player entity type (defense), proving genericity", True))
-    except Exception as e:
-        results.append(check(f"build_story works for a non-player entity type (defense), proving genericity ({e})", False))
 
-    missing_field_raised = False
-    try:
-        build_story(intelligence_family="market")
-    except ValueError:
-        missing_field_raised = True
-    results.append(check("build_story raises on missing required fields rather than returning a partial story", missing_field_raised))
+def _fresh_ts(minutes_ago: int) -> str:
+    return (NOW - pd.Timedelta(minutes=minutes_ago)).isoformat()
 
-    extra_field_raised = False
-    try:
-        build_story(**{f: None for f in STORY_FIELDS}, made_up_field="x")
-    except ValueError:
-        extra_field_raised = True
-    results.append(check("build_story raises on an unexpected field not in the shared schema", extra_field_raised))
 
-    # ============================================================
-    # Real Market Intelligence stories from real data
-    # ============================================================
-    if not CACHED_EVENT_PATH.exists():
-        print(f"SKIPPED real-data checks — {CACHED_EVENT_PATH} not present in this environment.")
-        stories = []
-    else:
-        import nfl_data_py as nfl
-        from market_value import match_attd_players, parse_attd_event, snapshot_scoring_inputs
-        from scoring import CONFIG as SCORING_CONFIG
-        from scoring import score_market_value
+def _market_row(**overrides) -> dict:
+    row = {
+        "player_id": "p0", "player_name_raw": "Test Player", "team": "KC",
+        "position_group": "WR", "event_id": "e1", "away_team": "KC", "home_team": "DEN",
+        "commence_time": "2026-09-14T20:00:00Z", "consensus_implied_probability": 0.30,
+        "consensus_price_american": 233, "n_books": 3, "best_price": 240, "best_book": "DK",
+        "poll_timestamp": _fresh_ts(30),
+    }
+    row.update(overrides)
+    return row
 
-        event = json.loads(CACHED_EVENT_PATH.read_text())
-        season = 2026
-        seasonal_rosters = nfl.import_seasonal_rosters([season])
-        team_desc = nfl.import_team_desc()
-        parsed = parse_attd_event(event)
-        matched, _unmatched = match_attd_players(parsed, seasonal_rosters, team_desc, season)
-        snap = snapshot_scoring_inputs(matched)
-        snap["season"] = season
-        snap["week"] = 1
-        scored = score_market_value(snap, SCORING_CONFIG)
 
-        stories = build_market_intelligence_stories(scored)
-        results.append(check(f"real data produces one story per real matched player (expect 20)", len(stories) == 20))
+results = []
 
-        # every field genuinely populated, not a placeholder
-        s = stories[0]
-        results.append(check("every schema field is present on a real story", all(f in s for f in STORY_FIELDS)))
-        results.append(check("headline is real, non-empty text", isinstance(s["headline"], str) and len(s["headline"]) > 10))
-        results.append(check("story is real, non-empty text distinct from the headline", s["story"] != s["headline"] and len(s["story"]) > 20))
-        results.append(check("primary_signal has a real name+value pair", s["primary_signal"]["name"] == "market_value_score" and isinstance(s["primary_signal"]["value"], float)))
-        results.append(check("supporting_evidence has multiple real, concrete facts", len(s["supporting_evidence"]) >= 3))
+# --- _peer_tier_core_score: excludes market_value_score, renormalizes present-only ---
+pool = pd.DataFrame([
+    {"td_opportunity": 90, "role_momentum": 80, "situation": 70, "market_value_score": 10},
+    {"td_opportunity": 50, "role_momentum": 50, "situation": 50, "market_value_score": 90},
+])
+core = _peer_tier_core_score(pool)
+# Weights (excluding market_value_score): td=30, role=20, situation=20 -> renormalized over 70.
+expected_row0 = round((90 * 30 + 80 * 20 + 70 * 20) / 70, 1)
+results.append(check(
+    "core score composite excludes market_value_score entirely (row 0 unaffected by its 10 vs. row 1's 90)",
+    core.iloc[0] == expected_row0,
+))
+results.append(check(
+    "row 1's low market_value_score (90, ironically) doesn't drag its on-field-only composite down",
+    core.iloc[1] == round((50 * 30 + 50 * 20 + 50 * 20) / 70, 1),
+))
 
-        # sample-size honesty (section: "Don't let a thin-book player
-        # generate as confident a headline as a well-covered one")
-        real_n_books = {st["sample_size"] for st in stories}
-        results.append(check("real captured data is genuinely thin (n_books=1 for every real story) -- confirmed, not assumed", real_n_books == {1}))
-        results.append(check(
-            "every real (thin) story's language is honestly hedged (contains a thin/early qualifier)",
-            all(any(w in st["headline"].lower() or w in st["story"].lower() for w in ("early", "one book", "thin")) for st in stories),
-        ))
-        thin_completeness = {round(st["completeness"], 1) for st in stories}
-        results.append(check(
-            "thin (1-book) real stories all show a penalized completeness, not a false-confident 100",
-            all(c < 100.0 for c in thin_completeness),
-        ))
+# Missing pillar column entirely -> still computes over whichever are present.
+partial = pd.DataFrame([{"td_opportunity": 90, "role_momentum": 80}])
+partial_core = _peer_tier_core_score(partial)
+results.append(check(
+    "a missing 'situation' column renormalizes over just td_opportunity+role_momentum, not a crash",
+    partial_core.iloc[0] == round((90 * 30 + 80 * 20) / 50, 1),
+))
 
-        # related_players correctness
-        jsn = next(st for st in stories if st["entity"]["player_name"] == "Jaxon Smith-Njigba")
-        results.append(check("related_players excludes the entity itself", all(r["player_id"] != jsn["entity"]["player_id"] for r in jsn["related_players"])))
-        results.append(check("related_players is scoped to the SAME team only", all(r["team"] == jsn["entity"]["team"] for r in jsn["related_players"])))
-        results.append(check("related_players is capped, not a dump of the entire game", len(jsn["related_players"]) <= 5))
+# --- _assign_peer_tiers: too-few-real-values fallback ---
+thin_pool = pd.DataFrame([
+    {"position_group": "TE", "td_opportunity": 40, "role_momentum": 40, "situation": 40},
+])
+tiered_thin = _assign_peer_tiers(thin_pool, CONFIG)
+results.append(check(
+    "a position_group with only 1 real player gets its own tier-of-one, not a crash or a fabricated bucket",
+    len(tiered_thin) == 1 and pd.notna(tiered_thin["_peer_tier"].iloc[0]),
+))
 
-        # trend_direction / trend_strength are honest standing reads
-        favorite = next(st for st in stories if st["primary_signal"]["value"] == max(st["primary_signal"]["value"] for st in stories))
-        longshot = next(st for st in stories if st["primary_signal"]["value"] == min(st["primary_signal"]["value"] for st in stories))
-        results.append(check("the highest market_value_score in the real pool reads as market-favored", favorite["trend_direction"] == "market-favored"))
-        results.append(check("the lowest market_value_score in the real pool reads as market-longshot", longshot["trend_direction"] == "market-longshot"))
-        results.append(check("trend_strength is near its max for the most extreme real reading", longshot["trend_strength"] >= 90.0))
+# --- _freshness_gate (§6): stale and clock-skewed rows excluded upstream ---
+fresh_and_stale = pd.DataFrame([
+    _market_row(player_id="fresh", poll_timestamp=_fresh_ts(30)),
+    _market_row(player_id="stale", poll_timestamp=_fresh_ts(180)),  # 3 hours, over the 2hr max
+    _market_row(player_id="future", poll_timestamp=(NOW + pd.Timedelta(hours=1)).isoformat()),  # bad clock skew
+])
+gated = _freshness_gate(fresh_and_stale, CONFIG, now=NOW)
+results.append(check(
+    "freshness gate keeps only the fresh row, excludes both stale and clock-skewed-future rows",
+    set(gated["player_id"]) == {"fresh"},
+))
 
-    # ============================================================
-    # Synthetic contrast case: a well-covered (multi-book) reading must
-    # produce different (more confident, less hedged) output than a
-    # thin one, given real data today has no real multi-book example to
-    # demonstrate this against -- clearly labeled synthetic, not a claim
-    # about a real player's real coverage.
-    # ============================================================
-    synthetic = pd.DataFrame([
-        {
-            "event_id": "TEST", "commence_time": "2026-09-10T00:15:00Z",
-            "home_team": "Seattle Seahawks", "away_team": "New England Patriots",
-            "player_id": "SYN1", "player_name_raw": "Synthetic Well-Covered Player", "team": "SEA",
-            "position_group": "WR", "n_books": 6, "best_price": -110, "best_book": "DraftKings",
-            "consensus_implied_probability": 0.52, "consensus_price_american": -108,
-            "season": 2026, "week": 1,
-        },
-        {
-            "event_id": "TEST", "commence_time": "2026-09-10T00:15:00Z",
-            "home_team": "Seattle Seahawks", "away_team": "New England Patriots",
-            "player_id": "SYN2", "player_name_raw": "Synthetic Thin Player", "team": "SEA",
-            "position_group": "WR", "n_books": 1, "best_price": -110, "best_book": "DraftKings",
-            "consensus_implied_probability": 0.52, "consensus_price_american": -108,
-            "season": 2026, "week": 1,
-        },
-    ])
-    from scoring import score_market_value as _smv
-    from scoring import CONFIG as _SC
-    synthetic_scored = _smv(synthetic, _SC)
-    synthetic_stories = build_market_intelligence_stories(synthetic_scored)
-    well_covered = next(st for st in synthetic_stories if st["entity"]["player_name"] == "Synthetic Well-Covered Player")
-    thin = next(st for st in synthetic_stories if st["entity"]["player_name"] == "Synthetic Thin Player")
+# --- _evidence_state_for_row (§3b): independent of magnitude, book-count only ---
+results.append(check("0 books -> thin", _evidence_state_for_row(0, CONFIG) == "thin"))
+results.append(check("1 book -> thin", _evidence_state_for_row(1, CONFIG) == "thin"))
+results.append(check("NaN books -> thin", _evidence_state_for_row(float("nan"), CONFIG) == "thin"))
+results.append(check("2 books -> developing", _evidence_state_for_row(2, CONFIG) == "developing"))
+results.append(check("3 books -> confirmed", _evidence_state_for_row(3, CONFIG) == "confirmed"))
+results.append(check("5 books -> confirmed", _evidence_state_for_row(5, CONFIG) == "confirmed"))
+
+# --- _magnitude_band (§4) ---
+results.append(check("2.9pp -> notable (below the strong threshold)", _magnitude_band(2.9, CONFIG) == "notable"))
+results.append(check("5.0pp -> strong", _magnitude_band(5.0, CONFIG) == "strong"))
+results.append(check("7.9pp -> strong", _magnitude_band(7.9, CONFIG) == "strong"))
+results.append(check("8.0pp -> extreme", _magnitude_band(8.0, CONFIG) == "extreme"))
+
+# ============================================================
+# End-to-end: build_deviation_stories()
+# ============================================================
+
+# Two clean on-field tiers (strong ~85-90, weak ~20-30), 4 players each, all
+# WR, same game. One weak-tier player is priced like a strong-tier player
+# despite a weak on-field profile -- the one real, constructed deviation.
+e2e_config = {**CONFIG, "n_peer_tiers": 2}
+e2e_rows, e2e_weekly = [], []
+for i, (name, td, role, sit, prob, price, books, ts) in enumerate([
+    ("Strong A", 90, 88, 75, 0.60, -150, 3, _fresh_ts(30)),
+    ("Strong B", 87, 85, 72, 0.58, -138, 3, _fresh_ts(30)),
+    ("Strong C", 85, 83, 70, 0.55, -122, 3, _fresh_ts(30)),
+    ("Strong D", 88, 86, 74, 0.57, -132, 3, _fresh_ts(30)),
+    ("Weak A", 22, 25, 30, 0.19, 425, 3, _fresh_ts(30)),
+    ("Weak B", 20, 23, 28, 0.18, 455, 3, _fresh_ts(30)),
+    ("Weak C", 24, 27, 32, 0.20, 400, 3, _fresh_ts(30)),
+    ("Outlier Weak-Priced-Strong", 21, 24, 29, 0.52, -108, 3, _fresh_ts(30)),
+    ("Stale Weak-Priced-Strong", 21, 24, 29, 0.52, -108, 5, _fresh_ts(180)),  # same real gap, but stale
+    ("No Weekly History", 0, 0, 0, 0.52, -108, 5, _fresh_ts(30)),  # excluded below, no pillar row
+]):
+    pid = f"e{i}"
+    e2e_rows.append(_market_row(
+        player_id=pid, player_name_raw=name, team="KC" if i % 2 == 0 else "DEN",
+        consensus_implied_probability=prob, consensus_price_american=price, n_books=books,
+        poll_timestamp=ts,
+    ))
+    if name != "No Weekly History":
+        e2e_weekly.append({"player_id": pid, "td_opportunity": td, "role_momentum": role, "situation": sit})
+
+market_snapshot = pd.DataFrame(e2e_rows)
+weekly = pd.DataFrame(e2e_weekly)
+
+# Freshness must be applied relative to the fixed NOW above, not real wall-clock time.
+import market_intelligence as _mi
+_orig_freshness_gate = _mi._freshness_gate
+_mi._freshness_gate = lambda snapshot, config, now=None: _orig_freshness_gate(snapshot, config, now=NOW)
+try:
+    stories = build_deviation_stories(market_snapshot, weekly, e2e_config)
+finally:
+    _mi._freshness_gate = _orig_freshness_gate
+
+results.append(check("exactly one real story generated (the one real, fresh, matched outlier)", len(stories) == 1))
+
+if stories:
+    s = stories[0]
     results.append(check(
-        "SYNTHETIC: identical market_value_score, but a well-covered (6-book) reading shows HIGHER completeness than a thin (1-book) one",
-        well_covered["completeness"] > thin["completeness"],
+        "the story's subject is the real outlier, not the stale or no-weekly-history look-alikes",
+        s["entity"]["player_name"] == "Outlier Weak-Priced-Strong",
     ))
     results.append(check(
-        "SYNTHETIC: the well-covered headline uses confident language, not hedged 'early/thin' language",
-        not any(w in well_covered["headline"].lower() for w in ("early", "one book")),
+        "every field build_story() requires is present (schema didn't silently accept a partial story)",
+        all(f in s for f in STORY_FIELDS),
+    ))
+    results.append(check("signal_type is 'deviation'", s["signal_type"] == "deviation"))
+    results.append(check(
+        "evidence_state is 'confirmed' (3 books), independent of the magnitude of the gap",
+        s["evidence_state"] == "confirmed",
+    ))
+    results.append(check(
+        "evidence_classification (the separate, shared cross-family field) is also set, additively",
+        s["evidence_classification"] in ("strong", "moderate", "limited"),
+    ))
+    results.append(check(
+        "deviation is signed correctly: market prices him MORE favorably than his peer tier (positive gap)",
+        s["primary_signal"]["value"] > 0,
+    ))
+    results.append(check("trend_direction reflects the favorable direction", s["trend_direction"] == "deviation-favorable"))
+    results.append(check("signal_direction (Universal Card v2) also reflects favorable", s["signal_direction"] == "favorable"))
+    results.append(check(
+        "hero_metric is a real before/after/delta triple (peer expectation -> observed), not null",
+        s["hero_metric"] is not None
+        and s["hero_metric"]["before_value"] is not None
+        and s["hero_metric"]["after_value"] is not None,
+    ))
+    results.append(check(
+        "hero_metric's delta matches primary_signal's own deviation value (no drift between the two)",
+        s["hero_metric"]["delta_value"] == s["primary_signal"]["value"],
+    ))
+    results.append(check(
+        "what_changed (STILL TO WATCH) is real, forward-looking content, not empty",
+        len(s["what_changed"]) >= 1 and all(isinstance(c.get("observation"), str) and c["observation"] for c in s["what_changed"]),
+    ))
+    results.append(check(
+        "supporting_evidence names the real market price and the real peer-tier expectation",
+        any("-108" in e for e in s["supporting_evidence"]) and any("peer-tier expectation" in e.lower() for e in s["supporting_evidence"]),
     ))
 
-    # ============================================================
-    # time_window: the real production-blocking bug this task fixes --
-    # Lovable's real schema caps this field at 100 chars, and the old
-    # "(not a trend — see module docstring)" aside pushed every real
-    # Market Intelligence write past that cap. Confirmed here that the
-    # fix (a) actually drops that internal aside, (b) still clears the
-    # cap even at the two real longest real NFL team names paired
-    # together (not just this synthetic SEA/NE matchup), and (c) the
-    # real DST-aware ET kickoff conversion is genuinely correct, not
-    # just plausible-looking -- this exact synthetic commence_time
-    # ("2026-09-10T00:15:00Z", a real TNF-shaped late kickoff that
-    # crosses into the next UTC calendar day) is a real, non-trivial
-    # case for that conversion, not the early-Sunday happy path.
-    # ============================================================
-    results.append(check(
-        f"time_window no longer contains the internal, non-user-appropriate 'module docstring' aside (got {well_covered['time_window']!r})",
-        "module docstring" not in well_covered["time_window"] and "not a trend" not in well_covered["time_window"],
-    ))
-    results.append(check(
-        f"time_window correctly rolls the UTC-crossing-midnight kickoff back to the real LOCAL Eastern date (got {well_covered['time_window']!r})",
-        well_covered["time_window"] == "Live snapshot, New England Patriots @ Seattle Seahawks, kickoff Sep 9, 8:15 PM ET",
-    ))
+# --- Below-floor gap: same shape, smaller real gap -> no story ---
+below_floor_rows = [_market_row(player_id=f"b{i}") for i in range(6)]
+below_floor_weekly = [{"player_id": f"b{i}", "td_opportunity": 50, "role_momentum": 50, "situation": 50} for i in range(6)]
+# All identical on-field profile AND identical price -> zero gap by construction.
+below_floor_stories = build_deviation_stories(
+    pd.DataFrame(below_floor_rows), pd.DataFrame(below_floor_weekly), {**CONFIG, "n_peer_tiers": 2},
+)
+results.append(check(
+    "identical peers (zero real gap) produce zero stories -- the floor genuinely excludes, not just labels low",
+    len(below_floor_stories) == 0,
+))
 
-    from market_intelligence import _format_kickoff_et
-    real_longest_pair_time_window = (
-        f"Live snapshot, Washington Commanders @ Jacksonville Jaguars, "
-        f"kickoff {_format_kickoff_et('2026-11-08T18:00:00Z')}"
-    )
-    results.append(check(
-        f"time_window clears the real 100-char cap even at the two real longest real NFL team names paired together "
-        f"(got {len(real_longest_pair_time_window)} chars: {real_longest_pair_time_window!r})",
-        len(real_longest_pair_time_window) < 100,
-    ))
-    results.append(check(
-        "the real November DST transition is handled correctly (EST, not a stale EDT offset) for that same longest-pair case",
-        real_longest_pair_time_window.endswith("kickoff Nov 8, 1:00 PM ET"),
-    ))
+# --- Fully empty snapshot -> zero stories, no crash ---
+empty_stories = build_deviation_stories(pd.DataFrame(columns=market_snapshot.columns), pd.DataFrame(columns=weekly.columns), CONFIG)
+results.append(check("a fully empty market snapshot degrades to zero stories, not an error", empty_stories == []))
 
-    # ============================================================
-    # Universal Card v2 fields.
-    # ============================================================
-    results.append(check(
-        "hero_metric is permanently None -- Market Intelligence has no real upstream time series (the price-history table has never had a row written to it), confirmed on both synthetic stories",
-        all(st["hero_metric"] is None for st in synthetic_stories),
-    ))
-    results.append(check(
-        f"evidence_classification correctly discriminates using the real formula even within this one synthetic pair -- well-covered (completeness=100) lands strong, thin (completeness=57.7) lands limited (got well_covered={well_covered['evidence_classification']!r}, thin={thin['evidence_classification']!r})",
-        well_covered["evidence_classification"] == "strong" and thin["evidence_classification"] == "limited",
-    ))
-    results.append(check(
-        "what_changed is a real, non-empty list capped at 3 items and never leaks the internal 'market_value_score' field name, both synthetic stories",
-        all(
-            isinstance(st["what_changed"], list) and 1 <= len(st["what_changed"]) <= 3
-            and not any("market_value_score" in item["observation"] for item in st["what_changed"])
-            for st in synthetic_stories
-        ),
-    ))
+# --- All-stale snapshot -> zero stories ---
+all_stale = pd.DataFrame([_market_row(player_id="s1", poll_timestamp=_fresh_ts(300))])
+all_stale_weekly = pd.DataFrame([{"player_id": "s1", "td_opportunity": 50, "role_momentum": 50, "situation": 50}])
+_mi._freshness_gate = lambda snapshot, config, now=None: _orig_freshness_gate(snapshot, config, now=NOW)
+try:
+    all_stale_stories = build_deviation_stories(all_stale, all_stale_weekly, CONFIG)
+finally:
+    _mi._freshness_gate = _orig_freshness_gate
+results.append(check("an entirely stale snapshot degrades to zero stories, not an error", all_stale_stories == []))
 
-    STUB_PATH = Path(__file__).resolve().parent / "data" / "stub_weeks" / "2026_wk1.csv"
-    if not STUB_PATH.exists():
-        print("(skipped the real-live-stub-week v2 validation — 2026_wk1.csv not present in this environment)")
-    else:
-        import nfl_data_py as _nfl
-        df = pd.read_csv(STUB_PATH)
-        q = df[df["market_value_score"].notna()].copy()
-        team_desc = _nfl.import_team_desc()
-        abbr_to_name = dict(zip(team_desc["team_abbr"], team_desc["team_name"]))
-        parts = q["game_id"].str.split("_", expand=True)
-        q["event_id"] = q["game_id"]
-        q["away_team"] = parts[2].map(abbr_to_name)
-        q["home_team"] = parts[3].map(abbr_to_name)
-        q["commence_time"] = "2026-09-13T17:00:00Z"
-        q["team"] = q["posteam"]
-        q["player_name_raw"] = q["player_name"]
-        real_snapshot = q[[
-            "player_id", "player_name_raw", "team", "position_group", "event_id", "away_team", "home_team", "commence_time",
-            "market_value_score", "n_books", "market_value_completeness", "consensus_price_american",
-            "consensus_implied_probability", "best_price", "best_book",
-        ]].reset_index(drop=True)
-        real_stories = build_market_intelligence_stories(real_snapshot)
-
-        results.append(check(
-            f"real live current-week data: signal_direction genuinely exercises all three real values, INCLUDING neutral -- the first family of the four to do so (got {Counter(st['signal_direction'] for st in real_stories)})",
-            len({st["signal_direction"] for st in real_stories}) == 3,
-        ))
-        results.append(check(
-            "real live current-week data: signal_direction matches trend_direction correctly on every real row (market-favored->favorable, market-longshot->unfavorable, market-neutral->neutral)",
-            all(
-                (st["signal_direction"] == {"market-favored": "favorable", "market-longshot": "unfavorable", "market-neutral": "neutral"}[st["trend_direction"]])
-                for st in real_stories
-            ),
-        ))
-        results.append(check("real live current-week data: hero_metric is None for every real row", all(st["hero_metric"] is None for st in real_stories)))
-        real_dist = Counter(st["evidence_classification"] for st in real_stories)
-        results.append(check(
-            f"REAL FINDING: every real live current-week story lands on 'limited' -- real market_value_completeness is always 100.0 "
-            f"but real n_books is always 1 (this project has never yet seen n_books>1 in real data -- confirmed, not assumed), so the "
-            f"real completeness/confidence ceiling under today's real single-book conditions is a constant 57.7, below the 60 moderate "
-            f"threshold (got {dict(real_dist)}) -- a genuine, currently-real degenerate pattern, distinct from Defensive's own constant-strong case",
-            real_dist == {"limited": len(real_stories)},
-        ))
-
-    print()
-    if all(results):
-        print(f"All {len(results)} checks passed.")
-    else:
-        failed = len(results) - sum(results)
-        print(f"{failed} of {len(results)} checks FAILED — see above.")
-        raise SystemExit(1)
+total = len(results)
+passed = sum(1 for r in results if r)
+print(f"\n{passed}/{total} checks passed.")
+if passed != total:
+    sys.exit(1)

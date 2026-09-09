@@ -66,7 +66,7 @@ import pandas as pd
 from defensive_trends import build_defensive_trends_stories
 from intelligence_lifecycle import read_prior_history
 from intelligence_write import process_family, write_intelligence_rows
-from market_intelligence import build_market_intelligence_stories
+from market_intelligence import build_deviation_stories
 from market_value import market_intelligence_snapshot_for_generation
 from role_changes import build_role_changes_stories
 from team_tendencies import build_team_tendencies_stories
@@ -100,8 +100,24 @@ def _fetch_weekly(builder):
 
 
 def _fetch_market_intelligence(season, week, secret, read_url=None):
+    """
+    Market Trends V1, Deviation only -- needs TWO real inputs, same shape
+    as _fetch_coaching_trends below: the market snapshot (this family's own
+    original input) AND the same real nfl_player_redzone_weekly season
+    snapshot role_changes/defensive_trends/coaching_trends already read,
+    for its on-field pillar columns (td_opportunity/role_momentum/
+    situation) that feed build_deviation_stories()'s peer-tier assignment.
+    Not gated behind a try/except the way coaching_trends' pbp fetch is --
+    a missing/empty weekly snapshot degrades correctly on its own inside
+    build_deviation_stories() (every deviation-eligible row without a real
+    on-field pillar match is excluded, not defaulted), no separate guard
+    needed here.
+    """
+    from reconcile_week import role_defensive_weekly_snapshot
+
     snapshot = market_intelligence_snapshot_for_generation(season, week, secret, read_url)
-    return build_market_intelligence_stories(snapshot)
+    weekly = role_defensive_weekly_snapshot(season, secret, read_url)
+    return build_deviation_stories(snapshot, weekly)
 
 
 def _fetch_coaching_trends(season, week, secret, read_url=None):

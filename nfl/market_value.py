@@ -465,11 +465,11 @@ def latest_price_history_full_per_player(rows: list) -> pd.DataFrame:
     Same real "latest real poll per player" reduction as
     latest_price_history_per_player, but keeps every PRICE_HISTORY_COLUMNS
     column instead of narrowing to the 6 reconciliation needs. Built for
-    Phase 3's generation need: build_market_intelligence_stories() needs a
+    Phase 3's generation need: build_deviation_stories() needs a
     FULL-ROW snapshot (event_id, team names, book fields, etc.), not just
     the market-value/consensus numbers reconcile_week()'s merge step needs —
     a genuinely different consumer than latest_price_history_per_player was
-    built for, confirmed by reading build_market_intelligence_stories()'s own
+    built for, confirmed by reading build_deviation_stories()'s own
     body during the Phase 3 investigation (it references row['event_id'],
     row['away_team'], row['home_team'], row['commence_time'], row['n_books'],
     row['best_price']/['best_book'], row['consensus_price_american'], none of
@@ -504,7 +504,7 @@ def latest_price_history_full_per_player(rows: list) -> pd.DataFrame:
 
 def market_intelligence_snapshot_for_generation(season: int, week: int, secret: str, read_url: str = None) -> pd.DataFrame:
     """
-    The real input build_market_intelligence_stories() needs, sourced from
+    The real input build_deviation_stories() needs, sourced from
     storage instead of a live poll: reads the real latest-per-player nfl_
     price_history snapshot for (season, week) with EVERY real column intact
     (see latest_price_history_full_per_player), then runs scoring.

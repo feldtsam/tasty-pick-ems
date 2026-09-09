@@ -1,48 +1,69 @@
 """
-Market Intelligence — the first of four NFL Intelligence families (Role
-Changes, Defensive Trends, Coaching Trends are not built yet). Chosen to
-go first specifically because it's near-pure reuse of already-validated
-work (market_value.py, scoring.score_market_value) — the cheapest place
-to get intelligence_schema.py's shared story shape right before three
-more families build on top of it.
+Market Intelligence — Market Trends V1, Deviation only.
 
-CORE QUESTION: "What is the betting market doing?" — how strongly (or
-weakly) the market believes a player will score, and how much of that
-read to trust given how many books are actually behind it.
+REPLACES the earlier snapshot-standing generator entirely (retired, not
+kept running alongside this — an explicit, deliberate call: the old
+market-favored/longshot/neutral stories were a player's current rank
+against the pool, which is real information but not a COMPARISON between
+two independently-derived facts, and so never actually satisfied Market
+Trends' own eligibility rule (a price alone is not intelligence; a
+comparison makes it intelligence). Real, stated consequence of retiring it
+outright: this family produces fewer stories, possibly close to none some
+weeks, until enough players clear the Deviation floor below to replace the
+volume the old generator used to produce. Chosen on purpose over running
+both in parallel.
 
-V1 SCOPE, DELIBERATELY: SNAPSHOT STANDING, NOT MOVEMENT. market_value.py's
-own PRICE_HISTORY_COLUMNS design (its module docstring) is still
-unpopulated — nothing in this project has ever appended a row to a real
-price-history table. That means there is no real "odds moved from +450
-to +320" data to build a story from today, and this module does not
-fake one. trend_direction/trend_strength here describe CURRENT STANDING
-relative to the same event's eligible pool (via the existing percentile
-mechanism, score_market_value's own output) — "the market currently has
-him near the top of the board," never "his price has been climbing."
-A real movement-based Market Intelligence story (true week-over-week or
-even intra-week price trend) is a genuine, flagged VALUABLE LATER item,
-gated entirely on the price-history table getting built — not something
-this module should approximate with a proxy in the meantime.
+CORE RULE (Market Trends spec, locked): magnitude determines whether
+something is interesting; evidence determines whether we trust it. The two
+are computed independently and never blended into one number -- see
+signal_type/evidence_state's own build_story attachment below, same
+pattern the Universal Card v2 evidence_classification field already
+established (a SEPARATE axis from magnitude/trend_strength, not folded
+into it).
 
-SAMPLE-SIZE HONESTY: n_books is a real, meaningful confidence signal
-market_value_completeness (score_market_value's own column) does NOT
-capture on its own — that column only tracks whether a real percentile
-was computed at all vs. neutral-fallback, not how many books stood
-behind the price that got percentile-ranked. A 1-book price and a
-5-book consensus are not equally trustworthy even when both produced a
-"real" percentile. This module's own `completeness` combines both axes
-via the same geometric-mean shape scoring.score_evidence_quality already
-uses for an analogous "two axes, neither sufficient alone" situation —
-reused, not reinvented. Thin coverage also changes the HEADLINE
-LANGUAGE itself, not just the numeric confidence field (see
-_headline_and_story) — a 1-book read should read like an early, hedged
-signal, not a confident market verdict.
+SIGNAL TYPE SCOPE, V1: Deviation only. Movement (same book, price change
+over time) and Disagreement (multiple books, concurrent spread) are the
+spec's other two signal_types, deliberately not built here -- Movement
+needs a real accumulated price-history table (nfl_price_history has never
+had a row written to it as of this task -- see market_value.py's own
+docstring on market_intelligence_snapshot_for_generation), and
+Disagreement needs the market snapshot to retain a PER-BOOK breakdown,
+which today's PRICE_HISTORY_COLUMNS schema collapses away into a
+consensus/best/n_books aggregate before it's ever persisted. Both are
+real, separate follow-up tasks, not partially started here.
 
-DATA CHECK BEFORE BUILDING (real, not assumed): every player_id/team/
-position_group/event_id field this module needs is already present on
-market_value.snapshot_scoring_inputs' / scoring.score_market_value's own
-output. No extension to market_value.py was needed — confirmed directly
-before writing this module, not assumed.
+REAL, CURRENT DATA GAP THIS MODULE INHERITS, NOT INTRODUCES: the market
+snapshot this module's own build_deviation_stories() consumes
+(market_intelligence_snapshot_for_generation) reads from nfl_price_history,
+the same currently-empty table Movement is blocked on -- confirmed by
+reading that function's own docstring directly, not assumed. That means
+this module's real, correct scoring logic will produce zero stories until
+that table has real rows (the Make.com poll-market-value scenario actually
+running), independent of anything about Deviation's OWN eligibility floor.
+Flagged explicitly so "Deviation ships with no blockers" is never
+misread as "Deviation produces stories on day one" -- it produces
+stories the day nfl_price_history has real, fresh rows, whenever that is.
+
+DEVIATION BASELINE (§5 of the spec, verified independent, not assumed):
+a player's expected probability is the peer median consensus_implied_
+probability within their (position_group, on-field-pillar tier). The
+tiering input -- td_opportunity/role_momentum/situation, explicitly
+EXCLUDING market_value_score -- is computed fresh in this module
+(_peer_tier_core_score below), not read off any core_score/tpe_score
+column the weekly snapshot might already carry: those, if persisted, may
+have market_value_score already folded in (weekly rows have historically
+carried a joined market_value_score in `extra`, per reconcile_week.py's
+own docstring), and reusing that value here would silently reintroduce
+the exact circularity §5 rules out for Market Value itself. This is
+observed-against-observed (real peer prices), never a manufactured
+fair-price model -- a genuinely calibrated one is explicitly deferred
+(§11), not a V1 launch dependency.
+
+FRESHNESS (§6) is enforced upstream of everything else: _freshness_gate
+runs BEFORE peer-tier assignment, so a stale price is excluded both as a
+story's own subject AND as a peer-comparison input for anyone else's
+expected probability -- never a low-confidence story, never a silent
+contributor to another player's tier median.
 """
 import math
 
@@ -51,23 +72,44 @@ import pandas as pd
 from intelligence_schema import build_story
 
 CONFIG = {
-    # n_books at or above this is treated as "fully covered" for
-    # confidence purposes — a starting hypothesis (this project's whole
-    # NFL build has never yet seen a real n_books > 1, since every
-    # captured snapshot so far has come from a single book posting this
-    # early before kickoff), tunable once real multi-book data exists.
-    "full_coverage_books": 3,
-    # market_value_score bands for trend_direction — starting points,
-    # same "hypothesis to tune" treatment scoring.CONFIG's own constants
-    # get.
-    "favored_threshold": 65.0,
-    "longshot_threshold": 35.0,
-    # evidence_classification (Universal Card v2) -- the REAL formula,
-    # confirmed directly from Lovable's own trustIndicator() (same
-    # thresholds already confirmed and shipped for the other three
-    # families).
+    # Deviation eligibility floor, implied-probability percentage points
+    # (§4). Below this, no story is generated at all -- not a low-magnitude
+    # story, no story.
+    "deviation_floor_pp": 5.0,
+    # Magnitude bands (§4), for internal ranking/labeling only, not separate
+    # eligibility gates. Because the floor above equals the strong-band
+    # threshold, a real Deviation story can never land in "notable" by
+    # construction -- kept at the spec's full range anyway so this logic
+    # doesn't silently assume the floor will never move.
+    "magnitude_notable_pp": 3.0,
+    "magnitude_strong_pp": 5.0,
+    "magnitude_extreme_pp": 8.0,
+    # Peer-tier grouping: how many core_score buckets within each
+    # position_group. Starting hypothesis (quintiles) -- same "tune once
+    # real coverage distributions are visible" posture §4/§6 of the spec
+    # explicitly call for on the eligibility floors and evidence-state
+    # cutoffs.
+    "n_peer_tiers": 5,
+    # Evidence state (§3b) book-count cutoffs. A Deviation story rests on
+    # ONE concurrent poll (not a cross-time aggregation), so every book
+    # behind it is inherently concurrent by construction (one Odds API
+    # response) -- n_books alone decides thin/developing/confirmed here.
+    "evidence_developing_books": 2,
+    "evidence_confirmed_books": 3,
+    # Freshness (§6): a single-poll observation older than this cannot
+    # represent current market state or seed a new story.
+    "freshness_max_age_hours": 2.0,
+    # evidence_classification (Universal Card v2) -- unchanged real formula,
+    # confirmed from Lovable's own trustIndicator() (same thresholds every
+    # other family already uses). A SEPARATE axis from evidence_state above
+    # -- see intelligence-types.ts's own doc comments for why a Market
+    # Trends story carries both, additive, not one replacing the other.
     "evidence_strong_threshold": 80.0,
     "evidence_moderate_threshold": 60.0,
+    # "Fully covered" bar for the completeness geometric mean below --
+    # same constant name/value the retired snapshot-standing generator
+    # used for the same purpose.
+    "full_coverage_books": 3,
 }
 
 
@@ -78,160 +120,206 @@ def _book_coverage_confidence(n_books, target: int) -> float:
     return min(n_books / target, 1.0) * 100.0
 
 
-def _story_completeness(market_value_completeness: float, n_books, config: dict) -> float:
+def _peer_tier_core_score(pool: pd.DataFrame) -> pd.Series:
     """
-    Geometric mean of (does a real percentile exist at all) and (how
-    many books stand behind it) — same two-necessary-axes shape as
-    scoring.score_evidence_quality's completeness*convergence, reused
-    deliberately: a real percentile built on one book isn't fully
-    trustworthy, and neither is a "complete" reading that turns out to
-    be a neutral-50 fallback in disguise. Either axis near zero should
-    crater the combined read, same reasoning as the original.
+    On-field-only composite (TD Opportunity/Role Momentum/Situation),
+    explicitly and permanently excluding Market Value -- §5's independence
+    requirement.
+
+    Deliberately NOT scoring.score_universal_tpe(weekly, market_value=None):
+    that function hard-requires an evidence_quality column (its own
+    confidence_multiplier/tpe_score half, which this module has no reason
+    to compute) -- confirmed by reading its real body, not assumed. Reusing
+    it and stripping columns to dodge that dependency would be more
+    fragile than replicating just the weighted-sum-with-renormalization
+    half directly. Same weight constants (scoring.CONFIG's own
+    universal_tpe.core_weights, market_value_score excluded), same
+    present-columns-only renormalization (a per-ROW notna check, not a
+    population filter) -- so this tracks that config if it's ever retuned,
+    without needing evidence_quality at all.
+    """
+    from scoring import CONFIG as SCORING_CONFIG
+
+    weights = {
+        k: v
+        for k, v in SCORING_CONFIG["universal_tpe"]["core_weights"].items()
+        if k != "market_value_score"
+    }
+    present = [c for c in weights if c in pool.columns]
+    if not present:
+        return pd.Series(float("nan"), index=pool.index)
+    scores = pool[present]
+    weight_vec = pd.Series({c: weights[c] for c in present})
+    valid = scores.notna()
+    weighted_sum = (scores.fillna(0) * weight_vec).sum(axis=1)
+    weight_totals = (valid * weight_vec).sum(axis=1).replace(0, float("nan"))
+    result = weighted_sum / weight_totals
+    return result.replace([float("inf"), float("-inf")], float("nan")).round(1)
+
+
+def _assign_peer_tiers(pool: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """
+    Peer tiers = (position_group, core_score quintile) -- §5's "group
+    players into tiers by these on-field pillars." Scoped WITHIN
+    position_group: an RB's and a WR's on-field TD-opportunity/role/
+    situation reads live on structurally different scales, so pooling them
+    into one tier would compare players who aren't real peers just because
+    their raw numbers landed in the same bucket.
+
+    pd.qcut (equal-COUNT bins) rather than equal-width: "same tier" should
+    mean "similarly ranked among real peers on a real, possibly lumpy or
+    skewed scale," not "similar raw score." duplicates="drop" and the
+    too-few-real-values fallback both handle a thin position_group pool
+    honestly -- every player becomes their own tier of one rather than a
+    fabricated bucket boundary, which correctly makes their peer-median
+    expectation equal to their own price (deviation = 0, never eligible)
+    instead of a manufactured comparison.
+    """
+    pool = pool.copy()
+    pool["_peer_core_score"] = _peer_tier_core_score(pool)
+
+    def _tier_for_group(g: pd.DataFrame) -> pd.Series:
+        real = g["_peer_core_score"].notna().sum()
+        if real < 2:
+            return pd.Series(range(len(g)), index=g.index, dtype="float64")
+        try:
+            return pd.qcut(g["_peer_core_score"], config["n_peer_tiers"], labels=False, duplicates="drop").astype("float64")
+        except ValueError:
+            return pd.Series(0.0, index=g.index, dtype="float64")
+
+    # Explicit per-group loop + concat, not groupby(...).apply(...): apply's
+    # own result-shape inference is genuinely ambiguous here (confirmed
+    # directly, not assumed -- _tier_for_group's two branches return
+    # different-dtype Series depending on real-value count, which pandas
+    # sometimes concatenates into a DataFrame instead of a Series,
+    # especially with a single real group in the pool). A manual loop with
+    # a fixed dtype on every branch is predictable regardless of how many
+    # distinct position_groups are actually present.
+    tier_parts = [_tier_for_group(g) for _, g in pool.groupby("position_group", group_keys=False)]
+    pool["_peer_tier"] = pd.concat(tier_parts) if tier_parts else pd.Series(dtype="float64")
+    return pool
+
+
+def _freshness_gate(snapshot: pd.DataFrame, config: dict, now: pd.Timestamp = None) -> pd.DataFrame:
+    """
+    §6 -- enforced BEFORE peer-tier assignment/magnitude/evidence-state,
+    not after. A stale price is excluded from the whole pipeline at this
+    point: it can never be a story's own subject, and it never contributes
+    to another player's peer-tier expected-probability median either.
+
+    A negative age (a bad/future poll_timestamp) is rejected, not treated
+    as fresh -- a real data-quality issue should degrade to "excluded,"
+    same as any other unparseable/missing input in this codebase, not
+    silently pass a freshness check it doesn't actually satisfy.
+    """
+    if now is None:
+        now = pd.Timestamp.now(tz="UTC")
+    ts = pd.to_datetime(snapshot["poll_timestamp"], utc=True, errors="coerce")
+    age_hours = (now - ts).dt.total_seconds() / 3600.0
+    return snapshot[(age_hours >= 0) & (age_hours <= config["freshness_max_age_hours"])].copy()
+
+
+def _evidence_state_for_row(n_books, config: dict) -> str:
+    """§3b -- independent of signal_type and of magnitude."""
+    if pd.isna(n_books) or n_books < config["evidence_developing_books"]:
+        return "thin"
+    if n_books < config["evidence_confirmed_books"]:
+        return "developing"
+    return "confirmed"
+
+
+def _still_to_watch_for_row(evidence_state: str, n_books, magnitude_band: str) -> list:
+    """
+    §9's STILL TO WATCH -- genuinely forward-looking (what would confirm or
+    undercut this as more data comes in), replacing the retrospective
+    WHAT CHANGED a story-history log would show. Real, distinct from
+    supporting_evidence: those are the facts the story rests on right now;
+    this is what to watch for next, so the two sections can never just
+    restate each other under different labels.
+    """
+    items = []
+    if evidence_state == "thin":
+        items.append({
+            "label": "More books posting",
+            "observation": f"Only {int(n_books) if pd.notna(n_books) else 0} book has posted so far -- a second "
+            "or third line could confirm this read, or reveal it was one outlier book.",
+        })
+    elif evidence_state == "developing":
+        items.append({
+            "label": "A third book",
+            "observation": "Two books agree so far -- one more posting the same way would move this to a "
+            "confirmed read.",
+        })
+    else:
+        items.append({
+            "label": "Continued agreement",
+            "observation": "Already a well-covered read -- watch whether newly-posting books keep agreeing with "
+            "it, or a late line pulls the consensus back toward the peer-tier expectation.",
+        })
+    items.append({
+        "label": "Whether the gap closes",
+        "observation": f"A {magnitude_band} gap like this can close either way -- the market moving back toward "
+        "the peer-tier expectation, or his on-field profile (next game's role/opportunity) catching up to what "
+        "the market already believes.",
+    })
+    return items
+
+
+def _magnitude_band(gap_pp: float, config: dict) -> str:
+    if gap_pp >= config["magnitude_extreme_pp"]:
+        return "extreme"
+    if gap_pp >= config["magnitude_strong_pp"]:
+        return "strong"
+    return "notable"
+
+
+def _story_completeness(n_books, config: dict) -> float:
+    """
+    Same geometric-mean shape scoring.score_evidence_quality uses for an
+    analogous "two axes, neither sufficient alone" situation, reused
+    deliberately -- here, "does a real peer-tier expectation exist at all"
+    (always true by construction once a row reaches this function; a row
+    with no real tier comparison never gets this far) combined with book
+    coverage. Feeds evidence_classification (the shared cross-family trust
+    indicator), a SEPARATE field from this module's own evidence_state.
     """
     book_conf = _book_coverage_confidence(n_books, config["full_coverage_books"])
-    return round(math.sqrt(max(market_value_completeness, 0.0) * book_conf), 1)
+    return round(math.sqrt(100.0 * book_conf), 1)
 
 
-def _trend_direction_and_strength(market_value_score: float, config: dict) -> tuple:
+def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
+    """Same real formula as the other three families, confirmed directly from Lovable's own trustIndicator()."""
+    score = (confidence + completeness) / 2
+    if score >= config["evidence_strong_threshold"]:
+        return "strong"
+    if score >= config["evidence_moderate_threshold"]:
+        return "moderate"
+    return "limited"
+
+
+def _related_players(pool: pd.DataFrame, event_id, team, player_id, limit: int = 5) -> list:
     """
-    STANDING, not movement — see module docstring. direction is which
-    side of the pool this player sits on right now; strength is how far
-    from a neutral 50 read that standing is (0 = dead-even market read,
-    100 = as extreme as this pool gets).
+    Same-game teammates with a posted market -- generic, real context for
+    "who else has real money on them this same market," not deviation-
+    specific. Unchanged in spirit from the retired generator's own version
+    of this helper.
     """
-    if market_value_score >= config["favored_threshold"]:
-        direction = "market-favored"
-    elif market_value_score <= config["longshot_threshold"]:
-        direction = "market-longshot"
-    else:
-        direction = "market-neutral"
-    strength = round(min(abs(market_value_score - 50.0) * 2, 100.0), 1)
-    return direction, strength
-
-
-def _related_players(snapshot: pd.DataFrame, event_id, team, player_id, limit: int = 5) -> list:
-    """
-    SAME-TEAM teammates with a posted market, not everyone in the game —
-    an opposing-team player isn't genuinely "related" to a market-
-    conviction story about this player's own role; a teammate who's
-    priced higher or lower for the SAME anytime-TD market is. Already
-    directly computable from score_market_value's own output (event_id/
-    team are already columns), no extension needed. Capped at `limit`
-    (ranked by market_value_score) rather than dumping an entire
-    roster's worth of entries into every story.
-
-    Universal Card v2 shape (confirmed against real data before
-    assuming, per every other family's own v2 pass): every real entry
-    this function has ever produced is a real player (entity_type is
-    always "player" — there's no group/team-level related entity this
-    function could produce today). direction_indicator is "none" for
-    every entry here, a real, considered choice, not an oversight: a
-    market-comparison teammate isn't a causal beneficiary or victim of
-    THIS story's own trend the way Defensive/Coaching/Role's related
-    players are (see those modules' own reasoning) — they're relevant
-    CONTEXT (who else has real money on them this same market), with no
-    real up/down claim this module has evidence for. note reuses the
-    same real per-teammate fields already available on this same
-    DataFrame (not new numbers) — market_value_score plus their own
-    real consensus price, the same two real facts the main entity's own
-    story already cites for itself.
-    """
-    teammates = snapshot[
-        (snapshot["event_id"] == event_id) & (snapshot["team"] == team) & (snapshot["player_id"] != player_id)
-    ]
-    teammates = teammates.sort_values("market_value_score", ascending=False).head(limit)
+    teammates = pool[(pool["event_id"] == event_id) & (pool["team"] == team) & (pool["player_id"] != player_id)]
+    teammates = teammates.sort_values("consensus_implied_probability", ascending=False).head(limit)
     return [
         {
             "player_id": r["player_id"],
             "display_label": r["player_name_raw"],
             "entity_type": "player",
             "direction_indicator": "none",
-            "note": f"Market value score {r['market_value_score']:.0f}/100 · {int(r['consensus_price_american']):+d} ({r['consensus_implied_probability']*100:.1f}% implied)",
+            "note": f"{int(r['consensus_price_american']):+d} ({r['consensus_implied_probability'] * 100:.1f}% implied)",
         }
         for _, r in teammates.iterrows()
     ]
 
 
-def _headline_and_story(row: pd.Series, direction: str, pool_rank: int, pool_size: int, thin: bool) -> tuple:
-    """
-    Story first, per this project's established storytelling hierarchy
-    (see shelves.py) — headline makes the claim, story adds one sentence
-    of context, supporting_evidence (built by the caller) carries the
-    actual numbers. Language hedges explicitly when thin=True (n_books
-    below CONFIG's full-coverage target) — the whole point of the
-    sample-size honesty requirement is that a headline itself should
-    read differently for a 1-book price than a well-covered one, not
-    just carry a lower number in a field nobody's looking at.
-
-    VOICE (TPE Editorial Voice Spec, Section 3): Market Intelligence is
-    the TIGHTEST of the three Intelligence families at a ~3.5–4/10
-    ceiling — observant, skeptical, numbers-forward; the price movement
-    is the story, the copy never competes with the number for attention.
-    The market-favored / not-thin branch was re-toned off the earlier
-    "one of the field's clearest bets to score" verdict (which read as
-    Picks-tier) toward Section 7's register ("Apparently we aren't the
-    only ones who noticed") (2026-09). Every thin branch keeps its
-    explicit "early / one book / thin" hedge, unchanged.
-    """
-    name = row["player_name_raw"]
-    matchup = f"{row['away_team']} @ {row['home_team']}"
-
-    if direction == "market-favored":
-        if thin:
-            headline = "One early line already has him near the top of the board."
-            story = (
-                f"A single early line has {name} among the field's strongest anytime-TD bets for {matchup}. "
-                f"One book, though — worth another look once more of them post."
-            )
-        else:
-            headline = "Apparently the market noticed him too."
-            story = (
-                f"Multiple books have {name} near the top of the board for {matchup}, and they're consistent "
-                f"about it — not one line getting excited early."
-            )
-    elif direction == "market-longshot":
-        if thin:
-            headline = "An early, thin line has him near the back of the board."
-            story = (
-                f"Only one book has posted on {name} for {matchup} so far, and it's a long price. Too early to "
-                f"read much into it."
-            )
-        else:
-            headline = "The market isn't sold — priced near the bottom of the board, with the books in agreement."
-            story = f"Multiple books have {name} priced near the bottom of this week's field for {matchup}."
-    else:
-        headline = "The market has him mid-pack, at least on an early read."
-        if thin:
-            story = (
-                f"With only one book posted so far, {name} sits at rank {pool_rank} of {pool_size} in this week's "
-                f"early market-implied field for {matchup} — too thin to call a real signal either way yet."
-            )
-        else:
-            story = f"{name} sits at rank {pool_rank} of {pool_size} in this week's market-implied field for {matchup} — no strong signal either way."
-
-    return headline, story
-
-
 def _format_kickoff_et(commence_time: str) -> str:
-    """
-    commence_time: real UTC ISO-8601 string, The Odds API's own raw
-    format (confirmed at parse_attd_event / market_value.PRICE_HISTORY_
-    COLUMNS) — converted here to a real, DST-aware Eastern Time display
-    string ("Sep 8, 1:00 PM ET"), the standard display timezone every
-    other real kickoff time in this codebase already uses (see redzone.
-    py's own America/New_York kickoff_et handling).
-
-    Uses pandas' real IANA-backed tz database (tz_convert, not a fixed
-    UTC offset) — confirmed directly against 10 real cases spanning
-    every real kickoff shape this needs to handle correctly, not just
-    the early-Sunday-afternoon happy path: early/late Sunday, TNF/SNF/
-    MNF (all three of which land on the NEXT UTC calendar day at these
-    kickoff times — tz_convert correctly rolls the LOCAL date back,
-    confirmed explicitly, not assumed), the real November DST
-    transition (EDT before, EST after — no special-casing needed, the
-    real tz database already knows this), a real international early-
-    window kickoff, and midnight/noon-hour edges.
-    """
+    """Real UTC ISO-8601 -> DST-aware ET display string. Unchanged from the retired generator."""
     ts = pd.Timestamp(commence_time)
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
@@ -241,182 +329,167 @@ def _format_kickoff_et(commence_time: str) -> str:
     return f"{et.strftime('%b')} {et.day}, {hour12}:{et.minute:02d} {ampm} ET"
 
 
-# ============================================================
-# Universal Card v2 fields — same "attach after build_story(), not
-# threaded through STORY_FIELDS" approach the other three families
-# already established. Last of the four; see each function's own
-# docstring for what's genuinely different about Market's real shape.
-# ============================================================
-
-def _signal_direction_for_row(direction: str) -> str:
+def _headline_and_story(row: pd.Series, gap_pp: float, thin: bool) -> tuple:
     """
-    A real, considered judgment call, not an obvious mechanical mapping
-    — flagged explicitly (per Sam's own explicit invitation to
-    reconsider rather than force a value here), not silently assumed.
-
-    trend_direction here is a SNAPSHOT-STANDING read (market-favored/
-    market-longshot/market-neutral), never a movement — confirmed
-    already, unchanged. But signal_direction's real job across every
-    family isn't "is this a trend," it's "does this real signal help or
-    hurt a bettor considering this specific player" — the same
-    generic, cross-family vocabulary already applied to Role Changes'
-    own non-movement trend_direction (opportunity-driven/role-trend-
-    driven, also not a trend). Market's current standing is real,
-    substantive information for that same question: the market
-    strongly believing a player scores (market-favored) is a real,
-    validating signal for that player's own real anytime-TD prospects
-    -- favorable, the same spirit Market Intelligence's own headline/
-    story text already uses ("one of the field's clearest bets to
-    score"). market-longshot is the real inverse (the market itself
-    signaling against this player) -- unfavorable. market-neutral has
-    no real signal either way -- neutral, the first real use of that
-    value across all four families (none of the other three's real
-    story populations ever produced it).
-
-    NOT the same question as "is this a good VALUE bet against the
-    market's own price" (arbitrage) -- that's a genuinely different
-    real question this module was never built to answer (V1 is a
-    snapshot standing read, not a value-vs-price model), and isn't
-    what's being classified here.
+    VOICE (TPE Editorial Voice Spec, Section 3): Market Intelligence stays
+    the tightest of the families at a ~3.5-4/10 ceiling -- observant,
+    skeptical, numbers-forward. The comparison itself is the story; copy
+    never competes with the two real numbers (observed vs. peer-tier
+    expected) for attention. Direction: a POSITIVE gap means the market
+    thinks this player is MORE likely to score than his on-field peer
+    tier would suggest (shorter/more-favored price than peers); negative
+    means the market is cooler on him than his peers' on-field profile
+    would suggest.
     """
-    if direction == "market-favored":
-        return "favorable"
-    if direction == "market-longshot":
-        return "unfavorable"
-    return "neutral"
+    name = row["player_name_raw"]
+    matchup = f"{row['away_team']} @ {row['home_team']}"
+    observed_pct = row["consensus_implied_probability"] * 100
+    expected_pct = row["expected_probability"] * 100
+
+    if gap_pp > 0:
+        if thin:
+            headline = "One early line already prices him well ahead of his on-field peer tier."
+            story = (
+                f"A single early line has {name} priced stronger than his on-field peer tier would suggest for "
+                f"{matchup}. One book, though -- worth another look once more of them post."
+            )
+        else:
+            headline = "The market is pricing him well ahead of his own on-field peer tier."
+            story = (
+                f"{name}'s market price implies a real edge over what his on-field profile (touch opportunity, "
+                f"role, matchup) suggests peers at his tier get priced at for {matchup}."
+            )
+    else:
+        if thin:
+            headline = "One early line already prices him behind his on-field peer tier."
+            story = (
+                f"A single early line has {name} priced weaker than his on-field peer tier would suggest for "
+                f"{matchup}. One book, though -- worth another look once more of them post."
+            )
+        else:
+            headline = "The market is pricing him behind his own on-field peer tier."
+            story = (
+                f"{name}'s market price implies real skepticism relative to what his on-field profile suggests "
+                f"peers at his tier get priced at for {matchup}."
+            )
+
+    return headline, story, observed_pct, expected_pct
 
 
-def _hero_metric_for_row() -> None:
+def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame, config: dict = CONFIG) -> list:
     """
-    Permanently null by design, not a placeholder waiting on future
-    work in this same pass -- confirmed, unchanged from the original
-    backend audit: V1 is snapshot-only (market_value.py's PRICE_
-    HISTORY_COLUMNS table has never had a row written to it — see this
-    module's own docstring), so there is no real upstream time series
-    to compute a real before_value/after_value from at all. A real,
-    movement-based Market Intelligence hero_metric only becomes
-    possible once that table gets built — flagged there already as
-    Valuable Later, not approximated here with a fake "before" value.
+    market_snapshot: market_intelligence_snapshot_for_generation()'s own
+    output -- one row per player with a posted player_anytime_td market,
+    already scored by scoring.score_market_value().
+
+    weekly: role_defensive_weekly_snapshot()'s own output -- the same real
+    season snapshot Role Changes/Defensive Trends/Coaching Trends already
+    read, needed here only for its on-field pillar columns (td_opportunity/
+    role_momentum/situation) that feed peer-tier assignment.
+
+    One story per player whose deviation clears config["deviation_floor_pp"]
+    after freshness gating -- not one row per market_snapshot row. A
+    genuinely empty/thin snapshot (see market_value.py's own docstring on
+    why nfl_price_history is currently empty) degrades correctly to zero
+    stories, the same honest-degradation shape every other family already
+    has for its own empty-input case.
     """
-    return None
+    if len(market_snapshot) == 0:
+        return []
 
+    fresh = _freshness_gate(market_snapshot, config)
+    if len(fresh) == 0:
+        return []
 
-def _what_changed_for_row(row: pd.Series, pool_rank: int, pool_size: int, n_books, thin: bool) -> list:
-    """
-    Real editorial content — genuinely closer to Role Changes' direct-
-    reuse case than Defensive/Coaching's fresh-rewrite case: this
-    family's own supporting_evidence lines are almost entirely already
-    plain language (confirmed directly, not assumed) -- "Consensus
-    price: -105 (51.2% implied probability)" and "Based on 1 book — a
-    thin, early read" read exactly like real what_changed copy already,
-    reused near-verbatim below. The ONE real exception is the pool-rank
-    line, which embeds a raw internal field name inline ("Ranks 3 of 20
-    players... (market_value_score 95/100)") -- that one number is
-    dropped here (primary_signal already carries it elsewhere in the
-    schema; no need to duplicate an internal field name in a user-
-    facing field just to restate it).
-    """
-    price_label = "Consensus price"
-    coverage_label = "Book coverage"
-    items = [
-        {"label": price_label, "observation": f"Consensus price: {int(row['consensus_price_american']):+d} ({row['consensus_implied_probability']*100:.1f}% implied probability)."},
-        {
-            "label": coverage_label,
-            "observation": f"Based on {int(n_books) if pd.notna(n_books) else 0} book" + ("s" if pd.isna(n_books) or n_books != 1 else "") + (" — a thin, early read." if thin else " — solid multi-book coverage."),
-        },
-        {"label": "Market ranking", "observation": f"Ranks {pool_rank} of {pool_size} players with a posted market this week."},
-    ]
-    return items[:3]
+    pillar_cols = ["player_id", "td_opportunity", "role_momentum", "situation"]
+    available = [c for c in pillar_cols if c in weekly.columns]
+    pillars = weekly[available].drop_duplicates(subset="player_id", keep="last") if "player_id" in available else pd.DataFrame(columns=pillar_cols)
 
+    pool = fresh.merge(pillars, on="player_id", how="left")
+    # A player with no real on-field pillar row at all (no weekly redzone
+    # history -- a real, expected case for a player new to the league or
+    # not yet reconciled this season) can't get a real peer-tier
+    # comparison. §1's own eligibility test requires a real comparison;
+    # excluded here rather than defaulted into a fabricated tier.
+    pool = pool[pool[[c for c in ("td_opportunity", "role_momentum", "situation") if c in pool.columns]].notna().any(axis=1)]
+    if len(pool) == 0:
+        return []
 
-def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
-    """Same real formula as the other three families, confirmed directly from Lovable's own trustIndicator(): score = (confidence+completeness)/2, strong >= 80, moderate >= 60, else limited."""
-    score = (confidence + completeness) / 2
-    if score >= config["evidence_strong_threshold"]:
-        return "strong"
-    if score >= config["evidence_moderate_threshold"]:
-        return "moderate"
-    return "limited"
+    tiered = _assign_peer_tiers(pool, config)
+    expected = (
+        tiered.groupby(["position_group", "_peer_tier"])["consensus_implied_probability"]
+        .median()
+        .rename("expected_probability")
+    )
+    tiered = tiered.merge(expected, on=["position_group", "_peer_tier"], how="left")
+    tiered["_gap_pp"] = (tiered["consensus_implied_probability"] - tiered["expected_probability"]) * 100
 
+    eligible = tiered[tiered["_gap_pp"].abs() >= config["deviation_floor_pp"]].copy()
+    eligible = eligible.sort_values("_gap_pp", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
 
-def build_market_intelligence_stories(snapshot: pd.DataFrame, config: dict = CONFIG) -> list:
-    """
-    snapshot: scoring.score_market_value()'s own output (market_value.py's
-    snapshot_scoring_inputs, scored) — one row per player with a posted
-    player_anytime_td market. One story per row.
-    """
     stories = []
-    pool_size = len(snapshot)
-    ranked = snapshot.sort_values("market_value_score", ascending=False).reset_index(drop=True)
-
-    for idx, row in ranked.iterrows():
-        pool_rank = idx + 1
+    for _, row in eligible.iterrows():
+        gap_pp = float(row["_gap_pp"])
         n_books = row["n_books"]
         thin = pd.isna(n_books) or n_books < config["full_coverage_books"]
-        direction, strength = _trend_direction_and_strength(row["market_value_score"], config)
-        completeness = _story_completeness(row["market_value_completeness"], n_books, config)
-        headline, story_text = _headline_and_story(row, direction, pool_rank, pool_size, thin)
+        headline, story_text, observed_pct, expected_pct = _headline_and_story(row, gap_pp, thin)
+        evidence_state = _evidence_state_for_row(n_books, config)
+        magnitude_band = _magnitude_band(abs(gap_pp), config)
+        completeness = _story_completeness(n_books, config)
 
         evidence = [
-            f"Consensus price: {int(row['consensus_price_american']):+d} "
-            f"({row['consensus_implied_probability']*100:.1f}% implied probability)",
+            f"Market: {int(row['consensus_price_american']):+d} ({observed_pct:.1f}% implied probability)",
+            f"Peer-tier expectation: {expected_pct:.1f}% implied probability, from the median of players with a "
+            f"similar on-field profile (TD opportunity, role, situation) at his position",
+            f"Gap: {abs(gap_pp):.1f} percentage points {'above' if gap_pp > 0 else 'below'} his peer tier's expected price "
+            f"({magnitude_band})",
             f"Based on {int(n_books) if pd.notna(n_books) else 0} book"
             f"{'s' if pd.isna(n_books) or n_books != 1 else ''} — "
             f"{'a thin, early read' if thin else 'solid multi-book coverage'}",
-            f"Ranks {pool_rank} of {pool_size} players with a posted market this week "
-            f"(market_value_score {row['market_value_score']:.0f}/100)",
         ]
-        if pd.notna(row.get("best_price")) and row["best_price"] != row["consensus_price_american"]:
-            evidence.append(f"Best available price: {int(row['best_price']):+d} at {row['best_book']}")
 
-        # Real display-appropriate caption -- deliberately drops two
-        # things the earlier version had: the "(not a trend — see
-        # module docstring)" aside (a real, confirmed production bug:
-        # Lovable's own schema caps this field at 100 chars, and that
-        # clause alone was ~40 chars of internal engineering commentary
-        # no real user should ever see; the honesty safeguard it was
-        # duplicating already lives fully in _headline_and_story's own
-        # careful standing-language, confirmed directly, not assumed),
-        # and the raw ISO-8601 poll_timestamp (not genuinely human-
-        # readable either, and nothing downstream ever consumed it --
-        # confirmed via a real repo-wide search before removing the
-        # parameter entirely, not just unused-here). Real full team
-        # names (row['away_team']/['home_team'], the same real values
-        # _headline_and_story's own `matchup` string already uses) plus
-        # a real DST-aware ET kickoff time still clears the 100-char
-        # cap with real margin even at the two real longest NFL team
-        # names paired together (confirmed: 88 of 100 chars, not just
-        # the short-name happy path).
         time_window = f"Live snapshot, {row['away_team']} @ {row['home_team']}, kickoff {_format_kickoff_et(row['commence_time'])}"
 
         story = build_story(
             intelligence_family="market_intelligence",
             entity={
-                "type": "player", "player_id": row["player_id"], "player_name": row["player_name_raw"],
-                "team": row["team"], "position_group": row.get("position_group"),
+                "type": "player",
+                "player_id": row["player_id"],
+                "player_name": row["player_name_raw"],
+                "team": row["team"],
+                "position_group": row.get("position_group"),
             },
             headline=headline,
             story=story_text,
-            primary_signal={"name": "market_value_score", "value": float(row["market_value_score"])},
+            primary_signal={"name": "deviation_pp", "value": round(gap_pp, 1)},
             supporting_evidence=evidence,
-            trend_direction=direction,
-            trend_strength=strength,
+            trend_direction="deviation-favorable" if gap_pp > 0 else "deviation-unfavorable",
+            trend_strength=round(min(abs(gap_pp) * 5, 100.0), 1),
             sample_size=int(n_books) if pd.notna(n_books) else 0,
             completeness=completeness,
             confidence=completeness,
             time_window=time_window,
-            related_players=_related_players(ranked, row["event_id"], row["team"], row["player_id"]),
+            related_players=_related_players(tiered, row["event_id"], row["team"], row["player_id"]),
         )
-        # Universal Card v2 fields -- attached after build_story(), not
-        # part of its own hard STORY_FIELDS contract. hero_metric is
-        # permanently None for this family (see _hero_metric_for_row's
-        # own docstring); lifecycle_state is also always None for
-        # Market (the already-approved deferral, unrelated to this
-        # task, unchanged) -- both real, structural absences, not gaps.
-        story["hero_metric"] = _hero_metric_for_row()
-        story["signal_direction"] = _signal_direction_for_row(direction)
-        story["what_changed"] = _what_changed_for_row(row, pool_rank, pool_size, n_books, thin)
+        # Universal Card v2 fields -- attached after build_story(), same
+        # "additive, not part of the hard schema" pattern the other three
+        # families' own v2 fields already use.
+        story["hero_metric"] = {
+            "label": "Implied probability vs. peer tier",
+            "unit": "%",
+            "value_format": "percent",
+            "before_value": round(expected_pct, 1),
+            "after_value": round(observed_pct, 1),
+            "delta_value": round(gap_pp, 1),
+        }
+        story["signal_direction"] = "favorable" if gap_pp > 0 else "unfavorable"
+        story["what_changed"] = _still_to_watch_for_row(evidence_state, n_books, magnitude_band)
         story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        # Market Trends V1 fields -- additive alongside evidence_
+        # classification above, never a replacement for it (confirmed
+        # explicitly before this module was written, not inferred).
+        story["signal_type"] = "deviation"
+        story["evidence_state"] = evidence_state
         stories.append(story)
 
     return stories

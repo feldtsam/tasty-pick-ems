@@ -146,6 +146,11 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
     issues, this identity's real lifecycle_state, if any) into the real
     nfl_intelligence_stories column shape. Pure — no I/O, no signing;
     see write_intelligence_rows for that.
+
+    Market Trends V1 fields (signal_type/evidence_state): additive
+    alongside evidence_classification above, never a replacement for it —
+    absent/None for every family except market_intelligence's own
+    build_deviation_stories() output, which sets both.
     """
     entity_key, entity_key_issue = _entity_key_for_row(story.get("entity"))
     issues = list(sanity_issues) + ([entity_key_issue] if entity_key_issue else [])
@@ -178,6 +183,8 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
         "signal_direction": story.get("signal_direction"),
         "what_changed": story.get("what_changed"),
         "evidence_classification": story.get("evidence_classification"),
+        "signal_type": story.get("signal_type"),
+        "evidence_state": story.get("evidence_state"),
     }
 
 
