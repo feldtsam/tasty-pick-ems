@@ -220,6 +220,24 @@ CONFIG = {
     # off genuinely-qualifying players on the three ATTD odds-band
     # shelves, not just capping overflow.
     "max_per_shelf": 20,
+    # Decouples "how many players display on a shelf" (max_per_shelf,
+    # above) from "how many get a bespoke Claude-written card" — a real,
+    # confirmed production incident, not a hypothetical: raising max_per_
+    # shelf from 6 to 20 tripled the ceiling on shape_content_draft_
+    # rows()'s own sequential, blocking real-Claude-call-per-regular-row
+    # loop (7 shelves x 20 = 140 vs. 7 x 6 = 42), and the FIRST real
+    # curation run at the new cap (season=2026 week=1, 377 eligible
+    # players) timed out at Vercel's 300s ceiling mid-generation, never
+    # reaching the write step. Only the top shelf_card_llm_top_n players
+    # per shelf, RANKED BY THE SAME rank apply_shelf_cap already assigned
+    # (so it's always the top-displayed players, never an arbitrary
+    # subset), get a real Claude call; every row beyond that gets the
+    # same deterministic template fallback already used whenever
+    # anthropic_api_key is unset or a specific call fails — a real,
+    # already-exercised code path, not new content logic. 8, not the old
+    # 6, deliberately: a little headroom above the previous effective
+    # ceiling, not just a revert.
+    "shelf_card_llm_top_n": 8,
     # Proposal 2, approved, PROVISIONAL — needs real-data validation
     # once the season is live. NOT enforced yet — see module docstring.
     "sticky_margin": 20.0,
@@ -777,7 +795,7 @@ def _matchup_from_game_id(game_id) -> str | None:
 def shape_content_draft_rows(
     capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int,
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
-    history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None,
+    history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None, config: dict = CONFIG,
 ) -> list:
     """
     One dict per (surviving-the-cap) player-shelf placement, shaped to
@@ -826,16 +844,39 @@ def shape_content_draft_rows(
     can't share one function: they're calibrated against genuinely
     different real populations.
 
-    CONTENT: regular (non-Tasty-Six) rows get shelves.py's deterministic
-    story generators (Part A), reshaped into the real why_reasons shape
-    via _deterministic_why_reasons — real, grounded, no LLM call.
+    CONTENT: regular (non-Tasty-Six) rows are genuinely two-path, same
+    shape as Tasty Six below — this paragraph used to claim "no LLM
+    call, ever," which stopped being true once generate_nfl_shelf_card_
+    draft() shipped; corrected here rather than left stale. A row whose
+    OWN rank on its shelf is <= config["shelf_card_llm_top_n"] gets a
+    real call into generate_nfl_shelf_card_content.py's generate_nfl_
+    shelf_card_draft() (when `anthropic_api_key` is provided); a row
+    ranked beyond that cutoff — or any row when no key is provided, or
+    one whose real call raised — falls back to shelves.py's
+    deterministic story generators (Part A), reshaped via
+    _deterministic_why_reasons. Both paths are real, grounded content;
+    only the SOURCE (bespoke prose vs. a data-driven template) differs.
+    THE CUTOFF EXISTS BECAUSE OF A REAL INCIDENT, not a cost-saving
+    guess: this function's own per-row loop makes each real Claude call
+    sequentially and blocking, and raising config["max_per_shelf"] from
+    6 to 20 (a separate, deliberate change — see that key's own
+    comment) tripled the ceiling on how many of those calls one curation
+    run could make (7 shelves x 20 = 140 vs. 7 x 6 = 42). The first real
+    run at the new cap (season=2026 week=1, 377 eligible players) timed
+    out at Vercel's 300s ceiling mid-generation, confirmed via Vercel's
+    own logs (it had already logged a successful market-value fetch,
+    then produced nothing further). shelf_card_llm_top_n decouples the
+    two concerns: every genuinely qualifying player still DISPLAYS (up
+    to max_per_shelf), but only the top shelf_card_llm_top_n per shelf
+    — ranked by the exact same `rank` apply_shelf_cap already assigned,
+    so it's always the top-displayed players, never an arbitrary subset
+    — cost a real sequential API call.
     editorial_sentence stays None for these rows (MLB's own regular-
     card-has-no-editorial-sentence convention, reused). writer_type=
-    "shelf_card", model_name=None, validation_passed=True, validation_
-    issues=[] — the deterministic system has no separate pass/fail
-    validation step of its own (it's grounded by construction, not
-    validated after the fact the way LLM output is), so True/[] is the
-    honest default, not a placeholder standing in for a real check.
+    "shelf_card"; model_name/validation_passed/validation_issues follow
+    whichever path actually ran for that row — real draft-reported
+    values for a bespoke call, the deterministic system's own True/[]
+    honest default (no separate pass/fail step to report) otherwise.
 
     Tasty Six rows get a REAL call into generate_tasty_six_content.py's
     generate_nfl_tasty_six_draft() (Part C's actual LLM writer) — ONLY
@@ -1016,7 +1057,15 @@ def shape_content_draft_rows(
                         validation_issues = draft.get("validation_issues") or []
         elif full_row is not None:
             confidence_band = nfl_regular_row_confidence_band_for_score(full_row.get("tpe_score"))
-            if anthropic_api_key:
+            # r["rank"] <= shelf_card_llm_top_n: only the top-displayed
+            # players on this shelf get a real, sequential Claude call —
+            # see CONFIG["shelf_card_llm_top_n"]'s own comment for the
+            # real incident (a 5-minute Vercel timeout) this closes.
+            # Everyone else takes the exact SAME branch as "no
+            # anthropic_api_key at all" below, not a new code path —
+            # the deterministic template is already real, grounded
+            # content, just not bespoke prose.
+            if anthropic_api_key and r["rank"] <= config["shelf_card_llm_top_n"]:
                 # Same per-row resilience discipline as the Tasty Six
                 # branch above -- a bad Claude call for one regular card
                 # (of which there are many more per batch than Tasty Six
@@ -1287,7 +1336,7 @@ def curate_nfl_shelves(
     tasty_six = select_tasty_six(capped, config)
     content_draft_rows = shape_content_draft_rows(
         capped, tasty_six, season, week, weekly=weekly, schedules=schedules, anthropic_api_key=anthropic_api_key,
-        history_weekly=history_weekly, pbp=pbp,
+        history_weekly=history_weekly, pbp=pbp, config=config,
     )
     shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
     return {

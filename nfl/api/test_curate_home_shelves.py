@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import pandas as pd
 
+import curate_home_shelves as chs
 from curate_home_shelves import (
     CONFIG,
     ODDS_SHELVES,
@@ -486,6 +487,121 @@ if __name__ == "__main__":
             "become eligible together, not just one)",
             "Target Share Trend" in labels_with,
         ))
+
+    # ============================================================
+    # shelf_card_llm_top_n — the fix for the real Vercel timeout
+    # (season=2026 week=1, 377 eligible players, confirmed via Vercel's
+    # own logs: a successful market-value fetch logged, then nothing —
+    # the 5-minute ceiling hit mid-generation). Raising max_per_shelf
+    # from 6 to 20 tripled the ceiling on shape_content_draft_rows'
+    # own sequential, blocking real-Claude-call-per-regular-row loop;
+    # only the top shelf_card_llm_top_n per shelf should still make a
+    # real call, ranked by the same `rank` apply_shelf_cap assigns —
+    # everyone else gets the existing deterministic fallback, same
+    # code path as "no anthropic_api_key at all".
+    #
+    # 20 REAL players (real 2025 Week 10 rows, same source as the real-
+    # data checks above) with their odds/completeness overridden —
+    # same "synthetic re-attachment onto real rows" technique this
+    # whole file already uses, not a from-scratch synthetic frame: a
+    # from-scratch frame is missing the many raw red-zone/role columns
+    # add_red_zone_trend_windows (etc.) genuinely need, which real CSV
+    # rows already have. All 20 pushed toward the SAME odds band
+    # (500-699) with td_opportunity/role_momentum completeness zeroed
+    # out (so none qualify for a trend shelf instead) and a clean
+    # descending tpe_score (so rank order is deterministic — row 0 is
+    # rank 1, the highest tpe_score). Not every real row necessarily
+    # clears every OTHER real eligibility gate (position_group, etc.),
+    # so the surviving count is read back rather than assumed to be 20
+    # — the only hard requirement for this test is "more than
+    # shelf_card_llm_top_n survive", which 20 candidates comfortably
+    # clears in practice.
+    # ============================================================
+    llm_cutoff_rows = sub[sub["tpe_score"].notna()].head(20).copy().reset_index(drop=True)
+    llm_cutoff_rows["consensus_price_american"] = 600
+    llm_cutoff_rows["td_opportunity_completeness"] = 0.0
+    llm_cutoff_rows["role_momentum_completeness"] = 0.0
+    llm_cutoff_rows["tpe_score"] = [90.0 - i for i in range(len(llm_cutoff_rows))]
+    llm_home = assign_home_shelves(llm_cutoff_rows)
+    llm_capped = apply_shelf_cap(llm_home, CONFIG)
+    on_shelf = llm_capped[(llm_capped["home_shelf"] == "ATTD +500-699") & (~llm_capped["capped"])]
+    n_survivors = len(on_shelf)
+    results.append(check(
+        f"shelf_card_llm_top_n setup: comfortably more than {CONFIG['shelf_card_llm_top_n']} real players "
+        f"survive onto the one shelf ({n_survivors} did) — a real test of the cutoff, not a vacuous one",
+        n_survivors > CONFIG["shelf_card_llm_top_n"],
+    ))
+
+    llm_call_player_ids = []
+
+    def fake_generate_nfl_shelf_card_draft(row, shelf, confidence_band, api_key, **kw):
+        llm_call_player_ids.append(row["player_id"])
+        return {
+            "title": f"Bespoke title for {row['player_id']}",
+            "why_reasons": [{"pillar": "market_value", "stars": 3, "text": "real llm text", "citation": ["tpe_score"]}],
+            "confidence_band": confidence_band,
+            "model_name": "fake-model",
+            "validation_passed": True,
+            "validation_issues": [],
+        }
+
+    orig_generate = chs.generate_nfl_shelf_card_draft
+    chs.generate_nfl_shelf_card_draft = fake_generate_nfl_shelf_card_draft
+    try:
+        cutoff_draft_rows = shape_content_draft_rows(
+            llm_capped, {}, 2026, 1, weekly=llm_cutoff_rows, anthropic_api_key="fake-key", config=CONFIG,
+        )
+    finally:
+        chs.generate_nfl_shelf_card_draft = orig_generate
+
+    on_shelf_drafts = [r for r in cutoff_draft_rows if r["shelf"] == "attd_500_699"]
+    on_shelf_drafts.sort(key=lambda r: r["rank"])
+    results.append(check(
+        f"shelf_card_llm_top_n: exactly {CONFIG['shelf_card_llm_top_n']} real Claude calls made, not {n_survivors}",
+        len(llm_call_player_ids) == CONFIG["shelf_card_llm_top_n"],
+    ))
+    top_n_ids = {r["player_id"] for r in on_shelf_drafts[:CONFIG["shelf_card_llm_top_n"]]}
+    results.append(check(
+        "shelf_card_llm_top_n: the real calls made were for exactly the top-ranked players, not an arbitrary subset",
+        set(llm_call_player_ids) == top_n_ids,
+    ))
+    results.append(check(
+        "shelf_card_llm_top_n: a top-N row got the real bespoke title from the (mocked) Claude call",
+        on_shelf_drafts[0]["title"] == f"Bespoke title for {on_shelf_drafts[0]['player_id']}"
+        and on_shelf_drafts[0]["model_name"] == "fake-model",
+    ))
+    beyond_cutoff = on_shelf_drafts[CONFIG["shelf_card_llm_top_n"]:]
+    results.append(check(
+        f"shelf_card_llm_top_n: {len(beyond_cutoff)} rows beyond the cutoff exist to check (sanity, not vacuous)",
+        len(beyond_cutoff) == n_survivors - CONFIG["shelf_card_llm_top_n"],
+    ))
+    results.append(check(
+        "shelf_card_llm_top_n: every row beyond the cutoff has a real, non-null, non-empty title "
+        "(the deterministic fallback produced real content, not a blank/broken card)",
+        all(r["title"] is not None and len(r["title"]) > 0 for r in beyond_cutoff),
+    ))
+    results.append(check(
+        "shelf_card_llm_top_n: every row beyond the cutoff has a real, non-empty why_reasons array",
+        all(isinstance(r["why_reasons"], list) and len(r["why_reasons"]) > 0 for r in beyond_cutoff),
+    ))
+    results.append(check(
+        "shelf_card_llm_top_n: no row beyond the cutoff got the bespoke LLM title (confirms it's genuinely "
+        "the deterministic path, not a mock that fired anyway)",
+        all(not r["title"].startswith("Bespoke title for") for r in beyond_cutoff),
+    ))
+    results.append(check(
+        "shelf_card_llm_top_n: model_name/validation_passed/validation_issues on a fallback row match the "
+        "SAME honest defaults the no-anthropic_api_key path already uses (None/True/[]), not leftover/stale values",
+        all(
+            r["model_name"] is None and r["validation_passed"] is True and r["validation_issues"] == []
+            for r in beyond_cutoff
+        ),
+    ))
+    results.append(check(
+        f"shelf_card_llm_top_n: display count is untouched by the LLM cutoff -- all {n_survivors} real "
+        "qualifying players still get a written row (the whole point of raising max_per_shelf in the first place)",
+        len(on_shelf_drafts) == n_survivors,
+    ))
 
     print()
     if all(results):
