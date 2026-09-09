@@ -112,12 +112,23 @@ def _fetch_market_intelligence(season, week, secret, read_url=None):
     build_deviation_stories() (every deviation-eligible row without a real
     on-field pillar match is excluded, not defaulted), no separate guard
     needed here.
+
+    Returns (stories, diagnostics) -- a tuple, unlike every other family's
+    build_stories_fn (which return a plain list). generate_family() below
+    is the one place that distinguishes the two shapes; the other three
+    families' own fetch closures are completely unchanged. diagnostics
+    combines market_intelligence_snapshot_for_generation()'s own read/
+    match diagnostics with build_deviation_stories()'s own pool-size-per-
+    stage diagnostics, under "read" and "scoring" keys respectively, so a
+    real caller can see exactly which stage produced a real zero rather
+    than inferring it from the final story count alone.
     """
     from reconcile_week import role_defensive_weekly_snapshot
 
-    snapshot = market_intelligence_snapshot_for_generation(season, week, secret, read_url)
+    snapshot, read_diagnostics = market_intelligence_snapshot_for_generation(season, week, secret, read_url)
     weekly = role_defensive_weekly_snapshot(season, secret, read_url)
-    return build_deviation_stories(snapshot, weekly)
+    stories, scoring_diagnostics = build_deviation_stories(snapshot, weekly)
+    return stories, {"read": read_diagnostics, "scoring": scoring_diagnostics}
 
 
 def _fetch_coaching_trends(season, week, secret, read_url=None):
@@ -191,16 +202,27 @@ def generate_family(
     apply_lifecycle's own history param).
 
     Returns process_family()'s own {"story_rows", "history_rows",
-    "updated_history"} dict, plus "family" for the caller's own bookkeeping.
-    An unrecognized family name raises ValueError immediately — a caller
-    typo here should fail loudly, not silently produce zero rows.
+    "updated_history"} dict, plus "family" for the caller's own bookkeeping,
+    plus "diagnostics" WHEN this family's build_stories_fn returned one
+    (currently only market_intelligence's own _fetch_market_intelligence —
+    every other family's build_stories_fn still returns a plain list, so
+    "diagnostics" is simply absent for them, unchanged). An unrecognized
+    family name raises ValueError immediately — a caller typo here should
+    fail loudly, not silently produce zero rows.
     """
     if family not in FAMILIES:
         raise ValueError(f"Unknown intelligence family {family!r} — expected one of {sorted(FAMILIES)}")
     spec = FAMILIES[family]
 
+    diagnostics = None
     if stories is None:
-        stories = spec["build_stories_fn"](season, week, secret, read_url)
+        fetched = spec["build_stories_fn"](season, week, secret, read_url)
+        # Most families' build_stories_fn returns a plain list; market_
+        # intelligence's own returns (stories, diagnostics) -- see its
+        # own docstring. Distinguishing by shape here, rather than
+        # widening every family's shared contract for one family's real
+        # diagnostic need.
+        stories, diagnostics = fetched if isinstance(fetched, tuple) else (fetched, None)
 
     if prior_history is None:
         prior_history = (
@@ -211,6 +233,8 @@ def generate_family(
     result = process_family(family, stories, prior_history, season, week, lifecycle_eligible=spec["lifecycle_eligible"])
     result["family"] = family
     result["stories_generated"] = len(stories)
+    if diagnostics is not None:
+        result["diagnostics"] = diagnostics
     return result
 
 
@@ -246,8 +270,9 @@ def generate_and_write_intelligence(
     secret. Omit entirely (or omit a given family's key) for a real fetch.
 
     Returns {"season", "week", "preview_only", "families": {family:
-    {stories_generated, story_rows, history_rows}}, "story_rows_written",
-    "history_rows_written", "forwarded", "lovable_status_code",
+    {stories_generated, story_rows, history_rows, diagnostics (market_
+    intelligence only, see _fetch_market_intelligence's own docstring)}},
+    "story_rows_written", "history_rows_written", "forwarded", "lovable_status_code",
     "forward_error"} — one real combined write covering every requested
     family's rows in a single call, same as curate-and-write-drafts's own
     single forward_result per request.
@@ -270,6 +295,8 @@ def generate_and_write_intelligence(
             "story_rows": result["story_rows"],
             "history_rows": result["history_rows"],
         }
+        if "diagnostics" in result:
+            per_family[family]["diagnostics"] = result["diagnostics"]
         all_story_rows.extend(result["story_rows"])
         all_history_rows.extend(result["history_rows"])
 

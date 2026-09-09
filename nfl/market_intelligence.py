@@ -157,7 +157,7 @@ def _peer_tier_core_score(pool: pd.DataFrame) -> pd.Series:
     return result.replace([float("inf"), float("-inf")], float("nan")).round(1)
 
 
-def _assign_peer_tiers(pool: pd.DataFrame, config: dict) -> pd.DataFrame:
+def _assign_peer_tiers(pool: pd.DataFrame, config: dict) -> tuple:
     """
     Peer tiers = (position_group, core_score quintile) -- §5's "group
     players into tiers by these on-field pillars." Scoped WITHIN
@@ -174,17 +174,60 @@ def _assign_peer_tiers(pool: pd.DataFrame, config: dict) -> pd.DataFrame:
     fabricated bucket boundary, which correctly makes their peer-median
     expectation equal to their own price (deviation = 0, never eligible)
     instead of a manufactured comparison.
+
+    Returns (pool_with_tiers, diagnostics) -- diagnostics = {
+      "position_groups": {position_group: distinct_real_tier_count, ...},
+      "fallback_position_groups": [position_group, ...],  # where the
+        too-few-real-values or qcut ValueError fallback fired, collapsing
+        that group to one shared tier (or one-of-each) instead of real
+        quintiles -- surfaced explicitly, never caught silently.
+    }
     """
     pool = pool.copy()
     pool["_peer_core_score"] = _peer_tier_core_score(pool)
 
-    def _tier_for_group(g: pd.DataFrame) -> pd.Series:
+    # Diagnostics (not scoring logic): surfaced so a real caller can see
+    # WHETHER quintile binning actually produced multiple real tiers per
+    # position_group, or silently collapsed to one -- the exact visibility
+    # gap that made a genuine "no real variance this week" outcome
+    # indistinguishable from a bug, before this was added.
+    diagnostics = {"position_groups": {}, "fallback_position_groups": []}
+
+    def _tier_for_group(g: pd.DataFrame, position_group) -> pd.Series:
         real = g["_peer_core_score"].notna().sum()
         if real < 2:
+            diagnostics["fallback_position_groups"].append(str(position_group))
+            diagnostics["position_groups"][str(position_group)] = len(g)  # own-tier-of-one each
             return pd.Series(range(len(g)), index=g.index, dtype="float64")
         try:
-            return pd.qcut(g["_peer_core_score"], config["n_peer_tiers"], labels=False, duplicates="drop").astype("float64")
+            tiers = pd.qcut(g["_peer_core_score"], config["n_peer_tiers"], labels=False, duplicates="drop")
+            # REAL BUG THIS CLOSES, confirmed empirically (not assumed):
+            # pd.qcut on a series with ZERO variance (every real value
+            # identical -- the exact shape a position_group's on-field
+            # composite has whenever every player's cumulative pillars
+            # reset to the same neutral baseline, e.g. Week 1 with no
+            # prior-season-same-year games) does NOT raise ValueError even
+            # with duplicates="drop" -- it silently returns all-NaN tier
+            # labels instead. That NaN then survives into
+            # tiered.groupby(["position_group", "_peer_tier"]) downstream,
+            # which drops NaN GROUP KEYS BY DEFAULT -- expected_probability
+            # merges back as NaN for every row in the group, every gap_pp
+            # becomes NaN, and NaN >= floor is always False. The entire
+            # position_group silently produces zero stories with no
+            # exception anywhere -- confirmed via a direct empirical
+            # reproduction of the full cascade, not inferred. Treated the
+            # same as the ValueError branch below: one shared tier, not a
+            # crash and not a silent, undetectable zero.
+            if tiers.notna().sum() == 0:
+                diagnostics["fallback_position_groups"].append(str(position_group))
+                diagnostics["position_groups"][str(position_group)] = 1
+                return pd.Series(0.0, index=g.index, dtype="float64")
+            tiers = tiers.astype("float64")
+            diagnostics["position_groups"][str(position_group)] = int(tiers.nunique())
+            return tiers
         except ValueError:
+            diagnostics["fallback_position_groups"].append(str(position_group))
+            diagnostics["position_groups"][str(position_group)] = 1  # collapsed to one shared tier
             return pd.Series(0.0, index=g.index, dtype="float64")
 
     # Explicit per-group loop + concat, not groupby(...).apply(...): apply's
@@ -195,9 +238,9 @@ def _assign_peer_tiers(pool: pd.DataFrame, config: dict) -> pd.DataFrame:
     # especially with a single real group in the pool). A manual loop with
     # a fixed dtype on every branch is predictable regardless of how many
     # distinct position_groups are actually present.
-    tier_parts = [_tier_for_group(g) for _, g in pool.groupby("position_group", group_keys=False)]
+    tier_parts = [_tier_for_group(g, pg) for pg, g in pool.groupby("position_group", group_keys=False)]
     pool["_peer_tier"] = pd.concat(tier_parts) if tier_parts else pd.Series(dtype="float64")
-    return pool
+    return pool, diagnostics
 
 
 def _freshness_gate(snapshot: pd.DataFrame, config: dict, now: pd.Timestamp = None) -> pd.DataFrame:
@@ -376,7 +419,7 @@ def _headline_and_story(row: pd.Series, gap_pp: float, thin: bool) -> tuple:
     return headline, story, observed_pct, expected_pct
 
 
-def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame, config: dict = CONFIG) -> list:
+def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame, config: dict = CONFIG) -> tuple:
     """
     market_snapshot: market_intelligence_snapshot_for_generation()'s own
     output -- one row per player with a posted player_anytime_td market,
@@ -389,17 +432,25 @@ def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame,
 
     One story per player whose deviation clears config["deviation_floor_pp"]
     after freshness gating -- not one row per market_snapshot row. A
-    genuinely empty/thin snapshot (see market_value.py's own docstring on
-    why nfl_price_history is currently empty) degrades correctly to zero
-    stories, the same honest-degradation shape every other family already
-    has for its own empty-input case.
+    genuinely empty/thin snapshot degrades correctly to zero stories, the
+    same honest-degradation shape every other family already has for its
+    own empty-input case.
+
+    Returns (stories, diagnostics) -- diagnostics carries the pool size at
+    every filtering stage plus the peer-tier assignment's own tier/
+    fallback diagnostics, added specifically so a real zero-story result is
+    never left unexplained (a genuine "no real variance"/"nothing cleared
+    the floor" outcome must be visibly distinguishable from a silent
+    exclusion bug at any one stage).
     """
+    diagnostics = {"input_row_count": len(market_snapshot)}
     if len(market_snapshot) == 0:
-        return []
+        return [], diagnostics
 
     fresh = _freshness_gate(market_snapshot, config)
+    diagnostics["fresh_row_count"] = len(fresh)
     if len(fresh) == 0:
-        return []
+        return [], diagnostics
 
     pillar_cols = ["player_id", "td_opportunity", "role_momentum", "situation"]
     available = [c for c in pillar_cols if c in weekly.columns]
@@ -412,10 +463,12 @@ def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame,
     # comparison. §1's own eligibility test requires a real comparison;
     # excluded here rather than defaulted into a fabricated tier.
     pool = pool[pool[[c for c in ("td_opportunity", "role_momentum", "situation") if c in pool.columns]].notna().any(axis=1)]
+    diagnostics["pool_after_pillar_filter"] = len(pool)
     if len(pool) == 0:
-        return []
+        return [], diagnostics
 
-    tiered = _assign_peer_tiers(pool, config)
+    tiered, tier_diagnostics = _assign_peer_tiers(pool, config)
+    diagnostics["peer_tiers"] = tier_diagnostics
     expected = (
         tiered.groupby(["position_group", "_peer_tier"])["consensus_implied_probability"]
         .median()
@@ -426,6 +479,8 @@ def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame,
 
     eligible = tiered[tiered["_gap_pp"].abs() >= config["deviation_floor_pp"]].copy()
     eligible = eligible.sort_values("_gap_pp", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+    diagnostics["pool_before_floor"] = len(tiered)
+    diagnostics["eligible_after_floor"] = len(eligible)
 
     stories = []
     for _, row in eligible.iterrows():
@@ -492,4 +547,4 @@ def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame,
         story["evidence_state"] = evidence_state
         stories.append(story)
 
-    return stories
+    return stories, diagnostics

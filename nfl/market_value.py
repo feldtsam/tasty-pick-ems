@@ -502,10 +502,10 @@ def latest_price_history_full_per_player(rows: list) -> pd.DataFrame:
     return latest[PRICE_HISTORY_COLUMNS].reset_index(drop=True)
 
 
-def market_intelligence_snapshot_for_generation(season: int, week: int, secret: str, read_url: str = None) -> pd.DataFrame:
+def market_intelligence_snapshot_for_generation(season: int, week: int, secret: str, read_url: str = None) -> tuple:
     """
-    The real input build_deviation_stories() needs, sourced from
-    storage instead of a live poll: reads the real latest-per-player nfl_
+    The real input build_deviation_stories() needs, sourced from storage
+    instead of a live poll: reads the real latest-per-player nfl_
     price_history snapshot for (season, week) with EVERY real column intact
     (see latest_price_history_full_per_player), then runs scoring.
     score_market_value() (the REAL one, grouped by season/week) on it —
@@ -514,21 +514,60 @@ def market_intelligence_snapshot_for_generation(season: int, week: int, secret: 
     season/week -> score_market_value sequence, just reading the poll
     back from nfl_price_history instead of hitting The Odds API directly.
 
-    A genuinely empty snapshot (no real polls yet for this week — the
-    expected, current state until the Make.com polling scenario is built)
-    still returns a correctly-shaped, zero-row DataFrame — build_market_
-    intelligence_stories()'s own pool iteration already degrades correctly
-    to "no stories" against a zero-row frame, not a new behavior invented
-    here.
+    REAL, CONFIRMED FIX, not the original design: this used to hand
+    read_price_history()'s result["rows"] straight to
+    latest_price_history_full_per_player() without ever checking
+    result["ok"]/result["error"] first -- a real network failure, a non-2xx
+    response, or an unparseable body from the read route all produced
+    result["rows"] == [], which read identically to a genuine "zero polls
+    this week." Confirmed as a real, live bug, not a hypothetical: a
+    real generate-and-write-intelligence call against season=2026, week=1
+    (nfl_price_history confirmed to hold 17,876+ real rows for that exact
+    week) still returned zero stories with no visible error anywhere in
+    the response -- this function's own silent read_ok/rows conflation is
+    what made that indistinguishable from "there's genuinely nothing to
+    read." Now returns real diagnostics alongside the snapshot so a caller
+    can see read_ok/read_error directly, never inferred from an empty
+    frame.
+
+    Returns (snapshot_df, diagnostics) -- diagnostics = {"read_ok",
+    "read_error", "raw_row_count", "matched_row_count",
+    "unmatched_row_count", "distinct_matched_players" (only once the read
+    succeeded), "scored_row_count" (only once scoring ran)}. A genuinely
+    empty snapshot (real read, real zero rows, or nothing survived
+    matching) still returns a correctly-shaped, zero-row DataFrame --
+    build_deviation_stories()'s own pool handling already degrades
+    correctly to "no stories" against a zero-row frame, unchanged.
     """
     from scoring import CONFIG, score_market_value as scoring_score_market_value
 
     result = read_price_history(season, week, secret, read_url)
-    latest = latest_price_history_full_per_player(result["rows"])
+    raw_rows = result["rows"]
+    matched_count = sum(1 for r in raw_rows if r.get("player_id") is not None)
+    diagnostics = {
+        "read_ok": result["ok"],
+        "read_error": result["error"],
+        "raw_row_count": len(raw_rows),
+        "matched_row_count": matched_count,
+        "unmatched_row_count": len(raw_rows) - matched_count,
+    }
+    empty_cols = list(PRICE_HISTORY_COLUMNS) + ["market_value_score", "market_value_completeness"]
+
+    if not result["ok"]:
+        # A real read failure -- must not be treated the same as a
+        # genuine "zero rows this week" outcome (the exact swallow this
+        # fix closes). read_ok=False/read_error surface directly in the
+        # diagnostics instead of an indistinguishable empty snapshot.
+        return pd.DataFrame(columns=empty_cols), diagnostics
+
+    latest = latest_price_history_full_per_player(raw_rows)
+    diagnostics["distinct_matched_players"] = len(latest)
     if len(latest) == 0:
-        cols = list(PRICE_HISTORY_COLUMNS) + ["market_value_score", "market_value_completeness"]
-        return pd.DataFrame(columns=cols)
-    return scoring_score_market_value(latest, CONFIG)
+        return pd.DataFrame(columns=empty_cols), diagnostics
+
+    scored = scoring_score_market_value(latest, CONFIG)
+    diagnostics["scored_row_count"] = len(scored)
+    return scored, diagnostics
 
 
 # Phase B of the NFL weekly-automation plan: the market-value columns
