@@ -89,8 +89,10 @@ import pandas as pd
 
 from curate_home_shelves import (
     build_prior_state_with_walkback,
+    compute_stale_approved_targets,
     curate_nfl_shelves,
     read_content_draft_review_states,
+    supersede_stale_approved_rows,
     write_content_draft_rows,
     write_shelf_signal_history_rows,
 )
@@ -1140,6 +1142,7 @@ def curate_and_write_drafts_endpoint():
 
     ssh_rows = _json_safe(result["shelf_signal_history_rows"])
     ssh_write_result = {"success": None, "status_code": None, "error": None}
+    supersede_result = {"ok": None, "error": None, "status_code": None, "requested": 0, "superseded": 0}
 
     forward_result = {"success": None, "status_code": None, "error": None}
     if preview_only:
@@ -1168,6 +1171,41 @@ def curate_and_write_drafts_endpoint():
                       f"shelf_signal_history_write_failed status={ssh_write_result['status_code']} "
                       f"error={truncate_for_log(ssh_write_result['error'], 300)!r}", flush=True)
 
+        # SUPERSEDE STALE APPROVED ROWS — closes the multi-run duplication
+        # gap (see compute_stale_approved_targets' own docstring for the
+        # full real-data incident). Deliberately scoped to EXACTLY the
+        # force:true, full-write path:
+        #   - `force` — a normal (non-forced) run is already refused by
+        #     the 409 pre-flight above whenever any approved row exists,
+        #     so it's the only path that can ever reach a week with
+        #     approved rows still in place.
+        #   - `forward_result["success"]` — only supersede old rows once
+        #     this run's own new rows are confirmed written; superseding
+        #     first and having the new write fail would leave a shelf
+        #     with FEWER rows than before, not a fix.
+        #   - no player_ids_to_write / max_rows_to_write — those scope
+        #     rows_to_write down to a deliberate test subset;
+        #     compute_stale_approved_targets' own caller contract
+        #     requires the FULL curated set, or a genuinely-surviving
+        #     player simply left out of a scoped test write would be
+        #     wrongly marked stale.
+        if force and forward_result["success"] and not player_ids_to_write and not isinstance(max_rows_to_write, int):
+            preflight_for_supersede = read_content_draft_review_states(season, week, secret)
+            if not preflight_for_supersede["ok"]:
+                print(f"[curate-and-write-drafts] season={season} week={week} "
+                      f"supersede_preflight_read_failed error={preflight_for_supersede['error']!r}", flush=True)
+            else:
+                stale_targets = compute_stale_approved_targets(rows_to_write, preflight_for_supersede["rows"])
+                supersede_result = supersede_stale_approved_rows(stale_targets, season, week, secret)
+                if not supersede_result["ok"]:
+                    print(f"[curate-and-write-drafts] season={season} week={week} "
+                          f"supersede_write_failed status={supersede_result['status_code']} "
+                          f"error={truncate_for_log(supersede_result['error'], 300)!r}", flush=True)
+                elif supersede_result["requested"]:
+                    print(f"[curate-and-write-drafts] season={season} week={week} "
+                          f"superseded {supersede_result['superseded']}/{supersede_result['requested']} "
+                          f"stale approved rows", flush=True)
+
     print(
         f"[curate-and-write-drafts] season={season} week={week} "
         f"rows_curated={len(all_rows)} rows_without_content={rows_without_content} "
@@ -1175,7 +1213,9 @@ def curate_and_write_drafts_endpoint():
         f"tasty_six_curated={sum(1 for r in all_rows if r['is_tasty_six'])} "
         f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
         f"forward_error={truncate_for_log(forward_result['error'], 500)!r} "
-        f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r}",
+        f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r} "
+        f"superseded={supersede_result['superseded']}/{supersede_result['requested']} "
+        f"supersede_ok={supersede_result['ok']}",
         flush=True,
     )
 
@@ -1203,6 +1243,12 @@ def curate_and_write_drafts_endpoint():
         "lovable_status_code": forward_result["status_code"],
         "forward_error": forward_result["error"],
         "forward_response_body": forward_result.get("response_body"),
+        # None (not False) when supersession never even ran this request —
+        # a normal (non-forced) run, or a forced run scoped down by
+        # player_ids_to_write/max_rows_to_write — vs. a real attempt that
+        # ran and either succeeded or failed. See the "SUPERSEDE STALE
+        # APPROVED ROWS" block above for exactly which conditions gate it.
+        "supersede_stale_approved": supersede_result,
     }), (502 if forward_result["success"] is False else 200)
 
 

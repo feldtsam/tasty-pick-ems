@@ -197,8 +197,9 @@ if __name__ == "__main__":
         ))
 
     # ============================================================
-    # Max-6-per-shelf cap (build step 3) — never exceeded, and a capped
-    # player keeps their real qualifying_shelves tag data (not dropped).
+    # Per-shelf cap (build step 3, CONFIG["max_per_shelf"]) — never
+    # exceeded, and a capped player keeps their real qualifying_shelves
+    # tag data (not dropped).
     # ============================================================
     kept = capped[~capped["capped"]]
     per_shelf_kept_counts = kept.groupby("home_shelf").size()
@@ -215,7 +216,7 @@ if __name__ == "__main__":
             isinstance(a_capped_row["qualifying_shelves"], list),
         ))
     else:
-        print("(skipped the capped-player tag check — no real shelf exceeded 6 candidates this run)")
+        print(f"(skipped the capped-player tag check — no real shelf exceeded {CONFIG['max_per_shelf']} candidates this run)")
 
     # ============================================================
     # Tasty Six (build step 5) — approved threshold, sparse is fine,

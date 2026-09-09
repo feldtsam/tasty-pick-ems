@@ -1,9 +1,9 @@
 """
 NFL Shelf Curation & Tasty Six selection — assigns exactly one HOME
 shelf per ATTD-eligible player across all seven shelves (shelves.py's
-own per-shelf pools), applies the max-6-per-shelf cap (secondary
-qualifications become tags, not duplicate placements), and selects
-Tasty Six.
+own per-shelf pools), applies the per-shelf cap (CONFIG["max_per_shelf"]
+— secondary qualifications become tags, not duplicate placements), and
+selects Tasty Six.
 
 THREE APPROVED PROPOSALS THIS BUILDS AGAINST (confirmed before any code
 was written, see the conversation this was designed and approved in):
@@ -210,7 +210,16 @@ CONFIG = {
     # one shelf's own attd_odds_floor, even though the value is
     # identical today.
     "attd_odds_floor": 300,
-    "max_per_shelf": 6,
+    # Soft ceiling, not a target count — a backstop against an unbounded
+    # shelf if eligibility/matching logic ever breaks, not a number a
+    # shelf is expected to reach. A shelf with 3 real qualifying players
+    # shows 3; a shelf with 20+ shows 20 and the rest are tagged
+    # capped=True (see apply_shelf_cap), same "tag, don't duplicate"
+    # treatment as before, just at a much less binding threshold. Raised
+    # from the original 6 once real data showed 6 was actively cutting
+    # off genuinely-qualifying players on the three ATTD odds-band
+    # shelves, not just capping overflow.
+    "max_per_shelf": 20,
     # Proposal 2, approved, PROVISIONAL — needs real-data validation
     # once the season is live. NOT enforced yet — see module docstring.
     "sticky_margin": 20.0,
@@ -545,7 +554,7 @@ def select_tasty_six(capped_assignments: pd.DataFrame, config: dict = CONFIG) ->
     qualifying candidate) — never manufactured, sparse is fine.
     Approved threshold (Proposal 3): tpe_score >= tasty_six_tpe_
     threshold AND evidence_quality >= tasty_six_evidence_threshold.
-    Only considers players who survived the max-6 cap (capped=False) —
+    Only considers players who survived the per-shelf cap (capped=False) —
     a player bumped off their home shelf's own display list this week
     has no case being made for them there.
 
@@ -1246,7 +1255,7 @@ def curate_nfl_shelves(
     """
     The full pipeline, steps 1-7: eligibility -> home-shelf assignment
     (real stickiness applied when prior_assignments is provided — see
-    assign_home_shelves/_compute_sticky_assignment) -> max-6 cap ->
+    assign_home_shelves/_compute_sticky_assignment) -> per-shelf cap ->
     Tasty Six -> content_drafts row shaping (real content included —
     see shape_content_draft_rows). Does NOT write anywhere — see
     write_content_draft_rows/write_shelf_signal_history_rows for that.
@@ -1365,6 +1374,114 @@ def read_content_draft_review_states(season: int, week: int, secret: str, read_u
         reviewed_count = sum(1 for r in rows if r.get("review_status") != "pending_review")
     return {"ok": True, "error": None, "status_code": result["status_code"],
             "reviewed_count": reviewed_count, "rows": rows}
+
+
+DEFAULT_NFL_CONTENT_DRAFTS_SUPERSEDE_URL = "https://tastypickems.com/api/public/nfl-content-drafts-supersede-write"
+
+
+def compute_stale_approved_targets(rows_to_write: list, existing_rows: list) -> list:
+    """
+    Multi-run duplication fix (see 20260909010000_add_superseded_review_
+    status.sql for the full real-data incident this closes): a forced
+    re-run (force:true — the only path that can reach a week with
+    existing approved rows at all, see the 409 pre-flight guard above)
+    can legitimately select a different top-N for a shelf than a prior
+    run did. Different players means a different natural key
+    (player_id, event_id, shelf, writer_type), so write_content_draft_
+    rows()'s own upsert never touches the prior run's now-stale approved
+    rows — confirmed live: attd_500_699/attd_700_plus each carrying two
+    full sets of rank-1-through-6 approved rows from two separate runs.
+
+    Pure function, no I/O: `rows_to_write` is THIS run's own shaped
+    output (shape_content_draft_rows(), post-cap — the same list about
+    to be passed to write_content_draft_rows), `existing_rows` is
+    read_content_draft_review_states()'s own rows for the SAME
+    (season, week). Returns the natural-key targets — {player_id,
+    event_id, shelf, writer_type} — for existing 'approved' rows whose
+    player is no longer among this run's own surviving picks on that
+    SAME shelf, for the caller to pass to supersede_stale_approved_rows.
+
+    Scoped to writer_type == "shelf_card" only — Tasty Six
+    (select_tasty_six) is a completely separate selection mechanism from
+    the max_per_shelf cap this closes a gap in; a Tasty Six row's
+    presence or absence in rows_to_write says nothing about whether a
+    player still qualifies for their regular shelf placement.
+
+    CALLER CONTRACT, not enforced here: rows_to_write must be the FULL,
+    unscoped curated set for this to be correct — under player_ids_to_
+    write / max_rows_to_write (the endpoint's partial-write test knobs),
+    a player who genuinely still survives this run's cap but simply
+    wasn't included in a deliberately-scoped test write would incorrectly
+    look stale. The endpoint only calls this when neither scoping knob
+    is set (see curate_and_write_drafts_endpoint).
+    """
+    surviving_by_shelf: dict[str, set[str]] = {}
+    for r in rows_to_write:
+        if r.get("writer_type") != "shelf_card":
+            continue
+        surviving_by_shelf.setdefault(r["shelf"], set()).add(str(r["player_id"]))
+
+    targets = []
+    for row in existing_rows:
+        if row.get("writer_type") != "shelf_card":
+            continue
+        if row.get("review_status") != "approved":
+            continue
+        shelf = row.get("shelf")
+        if str(row.get("player_id")) not in surviving_by_shelf.get(shelf, set()):
+            targets.append({
+                "player_id": row["player_id"],
+                "event_id": row["event_id"],
+                "shelf": shelf,
+                "writer_type": row["writer_type"],
+            })
+    return targets
+
+
+def supersede_stale_approved_rows(targets: list, season: int, week: int, secret: str, write_url: str = None) -> dict:
+    """
+    One signed POST (body {"season", "week", "targets": [...]}) to
+    nfl-content-drafts-supersede-write — flips existing 'approved' rows
+    to 'superseded' for exactly the natural-key targets given (see that
+    route's own docstring for why this is a dedicated narrow route
+    rather than reusing write_content_draft_rows' full-content upsert).
+
+    Empty targets is a valid, common no-op (most runs supersede
+    nothing — supersession only ever has something to do on a force:true
+    re-run of a week that already has approved rows) — skips the network
+    call entirely rather than sending an empty batch.
+
+    Returns {"ok": bool, "error": str|None, "status_code": int|None,
+    "requested": int, "superseded": int}. A route-level failure (network,
+    non-2xx, bad JSON) is reported here, not raised — the caller treats
+    this the same as the existing shelf_signal_history write: logged,
+    not fatal to the overall curate-and-write response.
+    """
+    if not targets:
+        return {"ok": True, "error": None, "status_code": None, "requested": 0, "superseded": 0}
+
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = write_url or resolve_url_env(
+        "LOVABLE_NFL_CONTENT_DRAFTS_SUPERSEDE_URL", DEFAULT_NFL_CONTENT_DRAFTS_SUPERSEDE_URL,
+    )
+    result = forward_to_lovable({"season": season, "week": week, "targets": targets}, secret, url)
+    if not result["success"]:
+        return {"ok": False, "error": result["error"], "status_code": result["status_code"],
+                "requested": len(targets), "superseded": 0}
+    try:
+        body = json.loads(result["response_body"])
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": False, "error": f"non-JSON response body: {result['response_body']!r}",
+                "status_code": result["status_code"], "requested": len(targets), "superseded": 0}
+    if not body.get("ok"):
+        return {"ok": False, "error": body.get("error", "unknown error"),
+                "status_code": result["status_code"], "requested": len(targets), "superseded": 0}
+    return {"ok": True, "error": None, "status_code": result["status_code"],
+            "requested": body.get("requested", len(targets)), "superseded": body.get("superseded", 0)}
 
 
 # ---------------------------------------------------------------------------

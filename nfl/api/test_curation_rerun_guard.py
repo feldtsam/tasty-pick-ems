@@ -16,6 +16,16 @@ trigger, including the force_review_reset exception) is verified
 separately by supabase/tests/nfl_content_drafts_review_guard.test.sql
 against a real Postgres — it can't be exercised from Python.
 
+ALSO tests the multi-run-duplication fix built on top of this same
+force:true path (real live incident, confirmed via the published RPC:
+attd_500_699/attd_700_plus each carrying two full sets of rank-1-
+through-6 approved rows from two separate runs) -- compute_stale_
+approved_targets() in isolation (pure function), supersede_stale_
+approved_rows() in isolation (network-mocked, same pattern as read_
+content_draft_review_states() above), and the endpoint's own gating:
+supersession only ever runs on force:true + a successful new-row write
++ an UNSCOPED write (no player_ids_to_write/max_rows_to_write).
+
 Run: python3 nfl/api/test_curation_rerun_guard.py
 """
 import json
@@ -34,7 +44,11 @@ os.environ.setdefault("PIPELINE_INCOMING_SECRET", "test-incoming")
 os.environ.setdefault("NFL_PIPELINE_WEBHOOK_SECRET", "test-webhook")
 
 import api.index as idx
-from curate_home_shelves import read_content_draft_review_states
+from curate_home_shelves import (
+    compute_stale_approved_targets,
+    read_content_draft_review_states,
+    supersede_stale_approved_rows,
+)
 
 AUTH = {"X-Pipeline-Secret": "test-incoming"}
 
@@ -107,6 +121,95 @@ if __name__ == "__main__":
         lovable_forward.requests.post = orig_post
 
     # ------------------------------------------------------------------
+    # compute_stale_approved_targets() — pure function, no I/O
+    # ------------------------------------------------------------------
+    existing_rows = [
+        {"player_id": "survivor", "event_id": "e1", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "approved"},
+        {"player_id": "stale_a", "event_id": "e2", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "approved"},
+        {"player_id": "still_pending", "event_id": "e3", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "pending_review"},
+        {"player_id": "already_rejected", "event_id": "e4", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "rejected"},
+        {"player_id": "tasty_six_row", "event_id": "e5", "shelf": "attd_500_699", "writer_type": "tasty_six", "review_status": "approved"},
+        {"player_id": "other_shelf_stale", "event_id": "e6", "shelf": "attd_700_plus", "writer_type": "shelf_card", "review_status": "approved"},
+    ]
+    new_rows = [
+        {"player_id": "survivor", "shelf": "attd_500_699", "writer_type": "shelf_card"},
+        {"player_id": "new_player", "shelf": "attd_500_699", "writer_type": "shelf_card"},
+        # attd_700_plus has NO surviving rows this run at all.
+    ]
+    targets = compute_stale_approved_targets(new_rows, existing_rows)
+    target_ids = {t["player_id"] for t in targets}
+    results.append(check(
+        "compute_stale_approved_targets: a player still surviving this run's cap is NOT flagged stale",
+        "survivor" not in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: an approved player who no longer survives IS flagged stale",
+        "stale_a" in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: a still-pending_review row is never touched (not approved yet)",
+        "still_pending" not in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: an already-rejected row is left alone",
+        "already_rejected" not in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: a Tasty Six row is out of scope regardless of status",
+        "tasty_six_row" not in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: a shelf with ZERO survivors this run supersedes every prior approved row on it",
+        "other_shelf_stale" in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: exactly the 2 real stale rows, nothing extra",
+        len(targets) == 2 and target_ids == {"stale_a", "other_shelf_stale"},
+    ))
+    a_target = next(t for t in targets if t["player_id"] == "stale_a")
+    results.append(check(
+        "compute_stale_approved_targets: a target carries the real natural key (event_id/shelf/writer_type), not just player_id",
+        a_target == {"player_id": "stale_a", "event_id": "e2", "shelf": "attd_500_699", "writer_type": "shelf_card"},
+    ))
+
+    # ------------------------------------------------------------------
+    # supersede_stale_approved_rows() — network-mocked, same pattern as
+    # read_content_draft_review_states() above
+    # ------------------------------------------------------------------
+    results.append(check(
+        "supersede_stale_approved_rows: empty targets is a no-op, no network call made",
+        supersede_stale_approved_rows([], 2026, 5, "s", write_url="https://x.test/supersede") == {
+            "ok": True, "error": None, "status_code": None, "requested": 0, "superseded": 0,
+        },
+    ))
+
+    orig_post = lovable_forward.requests.post
+    try:
+        lovable_forward.requests.post = lambda url, **kw: _FakeResp(200, {"ok": True, "requested": 2, "superseded": 2, "results": []})
+        r = supersede_stale_approved_rows(
+            [{"player_id": "a", "event_id": "e", "shelf": "attd_500_699", "writer_type": "shelf_card"}],
+            2026, 5, "s", write_url="https://x.test/supersede",
+        )
+        results.append(check("supersede_stale_approved_rows: a real 200 -> ok=True, requested/superseded passed through",
+                             r == {"ok": True, "error": None, "status_code": 200, "requested": 2, "superseded": 2}))
+
+        lovable_forward.requests.post = lambda url, **kw: _FakeResp(500, {"ok": False, "error": "boom"})
+        r = supersede_stale_approved_rows(
+            [{"player_id": "a", "event_id": "e", "shelf": "attd_500_699", "writer_type": "shelf_card"}],
+            2026, 5, "s", write_url="https://x.test/supersede",
+        )
+        results.append(check("supersede_stale_approved_rows: a transport/route failure -> ok=False", r["ok"] is False))
+
+        lovable_forward.requests.post = lambda url, **kw: _FakeResp(200, "<html>not json</html>")
+        r = supersede_stale_approved_rows(
+            [{"player_id": "a", "event_id": "e", "shelf": "attd_500_699", "writer_type": "shelf_card"}],
+            2026, 5, "s", write_url="https://x.test/supersede",
+        )
+        results.append(check("supersede_stale_approved_rows: a non-JSON body -> ok=False", r["ok"] is False))
+    finally:
+        lovable_forward.requests.post = orig_post
+
+    # ------------------------------------------------------------------
     # endpoint pre-flight — curate_nfl_shelves / stub read / write all
     # monkeypatched; the point is purely the guard's control flow.
     # ------------------------------------------------------------------
@@ -135,6 +238,8 @@ if __name__ == "__main__":
     orig_write = idx.write_content_draft_rows
     orig_snap = idx.stub_week_snapshot
     orig_pre = idx.read_content_draft_review_states
+    orig_compute = idx.compute_stale_approved_targets
+    orig_supersede = idx.supersede_stale_approved_rows
     orig_sched = idx.nfl.import_schedules
     orig_pbp = idx.nfl.import_pbp_data
     idx.curate_nfl_shelves = fake_curate
@@ -237,11 +342,125 @@ if __name__ == "__main__":
             "endpoint: a normal (non-forced) write never sets force_review_reset on any row",
             r.status_code == 200 and len(written_rows) > 0 and all("force_review_reset" not in row for row in written_rows),
         ))
+
+        # ------------------------------------------------------------------
+        # 7. Supersede gating — the multi-run-duplication fix built on this
+        # same force:true path. A real properly-shaped curated row this
+        # time (shelf/writer_type present) — fake_curate above omits them,
+        # which is fine for force_review_reset's own checks but would make
+        # every supersede check here vacuously pass (compute_stale_
+        # approved_targets silently finds nothing without a real shelf).
+        # ------------------------------------------------------------------
+        def fake_curate_with_shelf(weekly, season, week, **kw):
+            calls["curate"] = calls.get("curate", 0) + 1
+            return {
+                "content_draft_rows": [{
+                    "player_id": "new_player", "shelf": "attd_500_699", "writer_type": "shelf_card",
+                    "title": "Test headline", "why_reasons": [], "is_tasty_six": False,
+                }],
+                "shelf_signal_history_rows": [],
+            }
+        idx.curate_nfl_shelves = fake_curate_with_shelf
+
+        supersede_calls = {}
+
+        def spy_supersede(targets, season, week, secret, write_url=None):
+            supersede_calls["n"] = supersede_calls.get("n", 0) + 1
+            supersede_calls["targets"] = targets
+            return {"ok": True, "error": None, "status_code": 200, "requested": len(targets), "superseded": len(targets)}
+        idx.supersede_stale_approved_rows = spy_supersede
+
+        # An existing approved row for a DIFFERENT player on the same
+        # shelf — "new_player" (this run's own survivor) is not it, so
+        # this should come back as exactly one real stale target.
+        stale_existing_rows = {
+            "ok": True, "reviewed_count": 1, "error": None, "status_code": 200,
+            "rows": [{"player_id": "old_player", "event_id": "e1", "shelf": "attd_500_699",
+                      "writer_type": "shelf_card", "review_status": "approved"}],
+        }
+
+        # 7a. force:true, real write success, unscoped -> supersede runs
+        # and is called with exactly the real stale target.
+        calls.clear()
+        supersede_calls.clear()
+        idx.read_content_draft_review_states = lambda s, w, secret: dict(stale_existing_rows)
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH, json={"season": 2026, "week": 5, "force": True})
+        body = r.get_json()
+        results.append(check(
+            "endpoint 7a: force:true unscoped run -> supersede_stale_approved_rows called once with the real stale target",
+            r.status_code == 200 and supersede_calls.get("n") == 1
+            and supersede_calls["targets"] == [{"player_id": "old_player", "event_id": "e1", "shelf": "attd_500_699", "writer_type": "shelf_card"}],
+        ))
+        results.append(check(
+            "endpoint 7a: response echoes the supersede result (requested/superseded)",
+            body["supersede_stale_approved"] == {"ok": True, "error": None, "status_code": 200, "requested": 1, "superseded": 1},
+        ))
+
+        # 7b. force:true but the new-row write itself FAILED -> supersede
+        # must NOT run (superseding first and having the write fail would
+        # leave the shelf with fewer rows than before, not a fix).
+        calls.clear()
+        supersede_calls.clear()
+        idx.write_content_draft_rows = lambda rows, secret, write_url=None: {"success": False, "status_code": 500, "error": "boom", "response_body": None}
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH, json={"season": 2026, "week": 5, "force": True})
+        results.append(check(
+            "endpoint 7b: force:true but the new-row write failed -> supersede never called",
+            "n" not in supersede_calls,
+        ))
+        idx.write_content_draft_rows = fake_write  # restore the success stub for the remaining cases
+
+        # 7c. force:true + player_ids_to_write set -> supersede never runs
+        # (compute_stale_approved_targets' own caller contract requires
+        # the FULL curated set; a scoped test write would wrongly look
+        # like every non-included player fell off the shelf).
+        calls.clear()
+        supersede_calls.clear()
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH,
+                        json={"season": 2026, "week": 5, "force": True, "player_ids_to_write": ["new_player"]})
+        results.append(check(
+            "endpoint 7c: force:true + player_ids_to_write -> supersede never called (scoped write)",
+            "n" not in supersede_calls,
+        ))
+
+        # 7d. force:true + max_rows_to_write set -> same reasoning as 7c.
+        calls.clear()
+        supersede_calls.clear()
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH,
+                        json={"season": 2026, "week": 5, "force": True, "max_rows_to_write": 1})
+        results.append(check(
+            "endpoint 7d: force:true + max_rows_to_write -> supersede never called (scoped write)",
+            "n" not in supersede_calls,
+        ))
+
+        # 7e. NOT force -> supersede never runs, even with 0 reviewed rows
+        # (so the normal path proceeds past the 409 guard at all).
+        calls.clear()
+        supersede_calls.clear()
+        idx.read_content_draft_review_states = lambda s, w, secret: {"ok": True, "reviewed_count": 0, "rows": [], "error": None, "status_code": 200}
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH, json={"season": 2026, "week": 5})
+        results.append(check(
+            "endpoint 7e: a normal (non-forced) run never calls supersede_stale_approved_rows",
+            r.status_code == 200 and "n" not in supersede_calls,
+        ))
+
+        # 7f. force:true + preview_only -> supersede never runs (nothing
+        # was actually written for anything to be superseded against).
+        calls.clear()
+        supersede_calls.clear()
+        idx.read_content_draft_review_states = lambda s, w, secret: dict(stale_existing_rows)
+        r = client.post("/api/curate-and-write-drafts", headers=AUTH, json={"season": 2026, "week": 5, "force": True, "preview_only": True})
+        results.append(check(
+            "endpoint 7f: force:true + preview_only -> supersede never called",
+            r.status_code == 200 and "n" not in supersede_calls,
+        ))
+
     finally:
         idx.curate_nfl_shelves = orig_curate
         idx.write_content_draft_rows = orig_write
         idx.stub_week_snapshot = orig_snap
         idx.read_content_draft_review_states = orig_pre
+        idx.compute_stale_approved_targets = orig_compute
+        idx.supersede_stale_approved_rows = orig_supersede
         idx.nfl.import_schedules = orig_sched
         idx.nfl.import_pbp_data = orig_pbp
 
