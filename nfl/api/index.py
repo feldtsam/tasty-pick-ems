@@ -384,6 +384,30 @@ def poll_market_value_endpoint():
         for r in rows:
             r.pop("book_odds", None)
 
+    # TEMP DIAGNOSTIC (NFL Odds by Sportsbook, Phase 1 -- remove once
+    # book_odds is confirmed flowing end to end). Surfaces all three
+    # candidate break points in the response itself so a single poll
+    # locates where book_odds is lost without needing Vercel log access:
+    #   _book_odds_gate       -- is NFL_PRICE_HISTORY_INCLUDE_BOOK_ODDS
+    #                            actually read as "on" by THIS deployment?
+    #   _combined_has_col     -- did the deployed snapshot_scoring_inputs
+    #                            even compute the column?
+    #   _sample_row_book_odds -- what a real matched row carries right
+    #                            before it's forwarded to Lovable.
+    _diag_sample = next(
+        (r for r in rows if r.get("player_id") and isinstance(r.get("book_odds"), list) and r["book_odds"]),
+        next((r for r in rows if r.get("player_id")), None),
+    )
+    book_odds_diag = {
+        "_book_odds_gate": _INCLUDE_BOOK_ODDS_IN_WRITE,
+        "_book_odds_env_raw_len": len(os.environ.get("NFL_PRICE_HISTORY_INCLUDE_BOOK_ODDS", "")),
+        "_combined_has_col": "book_odds" in combined.columns,
+        "_rows_with_populated_book_odds": sum(1 for r in rows if isinstance(r.get("book_odds"), list) and r["book_odds"]),
+        "_sample_row_player": _diag_sample.get("player_name_raw") if _diag_sample else None,
+        "_sample_row_keys_has_book_odds": ("book_odds" in _diag_sample) if _diag_sample else None,
+        "_sample_row_book_odds": _diag_sample.get("book_odds") if _diag_sample else None,
+    }
+
     secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
     if not secret:
         return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
@@ -437,6 +461,9 @@ def poll_market_value_endpoint():
         "forwarded": forward_result["success"],
         "lovable_status_code": forward_result["status_code"],
         "forward_error": forward_result["error"],
+        # TEMP DIAGNOSTIC -- see the block above where book_odds_diag is built.
+        "forward_response_body": forward_result.get("response_body"),
+        **book_odds_diag,
     }), (502 if forward_result["success"] is False else 200)
 
 
