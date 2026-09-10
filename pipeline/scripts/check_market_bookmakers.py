@@ -1,32 +1,56 @@
 """
 Ad hoc, run-by-hand tool: checks which bookmakers The Odds API is actually
-returning for a given market on today's live MLB slate, right now. Built to
-answer the same question scripts/debug_duplicate_bookmaker.py's sweep
-answered once (do DraftKings/FanDuel/BetMGM show up for batter_home_runs
-today?), but as something cheap and trivial to re-run by hand over several
-days rather than a one-off investigation script.
+returning for a given market on today's live slate, right now, for any
+sport The Odds API covers. Built to answer the same question scripts/
+debug_duplicate_bookmaker.py's sweep answered once for MLB (do DraftKings/
+FanDuel/BetMGM show up for batter_home_runs today?), but as something
+cheap and trivial to re-run by hand over several days rather than a
+one-off investigation script.
 
 NOT wired into Make.com, Vercel, or any scheduler -- deliberately manual.
 Run it whenever you're at your computer:
 
     python pipeline/scripts/check_market_bookmakers.py
     python pipeline/scripts/check_market_bookmakers.py --market h2h
+    python pipeline/scripts/check_market_bookmakers.py --market player_anytime_td --sport americanfootball_nfl
 
 Each run:
   - Pulls today's live events (UTC calendar date -- see NOTE below), capped
     at EVENTS_TO_CHECK to keep API usage cheap enough to run several times
     a day without denting a real budget.
   - Requests regions=us,us2,us_ex (the same widest-region set the original
-    investigation used) for the given --market.
+    investigation used) for the given --market, against the given --sport.
   - Prints a one-line-per-bookmaker summary, dated.
   - Appends one row to bookmaker_coverage_log.csv (created on first run) --
-    never overwritten, so results accumulate across every run.
+    never overwritten, so results accumulate across every run, every sport,
+    every market, in the same file (see LOG_HEADER: sport and market are
+    both real columns, so later rows stay comparable against earlier ones
+    regardless of which sport/market a given run checked).
+
+--sport defaults to "baseball_mlb" -- the original MLB investigation's own
+behavior is unchanged when this flag is omitted, on purpose, not just as a
+side effect of adding the flag. Pass any other Odds API sport key (see
+https://the-odds-api.com/sports-odds-data/sports-apis.html) --
+americanfootball_nfl confirmed working directly (see the market-key
+verification note below).
+
+MARKET KEY VERIFICATION (NFL anytime touchdown scorer, confirmed live, not
+assumed): "player_anytime_td" is the real, current Odds API key. Verified
+by requesting a broad candidate set (player_anytime_td, player_1st_td,
+player_last_td, player_tds_over) against one real live NFL event and
+confirming all four came back with real market data, not silently dropped
+-- the same "don't trust a name, hit the real endpoint" discipline
+debug_duplicate_bookmaker.py's own investigation already established for
+this repo, applied here before ever passing --market to this script.
 
 NOTE ON "TODAY": bucketed by commence_time's UTC calendar date, not local
 time. The Odds API returns commence_time in UTC, and a late West Coast
-game can land on the next UTC date relative to "today" in US local time --
-a known, accepted simplification for a quick diagnostic tool, not a bug.
-Re-run the next day to catch a slate that crossed midnight UTC.
+game (or, for a weekly sport like NFL, a slate that simply doesn't have
+any games on today's specific date) can land on the next UTC date, or on
+no date at all -- a known, accepted simplification for a quick diagnostic
+tool, not a bug. Zero events today is reported plainly, not an error; for
+a weekly sport, re-run on an actual game day rather than expecting this
+tool to reach across the whole week on its own.
 """
 import argparse
 import csv
@@ -37,9 +61,10 @@ from pathlib import Path
 
 import requests
 
-ODDS_EVENTS_URL = "https://api.the-odds-api.com/v4/sports/baseball_mlb/events/"
-ODDS_EVENT_ODDS_URL = "https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds"
+ODDS_EVENTS_URL_TMPL = "https://api.the-odds-api.com/v4/sports/{sport}/events/"
+ODDS_EVENT_ODDS_URL_TMPL = "https://api.the-odds-api.com/v4/sports/{sport}/events/{event_id}/odds"
 REGIONS = "us,us2,us_ex"
+DEFAULT_SPORT = "baseball_mlb"
 
 # Cap on how many of today's events to actually pull odds for -- one
 # events-list call is free-ish, but each event's own odds call costs a
@@ -54,7 +79,7 @@ EVENTS_TO_CHECK = 5
 TRACKED_BOOKMAKERS = ["draftkings", "fanduel", "betmgm", "caesars", "betrivers"]
 
 LOG_PATH = Path(__file__).resolve().parent / "bookmaker_coverage_log.csv"
-LOG_HEADER = ["date_utc", "time_utc", "market", "events_checked"] + TRACKED_BOOKMAKERS + ["other_bookmakers_seen"]
+LOG_HEADER = ["date_utc", "time_utc", "sport", "market", "events_checked"] + TRACKED_BOOKMAKERS + ["other_bookmakers_seen"]
 
 
 def _load_env_key() -> str:
@@ -73,10 +98,11 @@ def _load_env_key() -> str:
     raise SystemExit(1)
 
 
-def todays_events(api_key: str) -> list[dict]:
-    """Every live/upcoming event, filtered to today's UTC calendar date,
-    capped at EVENTS_TO_CHECK -- see module docstring for both caveats."""
-    resp = requests.get(ODDS_EVENTS_URL, params={"apiKey": api_key}, timeout=15)
+def todays_events(api_key: str, sport: str) -> list[dict]:
+    """Every live/upcoming event for `sport`, filtered to today's UTC
+    calendar date, capped at EVENTS_TO_CHECK -- see module docstring for
+    both caveats."""
+    resp = requests.get(ODDS_EVENTS_URL_TMPL.format(sport=sport), params={"apiKey": api_key}, timeout=15)
     resp.raise_for_status()
     events = resp.json()
 
@@ -88,13 +114,13 @@ def todays_events(api_key: str) -> list[dict]:
     return todays[:EVENTS_TO_CHECK]
 
 
-def bookmakers_for_market(api_key: str, event_id: str, market: str) -> set[str]:
+def bookmakers_for_market(api_key: str, event_id: str, market: str, sport: str) -> set[str]:
     """Every bookmaker key that has ANY entry for `market` on this one
     event, regardless of the specific outcome/point/line -- a coverage
     check, not an odds check, so this stays correct for any market key,
     not just batter_home_runs' own point==0.5/Over shape."""
     resp = requests.get(
-        ODDS_EVENT_ODDS_URL.format(event_id=event_id),
+        ODDS_EVENT_ODDS_URL_TMPL.format(sport=sport, event_id=event_id),
         params={"apiKey": api_key, "regions": REGIONS, "markets": market, "oddsFormat": "american"},
         timeout=15,
     )
@@ -121,22 +147,23 @@ def append_log_row(row: dict) -> None:
         writer.writerow(row)
 
 
-def main(market: str) -> None:
+def main(market: str, sport: str) -> None:
     api_key = _load_env_key()
     now = datetime.now(timezone.utc)
 
-    events = todays_events(api_key)
-    print(f"{now.date()} {now.strftime('%H:%M UTC')} — market={market!r} — "
+    events = todays_events(api_key, sport)
+    print(f"{now.date()} {now.strftime('%H:%M UTC')} — sport={sport!r} market={market!r} — "
           f"{len(events)} of today's events checked (regions={REGIONS})\n")
 
     if not events:
-        print("No live MLB events found for today's UTC date right now — nothing to check.")
-        print("(Not necessarily a problem: could just be before today's events are posted yet.)")
+        print(f"No live {sport!r} events found for today's UTC date right now — nothing to check.")
+        print("(Not necessarily a problem: could just be before today's events are posted yet, "
+              "or -- for a weekly sport like NFL -- today simply isn't a game day this week.)")
         events_seen_all: set[str] = set()
     else:
         events_seen_all = set()
         for event in events:
-            seen = bookmakers_for_market(api_key, event["id"], market)
+            seen = bookmakers_for_market(api_key, event["id"], market, sport)
             events_seen_all |= seen
             label = f"{event.get('away_team')} @ {event.get('home_team')}"
             print(f"  {label}: {sorted(seen) if seen else '(none)'}")
@@ -145,6 +172,7 @@ def main(market: str) -> None:
     row = {
         "date_utc": str(now.date()),
         "time_utc": now.strftime("%H:%M:%S"),
+        "sport": sport,
         "market": market,
         "events_checked": len(events),
     }
@@ -168,5 +196,10 @@ def main(market: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--market", default="batter_home_runs", help="The Odds API market key to check (default: batter_home_runs)")
+    parser.add_argument(
+        "--sport", default=DEFAULT_SPORT,
+        help=f"The Odds API sport key to check (default: {DEFAULT_SPORT!r} -- the original MLB "
+             "investigation's own behavior, unchanged when this flag is omitted)",
+    )
     args = parser.parse_args()
-    main(args.market)
+    main(args.market, args.sport)
