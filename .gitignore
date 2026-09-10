@@ -28,3 +28,9 @@ venv/
 *.swp
 *.swo
 .vercel
+
+# ── Local ad hoc diagnostic output ───────────────────────────
+# check_market_bookmakers.py's own accumulating log -- runtime output
+# from a manual, by-hand tool, not source; would otherwise show up as
+# a dirty git status after every single hand-run.
+pipeline/scripts/bookmaker_coverage_log.csv
