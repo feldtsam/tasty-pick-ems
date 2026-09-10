@@ -115,6 +115,12 @@ from stub_store import shape_stub_rows, stub_week_snapshot, write_stub_rows
 
 app = Flask(__name__)
 
+# NFL Odds by Sportsbook, Phase 1 -- unset/false by default, same real
+# write-time gate MLB's own SCORED_PICKS_INCLUDE_BOOK_ODDS uses (pipeline/
+# api/scored_picks.py). See poll_market_value_endpoint's own use of this
+# right where it's checked for the full reasoning.
+_INCLUDE_BOOK_ODDS_IN_WRITE = os.environ.get("NFL_PRICE_HISTORY_INCLUDE_BOOK_ODDS", "").strip().lower() in ("1", "true", "yes")
+
 # Fallback only — the real value should come from the
 # LOVABLE_NFL_PRICE_HISTORY_WRITE_URL Vercel env var so a future URL
 # change is a config update, not a code change + redeploy. NOT a real
@@ -361,6 +367,22 @@ def poll_market_value_endpoint():
     # place even on an object-dtype frame and break json.dumps deep
     # inside forward_to_lovable's serialize_payload.
     rows = json.loads(combined.to_json(orient="records")) if len(combined) else []
+
+    # NFL Odds by Sportsbook, Phase 1 -- same real write-time gate MLB's
+    # own book_odds already uses (SCORED_PICKS_INCLUDE_BOOK_ODDS,
+    # pipeline/api/scored_picks.py), same reasoning: book_odds is
+    # computed either way (cheap, pure, already tested in market_value.
+    # py), but only actually sent in the real write payload once this is
+    # explicitly turned on -- flip it once the real nfl_price_history.
+    # book_odds column is confirmed applied through Lovable's own explicit
+    # apply step (not just pushed -- see this session's own repeated
+    # finding that a pushed migration and an applied one are NOT the same
+    # thing for this project). Key omitted outright when off, not set to
+    # null, so a gate-off run produces byte-identical output to before
+    # book_odds existed at all -- same convention MLB's own gate uses.
+    if not _INCLUDE_BOOK_ODDS_IN_WRITE:
+        for r in rows:
+            r.pop("book_odds", None)
 
     secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
     if not secret:

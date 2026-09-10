@@ -189,6 +189,30 @@ def snapshot_scoring_inputs(matched: pd.DataFrame) -> pd.DataFrame:
     ones (e.g. a heavily-favored goal-line back at -150 next to a
     long-shot teammate at +800) — comparing by implied probability
     handles the sign mix correctly by construction.
+
+    book_odds (NFL Odds by Sportsbook, Phase 1): the full real per-book
+    breakdown for this player, NOT collapsed away like every other
+    column here — [{"bookmaker": book_title, "odds": price}, ...],
+    bookmaker order preserved from `df`'s own row order (The Odds API's
+    own bookmaker order, same "carry the full real picture, don't
+    pre-opine on presentation order" convention MLB's own
+    _book_odds_for_match uses). `bookmaker` is the real Odds API DISPLAY
+    TITLE ("DraftKings"), never the raw machine key ("draftkings") —
+    `df["book_title"]` already carries this straight from parse_attd_
+    event's own `bm.get("title")` capture, no separate mapping table
+    needed (confirmed directly: the Odds API's own bookmaker objects
+    carry both `key` and `title`).
+
+    DEDUPED BY book_key, same real defensive posture as MLB's own
+    _book_odds_for_match (pipeline/api/scored_picks.py) — that function's
+    own docstring documents a real, confirmed-live production duplicate-
+    bookmaker incident this mirrors, not a hypothetical: keeps the
+    HIGHER odds value (better payout) when two rows share a book_key,
+    first-seen position kept for order. Applied here even though no
+    live NFL duplicate has been confirmed (unlike MLB's), since the
+    underlying risk — a caller merging two fetches, or a transient
+    stale+fresh quote from the API — is identical regardless of sport;
+    cheap insurance, not a fix for an observed NFL bug.
     """
     df = matched.copy()
     df["implied_probability"] = implied_probability(df["price"])
@@ -211,9 +235,43 @@ def snapshot_scoring_inputs(matched: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
 
+    book_odds = (
+        df.groupby(["event_id", "player_id"])
+        .apply(_book_odds_for_player, include_groups=False)
+        .rename("book_odds")
+        .reset_index()
+    )
+
     out = consensus.merge(best, on=["event_id", "player_id"], how="left")
+    out = out.merge(book_odds, on=["event_id", "player_id"], how="left")
     out["consensus_price_american"] = _probability_to_american(out["consensus_implied_probability"]).astype(int)
     return out
+
+
+def _book_odds_for_player(rows: pd.DataFrame) -> list:
+    """
+    One player's real per-book rows (one groupby.apply call per (event_id,
+    player_id) group, from snapshot_scoring_inputs above) -> the real
+    book_odds shape: [{"bookmaker": book_title, "odds": price}, ...].
+    Mirrors MLB's own _book_odds_for_match (pipeline/api/scored_picks.py)
+    exactly: deduped by book_key (keep the higher odds value when a
+    duplicate bookmaker entry exists for the same player), first-seen
+    position kept — a deduped bookmaker doesn't jump to a new position
+    just because its winning row came from a later duplicate.
+    """
+    best_by_key: dict = {}
+    order: list = []
+    for _, r in rows.iterrows():
+        key = r["book_key"]
+        if key not in best_by_key:
+            order.append(key)
+            best_by_key[key] = r
+        elif r["price"] > best_by_key[key]["price"]:
+            best_by_key[key] = r
+    return [
+        {"bookmaker": best_by_key[k]["book_title"], "odds": int(best_by_key[k]["price"])}
+        for k in order
+    ]
 
 
 # --- Price-history storage: DESIGN ONLY. Nothing in this module writes
@@ -261,6 +319,7 @@ PRICE_HISTORY_COLUMNS = [
     "best_book",
     "consensus_implied_probability",
     "consensus_price_american",
+    "book_odds",  # NFL Odds by Sportsbook, Phase 1 -- see snapshot_scoring_inputs's own docstring
 ]
 
 
@@ -316,7 +375,7 @@ def new_price_history_rows(
     unmatched_out = unmatched.astype(object).copy()
     unmatched_out["matched"] = False
     for col in ("player_id", "team", "position_group", "n_books", "best_price", "best_book",
-                "consensus_implied_probability", "consensus_price_american"):
+                "consensus_implied_probability", "consensus_price_american", "book_odds"):
         unmatched_out[col] = None
 
     # Both frames are cast to object dtype first — with unmatched rows
@@ -585,6 +644,14 @@ CURATION_MARKET_VALUE_COLUMNS = [
     "n_books", "best_price", "best_book",
     "consensus_implied_probability", "consensus_price_american",
     "market_value_score", "market_value_completeness",
+    # NFL Odds by Sportsbook, Phase 1 -- CONFIRMED SECOND CHOKEPOINT, not
+    # just PRICE_HISTORY_COLUMNS: latest_price_history_full_per_player
+    # (which DOES carry book_odds once PRICE_HISTORY_COLUMNS includes it)
+    # feeds into market_value_snapshot_for_curation below, which then
+    # narrows to exactly this list before returning -- book_odds would be
+    # silently discarded a second time here without this line, even with
+    # the read-side column already fixed.
+    "book_odds",
 ]
 
 _MV_MERGE_KEY = ["player_id", "season", "week"]

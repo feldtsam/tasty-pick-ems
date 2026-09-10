@@ -1145,6 +1145,23 @@ def shape_content_draft_rows(
             # signal_convergence directly above (scoring.score_signal_breach) --
             # None (not False) when full_row is missing, same reasoning.
             "signal_breach": full_row.get("signal_breach") if full_row is not None else None,
+            # NFL Odds by Sportsbook, Phase 1 -- straight through from
+            # market_value.py's snapshot_scoring_inputs (threaded here via
+            # CURATION_MARKET_VALUE_COLUMNS -> merge_market_value_and_
+            # rescore -> weekly -> weekly_lookup -> full_row, the SAME
+            # already-computed-upstream pattern signal_convergence/
+            # signal_breach use directly above). isinstance check, not a
+            # None check: a player with no live odds at all gets NaN
+            # (float) here after the left merge, same as every other
+            # merged column's own missing-value shape -- isinstance
+            # correctly treats that as "no real book_odds" without a
+            # pd.isna() call on a value that might genuinely be a list
+            # (ambiguous/erroring on a real list, not just a style choice).
+            "book_odds": (
+                full_row.get("book_odds")
+                if full_row is not None and isinstance(full_row.get("book_odds"), list)
+                else None
+            ),
             # NFL Phase D, Part 1 -- straight through from archetype_result
             # above (resolve_archetype()'s own output, untouched here).
             "archetype": archetype_result["archetype"],
@@ -1292,6 +1309,18 @@ def shape_around_the_league_draft_rows(
                 "review_status": "pending_review",
                 "signal_convergence": card.get("signal_convergence"),
                 "signal_breach": card.get("signal_breach"),
+                # NFL Odds by Sportsbook, Phase 1 -- from full_row (weekly_
+                # lookup, above), same source and same isinstance-not-None
+                # shape shape_content_draft_rows' own regular rows use --
+                # NOT from `card`, since build_around_the_league's own
+                # _finalize_cards never computed book_odds (it's threaded
+                # through weekly/CURATION_MARKET_VALUE_COLUMNS, not
+                # anything shelves.py's own card-building touches).
+                "book_odds": (
+                    full_row.get("book_odds")
+                    if full_row is not None and isinstance(full_row.get("book_odds"), list)
+                    else None
+                ),
             })
     return rows
 

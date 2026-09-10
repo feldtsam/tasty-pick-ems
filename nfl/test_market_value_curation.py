@@ -57,6 +57,13 @@ def _mv_snapshot_for(weekly, covered_player_ids):
             "consensus_implied_probability": 0.30 + 0.03 * i,
             "consensus_price_american": 300 + 40 * i,
             "n_books": 3, "best_price": 320 + 40 * i, "best_book": "TestBook",
+            # NFL Odds by Sportsbook, Phase 1 -- CURATION_MARKET_VALUE_COLUMNS
+            # now includes book_odds (see its own comment for why this is a
+            # real second chokepoint, not just PRICE_HISTORY_COLUMNS), so a
+            # synthetic row missing this key would KeyError at the final
+            # column-select below -- real regression this caught directly,
+            # not a hypothetical.
+            "book_odds": [{"bookmaker": "TestBook", "odds": 320 + 40 * i}],
         })
     scored = score_market_value(pd.DataFrame(rows), CONFIG)
     key = ["player_id", "season", "week"]
