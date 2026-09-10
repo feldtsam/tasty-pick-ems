@@ -119,8 +119,8 @@ from redzone import add_kickoff_utc
 from shelves import CONFIG as SHELVES_CONFIG
 from shelves import (
     ODDS_BANDS, add_red_zone_trend_windows, add_td_opportunity_history_lookup,
-    add_whole_game_target_share_trend, eligible_pool, odds_band_eligible, odds_band_story,
-    position_story, red_zone_story, section_title_for_shelf, td_opportunity_trend_for_row,
+    add_whole_game_target_share_trend, build_around_the_league, eligible_pool, odds_band_eligible,
+    odds_band_story, position_story, red_zone_story, section_title_for_shelf, td_opportunity_trend_for_row,
 )
 from story_archetype import resolve_archetype
 
@@ -1302,12 +1302,35 @@ def curate_nfl_shelves(
     history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None,
 ) -> dict:
     """
-    The full pipeline, steps 1-7: eligibility -> home-shelf assignment
-    (real stickiness applied when prior_assignments is provided — see
+    The full pipeline: eligibility -> home-shelf assignment (real
+    stickiness applied when prior_assignments is provided — see
     assign_home_shelves/_compute_sticky_assignment) -> per-shelf cap ->
     Tasty Six -> content_drafts row shaping (real content included —
-    see shape_content_draft_rows). Does NOT write anywhere — see
-    write_content_draft_rows/write_shelf_signal_history_rows for that.
+    see shape_content_draft_rows), PLUS Around the League (division
+    re-slice), run in parallel off the SAME raw `weekly` this function
+    itself received — not chained off capped/tasty_six at all. Does NOT
+    write anywhere — see write_content_draft_rows/write_shelf_signal_
+    history_rows for that.
+
+    AROUND THE LEAGUE, CONFIRMED-BEFORE-WIRING (previously built and
+    tested — test_shelves.py exercises build_around_the_league directly
+    — but never actually called from here, the exact same shape of gap
+    the archetype resolver had before it was wired in): build_around_
+    the_league(weekly, config, history_weekly) needs the SAME eligible-
+    pool input assign_home_shelves starts from, confirmed directly
+    against its own body (_build_around_the_league_division calls
+    odds_band_eligible(weekly, 300, None) on this same `weekly`) — never
+    apply_shelf_cap's per-player-one-home-shelf output, since Around the
+    League is explicitly non-exclusive (the same player is expected to
+    appear here AND on a primary shelf). It also takes shelves_config
+    (shelves.py's own CONFIG, config["shelf_size"]=6), NOT this
+    function's own `config` (curate_home_shelves.py's CONFIG,
+    config["max_per_shelf"]=20) — passing the wrong one would KeyError,
+    since curate_home_shelves.py's CONFIG has no "shelf_size" key. That
+    mismatch is also the real reason max_per_shelf's 20-card ceiling and
+    select_tasty_six never apply to Around the League automatically:
+    it's a structurally separate config and a separate call, not a flag
+    to opt out of the primary-shelf pipeline's own limits.
 
     `schedules`/`anthropic_api_key`/`history_weekly`/`pbp` thread
     straight through to shape_content_draft_rows — see its own
@@ -1315,21 +1338,34 @@ def curate_nfl_shelves(
     content; td_opportunity_trend; WR/TE Trends' target_share/target_
     share_trend role_signal candidates) and what happens when any is
     omitted (honest None/length-1/ineligible, not a guess or a skipped
-    row).
+    row). `schedules`/`history_weekly` also thread through to the Around
+    the League calls below, same honest-degradation shape (kickoff_utc/
+    td_opportunity_trend stay None/[] without them, never a guess).
 
     `prior_assignments`: the real, walked-back prior-week stickiness
     state (see build_prior_state_with_walkback) — omit it (the default)
     for the exact prior, non-sticky behavior (every player treated as
-    first appearance).
+    first appearance). Around the League has no stickiness concept of
+    its own — it's a fresh re-slice every run, same as every other
+    build_around_the_league call site (test_shelves.py included).
 
     Returns {"home_assignments": DataFrame, "capped": DataFrame,
     "tasty_six": dict, "content_draft_rows": list,
-    "shelf_signal_history_rows": list} — the last one is this week's
-    real updated stickiness state, shaped and ready for write_shelf_
-    signal_history_rows, covering every real home-assigned player (not
-    just the ones with a written content-drafts row — next week's
-    comparison needs every real qualifying signal, not just what made
-    the cap).
+    "shelf_signal_history_rows": list, "around_the_league_rows": list}
+    — "shelf_signal_history_rows" is this week's real updated stickiness
+    state, shaped and ready for write_shelf_signal_history_rows,
+    covering every real home-assigned player (not just the ones with a
+    written content-drafts row — next week's comparison needs every
+    real qualifying signal, not just what made the cap).
+    "around_the_league_rows" is a FLAT list (like content_draft_rows,
+    not keyed by division) — a caller writing both to nfl_content_drafts
+    concatenates the two lists; this function does not write anywhere
+    itself, so it doesn't do that concatenation (see nfl/api/index.py's
+    curate-and-write-drafts endpoint, the one real caller, for that step
+    — CONFIRMED it was a fixed `result["content_draft_rows"]` key access
+    there, not a generic "write everything returned" loop, so adding
+    this key alone would have silently written nothing without also
+    updating that call site).
     """
     home_assignments = assign_home_shelves(weekly, config, shelves_config, prior_assignments=prior_assignments)
     capped = apply_shelf_cap(home_assignments, config)
@@ -1339,12 +1375,17 @@ def curate_nfl_shelves(
         history_weekly=history_weekly, pbp=pbp, config=config,
     )
     shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
+    division_cards = build_around_the_league(weekly, config=shelves_config, history_weekly=history_weekly)
+    around_the_league_rows = shape_around_the_league_draft_rows(
+        division_cards, season, week, weekly=weekly, schedules=schedules,
+    )
     return {
         "home_assignments": home_assignments,
         "capped": capped,
         "tasty_six": tasty_six,
         "content_draft_rows": content_draft_rows,
         "shelf_signal_history_rows": shelf_signal_history_rows,
+        "around_the_league_rows": around_the_league_rows,
     }
 
 

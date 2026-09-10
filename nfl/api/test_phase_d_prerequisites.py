@@ -91,6 +91,7 @@ if __name__ == "__main__":
                 {"player_id": "00-B", "season": season, "week": week, "home_shelf": "attd_300_499",
                  "qualifying_signals": {"attd_300_499": 40.0}, "pending_shelf": None, "pending_run_count": 0},
             ],
+            "around_the_league_rows": [],
         }
 
     def fake_prior(season, week, player_ids, secret):

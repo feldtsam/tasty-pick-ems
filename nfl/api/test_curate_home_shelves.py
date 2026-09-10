@@ -133,10 +133,50 @@ if __name__ == "__main__":
     capped = result["capped"]
     tasty_six = result["tasty_six"]
     draft_rows = result["content_draft_rows"]
+    atl_rows = result["around_the_league_rows"]
 
     print("Home shelf distribution:")
     print(home["home_shelf"].value_counts().to_string())
     print()
+
+    # ============================================================
+    # Around the League wiring — confirms the real fix for the confirmed
+    # gap (build_around_the_league/shape_around_the_league_draft_rows
+    # were both built and tested standalone but never called from here).
+    # ============================================================
+    results.append(check(
+        "curate_nfl_shelves() returns a real around_the_league_rows key",
+        "around_the_league_rows" in result,
+    ))
+    results.append(check(
+        f"real 2025 Week 10 data produces real Around the League rows ({len(atl_rows)} rows), not zero",
+        len(atl_rows) > 0,
+    ))
+    if atl_rows:
+        r0 = atl_rows[0]
+        results.append(check(
+            "an Around the League row is shaped to the real nfl_content_drafts write schema "
+            "(shelf = the division name, writer_type='shelf_card', is_tasty_six=False)",
+            r0["shelf"] in {"AFC East", "AFC North", "AFC South", "AFC West",
+                             "NFC East", "NFC North", "NFC South", "NFC West"}
+            and r0["writer_type"] == "shelf_card" and r0["is_tasty_six"] is False,
+        ))
+        from collections import Counter
+        by_division = Counter(r["shelf"] for r in atl_rows)
+        results.append(check(
+            f"no division exceeds shelf_size=6 (real per-division counts: {dict(by_division)}), "
+            "confirming max_per_shelf's 20-card ceiling does NOT leak into Around the League",
+            all(n <= 6 for n in by_division.values()),
+        ))
+        primary_shelf_player_ids = {r["player_id"] for r in draft_rows}
+        atl_player_ids = {r["player_id"] for r in atl_rows}
+        overlap = primary_shelf_player_ids & atl_player_ids
+        results.append(check(
+            f"at least one real player appears on BOTH a primary shelf's content_draft_rows AND "
+            f"around_the_league_rows ({len(overlap)} real overlap players) — confirms Around the "
+            "League is genuinely non-exclusive, not deduped against home-shelf assignment",
+            len(overlap) > 0,
+        ))
 
     # ============================================================
     # Eligibility filter (build step 1) — every home-assigned player is

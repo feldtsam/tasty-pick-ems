@@ -1096,7 +1096,17 @@ def curate_and_write_drafts_endpoint():
         print(f"[curate-and-write-drafts] season={season} week={week} status=error error={e!r}", flush=True)
         return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
 
-    all_rows = _json_safe(result["content_draft_rows"])
+    # CONFIRMED FIX: this used to be result["content_draft_rows"] alone --
+    # a fixed-key access, not a generic "write whatever curate_nfl_shelves
+    # returns" loop. Adding around_the_league_rows to that function's
+    # return dict alone did nothing until this concatenation was also
+    # added -- the exact same shape of gap as build_around_the_league()
+    # itself never being called in the first place. Around the League
+    # rows are already shaped to the identical nfl_content_drafts write
+    # schema (see shape_around_the_league_draft_rows's own docstring), so
+    # a plain concatenation is correct, not a special case needing its
+    # own handling below.
+    all_rows = _json_safe(result["content_draft_rows"] + result["around_the_league_rows"])
     preview_only = bool(data.get("preview_only"))
 
     # Real schema requires title (non-empty string), why_reasons must be
@@ -1206,11 +1216,23 @@ def curate_and_write_drafts_endpoint():
                           f"superseded {supersede_result['superseded']}/{supersede_result['requested']} "
                           f"stale approved rows", flush=True)
 
+    # Around the League per-division counts -- computed from the FULL
+    # curated set (result["around_the_league_rows"]), not the content-
+    # ready/rows_to_write subsets, so a real run's response reports what
+    # build_around_the_league() actually found per division regardless
+    # of preview_only/scoping, matching how rows_curated/rows_without_
+    # content above report against the full set too.
+    around_the_league_counts: dict[str, int] = {}
+    for r in result["around_the_league_rows"]:
+        around_the_league_counts[r["shelf"]] = around_the_league_counts.get(r["shelf"], 0) + 1
+
     print(
         f"[curate-and-write-drafts] season={season} week={week} "
         f"rows_curated={len(all_rows)} rows_without_content={rows_without_content} "
         f"rows_written={len(rows_to_write)} "
         f"tasty_six_curated={sum(1 for r in all_rows if r['is_tasty_six'])} "
+        f"around_the_league_curated={len(result['around_the_league_rows'])} "
+        f"around_the_league_by_division={around_the_league_counts} "
         f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
         f"forward_error={truncate_for_log(forward_result['error'], 500)!r} "
         f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r} "
@@ -1237,6 +1259,10 @@ def curate_and_write_drafts_endpoint():
         "rows_curated": len(all_rows),
         "rows_without_content": rows_without_content,
         "curated_rows": all_rows if preview_only else None,
+        "around_the_league": {
+            "rows_curated": len(result["around_the_league_rows"]),
+            "by_division": around_the_league_counts,
+        },
         "rows_written": len(rows_to_write),
         "written_rows": rows_to_write,
         "forwarded": forward_result["success"],

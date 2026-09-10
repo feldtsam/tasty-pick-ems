@@ -227,6 +227,11 @@ if __name__ == "__main__":
                 "why_reasons": [], "is_tasty_six": False,
             }],
             "shelf_signal_history_rows": [],
+            # Around the League wiring: real curate_nfl_shelves now always
+            # returns this key too (see its own docstring) -- empty here
+            # since this fake is about the rerun-guard's own control flow,
+            # not Around the League content itself.
+            "around_the_league_rows": [],
         }
 
     def fake_write(rows, secret, write_url=None):
@@ -359,6 +364,7 @@ if __name__ == "__main__":
                     "title": "Test headline", "why_reasons": [], "is_tasty_six": False,
                 }],
                 "shelf_signal_history_rows": [],
+                "around_the_league_rows": [],
             }
         idx.curate_nfl_shelves = fake_curate_with_shelf
 
