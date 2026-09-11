@@ -112,6 +112,7 @@ from market_value import (
 from build_stub_week import build_stub_week
 from reconcile_week import reconcile_week, week_is_complete
 from stub_store import shape_stub_rows, stub_week_snapshot, write_stub_rows
+from nfl_grade_bookmarks_live import grade_nfl_bookmarks_for_pending
 
 app = Flask(__name__)
 
@@ -130,6 +131,17 @@ _INCLUDE_BOOK_ODDS_IN_WRITE = os.environ.get("NFL_PRICE_HISTORY_INCLUDE_BOOK_ODD
 # convention; will 502 harmlessly (not silently succeed) until the real
 # env var is set to the real route.
 DEFAULT_NFL_PRICE_HISTORY_WRITE_URL = "https://tastypickems.lovable.app/api/public/nfl-price-history-write"
+
+# NFL Grading, System (a) -- both real routes already exist and are live
+# (bookmarks-needing-grading-read.ts / bookmark-results-write.ts), MLB's
+# own pipeline already calls them. NOT NFL-specific Lovable endpoints --
+# same shared routes, this deployment just also calls them now (with
+# {"sport": "NFL"} on the read side; the write side is sport-agnostic
+# already). Defaults match MLB pipeline's own DEFAULT_* constants for
+# these two routes exactly (pipeline/api/index.py) -- same production
+# Lovable app, same real paths.
+DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/api/public/bookmarks-needing-grading-read"
+DEFAULT_BOOKMARK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/bookmark-results-write"
 
 
 def check_pipeline_secret():
@@ -1703,5 +1715,108 @@ def generate_and_write_intelligence_health_check():
                  "Fetches each family's real input, builds real stories, reads real prior lifecycle state back "
                  "(Phase 2), sanity-checks + applies lifecycle + shapes rows (Phase 2/existing), and writes "
                  "everything in one combined signed call to nfl_intelligence_stories / nfl_intelligence_story_history.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/grade-nfl-bookmarks-live", methods=["POST"])
+def grade_nfl_bookmarks_live_endpoint():
+    """
+    NFL Grading, System (a) -- the same-night pass, via ESPN's public
+    scoreboard/boxscore API (grading.py's grade_pick_espn()). Reads the
+    real ungraded NFL bookmarks from bookmarks-needing-grading-read.ts
+    (sport: "NFL"), grades each via nfl_bookmark_grading.py, and forwards
+    only real "won" results to bookmark-results-write.ts -- the exact
+    same write endpoint MLB's own /api/grade-bookmarks already calls,
+    confirmed sport-agnostic and unmodified for this.
+
+    ONLY EVER WRITES "won" -- never "lost"/"void". See
+    nfl_grade_bookmarks_live.py's own module docstring for why: the ESPN
+    player-identity join is name-matched (a real, confirmed fragility,
+    not a hypothetical one), so anything short of a confident match stays
+    "pending" here and is left for Thursday's nflverse correction pass
+    (grade-nfl-bookmarks-correction, id-matched, zero identity risk) to
+    resolve authoritatively. A missed same-night win just waits a few
+    days; it is never reported wrong.
+
+    POST body: {"season": int} -- required, picks which nflverse
+    schedules file (import_schedules()) resolves game_id -> ESPN event
+    id from. Same explicit-caller-supplied-season convention every other
+    endpoint in this file already uses (reconcile-week, build-stub-week,
+    etc.) -- no internal "current season" guessing.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(silent=True) or {}
+    season = data.get("season")
+    if season is None:
+        return jsonify({"error": "season is required, e.g. {\"season\": 2026}"}), 400
+    try:
+        season = int(season)
+    except (TypeError, ValueError):
+        return jsonify({"error": "season must be an integer"}), 400
+
+    secret = os.environ.get("PIPELINE_WEBHOOK_SECRET")
+    if not secret:
+        # Deliberately NOT NFL_PIPELINE_WEBHOOK_SECRET -- this endpoint
+        # signs calls to the SAME shared Lovable routes MLB's pipeline
+        # already calls (a DIFFERENT Vercel project), which check
+        # PIPELINE_WEBHOOK_SECRET on the Lovable side. Confirmed directly
+        # during this task's investigation that this Vercel project does
+        # NOT currently have this env var set (only NFL_PIPELINE_WEBHOOK_
+        # SECRET, used for this project's own outbound writes to NFL-
+        # specific Lovable routes) -- it needs to be added, holding the
+        # same secret value the MLB pipeline project's LOVABLE_WEBHOOK_
+        # SECRET already holds, before this endpoint can write anything.
+        return jsonify({"error": "PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+
+    read_url = resolve_url_env("LOVABLE_BOOKMARKS_NEEDING_GRADING_READ_URL", DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL)
+    write_url = resolve_url_env("LOVABLE_BOOKMARK_RESULTS_WRITE_URL", DEFAULT_BOOKMARK_RESULTS_WRITE_URL)
+
+    try:
+        result = grade_nfl_bookmarks_for_pending(secret, read_url, write_url, season)
+    except requests.exceptions.RequestException as e:
+        print(f"[grade-nfl-bookmarks-live] network_error={e}", flush=True)
+        return jsonify({"error": "Network error reaching ESPN or the read endpoint.", "detail": str(e)}), 502
+
+    if result["error"] is not None:
+        print(f"[grade-nfl-bookmarks-live] aborted error={result['error']}", flush=True)
+        return jsonify({"graded": False, "error": result["error"]}), 502
+
+    forward = result["forwarded"]
+    forward_success = forward["success"] if forward is not None else True
+
+    print(
+        f"[grade-nfl-bookmarks-live] season={season} "
+        f"picks_needing_grading={result['picks_needing_grading_count']} "
+        f"graded={result['graded_count']} still_pending={result['still_pending_count']} "
+        f"grading_errors={len(result['grading_errors'])} "
+        f"forward_success={forward['success'] if forward else None} "
+        f"forward_status={forward['status_code'] if forward else None}",
+        flush=True,
+    )
+
+    return jsonify({
+        "graded": True,
+        "season": season,
+        "picks_needing_grading_count": result["picks_needing_grading_count"],
+        "graded_count": result["graded_count"],
+        "still_pending_count": result["still_pending_count"],
+        "grading_errors": result["grading_errors"],
+        "forwarded": forward["success"] if forward else None,
+        "lovable_status_code": forward["status_code"] if forward else None,
+        "forward_error": forward["error"] if forward else None,
+    }), (502 if forward_success is False else 200)
+
+
+@app.route("/api/grade-nfl-bookmarks-live", methods=["GET"])
+def grade_nfl_bookmarks_live_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/grade-nfl-bookmarks-live with {\"season\": int} to grade every ungraded NFL "
+                 "bookmark whose game has started via ESPN's live box score, writing only confirmed wins. "
+                 "Never writes a loss or void -- see grade_nfl_bookmarks_correction for the authoritative pass.",
         "deployed_via": "github-auto-deploy",
     })
