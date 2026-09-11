@@ -36,7 +36,10 @@ list Make.com can consume directly, filtered to the "at least 1 HR" line
   access into that backend, by design) — confirm on the Lovable side if
   full assurance is needed.
 - Requires `LOVABLE_WEBHOOK_SECRET` to be set (Vercel env var, Production +
-  Preview, stored as Sensitive — write-only, not readable back).
+  Preview, stored as Sensitive — write-only, not readable back). This is
+  one of three env vars across three separate dashboards that must all
+  hold the identical secret value (Lovable, MLB pipeline, NFL pipeline) —
+  see `../SHARED_SECRETS.md` before rotating it.
 - Target URL comes from `LOVABLE_WEBHOOK_URL` (same env var setup as the
   secret), currently `https://tastypickems.lovable.app/api/public/pipeline-write`.
   This is env-var-driven specifically so a future Lovable URL change (it's
