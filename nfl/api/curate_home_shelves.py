@@ -1505,11 +1505,13 @@ def compute_stale_approved_targets(rows_to_write: list, existing_rows: list) -> 
     re-run (force:true — the only path that can reach a week with
     existing approved rows at all, see the 409 pre-flight guard above)
     can legitimately select a different top-N for a shelf than a prior
-    run did. Different players means a different natural key
-    (player_id, event_id, shelf, writer_type), so write_content_draft_
-    rows()'s own upsert never touches the prior run's now-stale approved
-    rows — confirmed live: attd_500_699/attd_700_plus each carrying two
-    full sets of rank-1-through-6 approved rows from two separate runs.
+    run did — OR a different single Tasty Six pick for a shelf (see
+    select_tasty_six). Either way, a different player means a different
+    natural key (player_id, event_id, shelf, writer_type), so
+    write_content_draft_rows()'s own upsert never touches the prior
+    run's now-stale approved row — confirmed live: attd_500_699/
+    attd_700_plus each carrying two full sets of rank-1-through-6
+    approved rows from two separate runs.
 
     Pure function, no I/O: `rows_to_write` is THIS run's own shaped
     output (shape_content_draft_rows(), post-cap — the same list about
@@ -1517,14 +1519,22 @@ def compute_stale_approved_targets(rows_to_write: list, existing_rows: list) -> 
     read_content_draft_review_states()'s own rows for the SAME
     (season, week). Returns the natural-key targets — {player_id,
     event_id, shelf, writer_type} — for existing 'approved' rows whose
-    player is no longer among this run's own surviving picks on that
-    SAME shelf, for the caller to pass to supersede_stale_approved_rows.
+    player is no longer among this run's own surviving picks for that
+    SAME (shelf, writer_type), for the caller to pass to
+    supersede_stale_approved_rows.
 
-    Scoped to writer_type == "shelf_card" only — Tasty Six
-    (select_tasty_six) is a completely separate selection mechanism from
-    the max_per_shelf cap this closes a gap in; a Tasty Six row's
-    presence or absence in rows_to_write says nothing about whether a
-    player still qualifies for their regular shelf placement.
+    COVERS BOTH writer_type == "shelf_card" AND "tasty_six", tracked as
+    two genuinely separate survivor sets per shelf (keyed by
+    (shelf, writer_type), never merged) — select_tasty_six is a
+    completely separate selection mechanism from the max_per_shelf cap,
+    so a Tasty Six row's presence or absence must never affect whether a
+    shelf_card row (or vice versa) looks stale. This used to be scoped to
+    shelf_card only (a real, confirmed gap: a stale 'approved' tasty_six
+    row from a prior run had no path to ever being superseded, even
+    after a later run picked a different player or none at all for that
+    shelf's Tasty Six slot) — fixed here by applying the exact same
+    per-(shelf, writer_type) logic to both, not by inventing a second
+    mechanism.
 
     CALLER CONTRACT, not enforced here: rows_to_write must be the FULL,
     unscoped curated set for this to be correct — under player_ids_to_
@@ -1534,25 +1544,31 @@ def compute_stale_approved_targets(rows_to_write: list, existing_rows: list) -> 
     look stale. The endpoint only calls this when neither scoping knob
     is set (see curate_and_write_drafts_endpoint).
     """
-    surviving_by_shelf: dict[str, set[str]] = {}
+    STALE_ELIGIBLE_WRITER_TYPES = ("shelf_card", "tasty_six")
+
+    surviving_by_shelf_writer: dict[tuple[str, str], set[str]] = {}
     for r in rows_to_write:
-        if r.get("writer_type") != "shelf_card":
+        writer_type = r.get("writer_type")
+        if writer_type not in STALE_ELIGIBLE_WRITER_TYPES:
             continue
-        surviving_by_shelf.setdefault(r["shelf"], set()).add(str(r["player_id"]))
+        key = (r["shelf"], writer_type)
+        surviving_by_shelf_writer.setdefault(key, set()).add(str(r["player_id"]))
 
     targets = []
     for row in existing_rows:
-        if row.get("writer_type") != "shelf_card":
+        writer_type = row.get("writer_type")
+        if writer_type not in STALE_ELIGIBLE_WRITER_TYPES:
             continue
         if row.get("review_status") != "approved":
             continue
         shelf = row.get("shelf")
-        if str(row.get("player_id")) not in surviving_by_shelf.get(shelf, set()):
+        key = (shelf, writer_type)
+        if str(row.get("player_id")) not in surviving_by_shelf_writer.get(key, set()):
             targets.append({
                 "player_id": row["player_id"],
                 "event_id": row["event_id"],
                 "shelf": shelf,
-                "writer_type": row["writer_type"],
+                "writer_type": writer_type,
             })
     return targets
 

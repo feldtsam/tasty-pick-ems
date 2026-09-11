@@ -122,28 +122,49 @@ if __name__ == "__main__":
 
     # ------------------------------------------------------------------
     # compute_stale_approved_targets() — pure function, no I/O
+    #
+    # Covers the Tasty Six supersession fix: a stale 'approved' tasty_six
+    # row used to have NO path to ever being superseded (out of scope
+    # entirely, regardless of status) -- now it gets the exact same
+    # per-(shelf, writer_type) survivor-set treatment shelf_card already
+    # had, tracked independently so neither writer_type's survivors can
+    # rescue the other's stale row on the SAME shelf.
     # ------------------------------------------------------------------
     existing_rows = [
         {"player_id": "survivor", "event_id": "e1", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "approved"},
         {"player_id": "stale_a", "event_id": "e2", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "approved"},
         {"player_id": "still_pending", "event_id": "e3", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "pending_review"},
         {"player_id": "already_rejected", "event_id": "e4", "shelf": "attd_500_699", "writer_type": "shelf_card", "review_status": "rejected"},
-        {"player_id": "tasty_six_row", "event_id": "e5", "shelf": "attd_500_699", "writer_type": "tasty_six", "review_status": "approved"},
-        {"player_id": "other_shelf_stale", "event_id": "e6", "shelf": "attd_700_plus", "writer_type": "shelf_card", "review_status": "approved"},
+        # Same player is STILL this shelf's Tasty Six pick this run -> survives.
+        {"player_id": "tasty_six_survivor", "event_id": "e5", "shelf": "attd_500_699", "writer_type": "tasty_six", "review_status": "approved"},
+        # A DIFFERENT player is attd_700_plus's Tasty Six pick this run -> stale (the real bug this fixes).
+        {"player_id": "tasty_six_stale", "event_id": "e6", "shelf": "attd_700_plus", "writer_type": "tasty_six", "review_status": "approved"},
+        # Same shelf's shelf_card row DOES survive -- proves the two
+        # writer_types' survivor sets are independent, not merged: a
+        # surviving shelf_card row on a shelf must never "rescue" a
+        # stale tasty_six row on that same shelf, or vice versa.
+        {"player_id": "shelf_card_on_700", "event_id": "e7", "shelf": "attd_700_plus", "writer_type": "shelf_card", "review_status": "approved"},
+        # A shelf with ZERO survivors of EITHER writer_type this run --
+        # both prior approved rows on it go stale.
+        {"player_id": "orphan_shelf_card", "event_id": "e8", "shelf": "wr_te_trends", "writer_type": "shelf_card", "review_status": "approved"},
+        {"player_id": "orphan_tasty_six", "event_id": "e9", "shelf": "wr_te_trends", "writer_type": "tasty_six", "review_status": "approved"},
     ]
     new_rows = [
         {"player_id": "survivor", "shelf": "attd_500_699", "writer_type": "shelf_card"},
         {"player_id": "new_player", "shelf": "attd_500_699", "writer_type": "shelf_card"},
-        # attd_700_plus has NO surviving rows this run at all.
+        {"player_id": "tasty_six_survivor", "shelf": "attd_500_699", "writer_type": "tasty_six"},
+        {"player_id": "shelf_card_on_700", "shelf": "attd_700_plus", "writer_type": "shelf_card"},
+        {"player_id": "new_tasty_six_pick", "shelf": "attd_700_plus", "writer_type": "tasty_six"},
+        # wr_te_trends has NO surviving rows this run at all.
     ]
     targets = compute_stale_approved_targets(new_rows, existing_rows)
     target_ids = {t["player_id"] for t in targets}
     results.append(check(
-        "compute_stale_approved_targets: a player still surviving this run's cap is NOT flagged stale",
+        "compute_stale_approved_targets: a shelf_card player still surviving this run's cap is NOT flagged stale",
         "survivor" not in target_ids,
     ))
     results.append(check(
-        "compute_stale_approved_targets: an approved player who no longer survives IS flagged stale",
+        "compute_stale_approved_targets: an approved shelf_card player who no longer survives IS flagged stale",
         "stale_a" in target_ids,
     ))
     results.append(check(
@@ -155,21 +176,36 @@ if __name__ == "__main__":
         "already_rejected" not in target_ids,
     ))
     results.append(check(
-        "compute_stale_approved_targets: a Tasty Six row is out of scope regardless of status",
-        "tasty_six_row" not in target_ids,
+        "compute_stale_approved_targets: a Tasty Six player STILL picked for their shelf this run is NOT flagged stale",
+        "tasty_six_survivor" not in target_ids,
     ))
     results.append(check(
-        "compute_stale_approved_targets: a shelf with ZERO survivors this run supersedes every prior approved row on it",
-        "other_shelf_stale" in target_ids,
+        "THE FIX: a stale approved Tasty Six row (a different player now holds that shelf's pick) IS flagged stale -- "
+        "previously out of scope entirely regardless of status",
+        "tasty_six_stale" in target_ids,
     ))
     results.append(check(
-        "compute_stale_approved_targets: exactly the 2 real stale rows, nothing extra",
-        len(targets) == 2 and target_ids == {"stale_a", "other_shelf_stale"},
+        "compute_stale_approved_targets: a surviving shelf_card row does NOT rescue a stale tasty_six row on the SAME shelf",
+        "shelf_card_on_700" not in target_ids and "tasty_six_stale" in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: a shelf with ZERO survivors this run supersedes every prior approved row on it, both writer_types",
+        "orphan_shelf_card" in target_ids and "orphan_tasty_six" in target_ids,
+    ))
+    results.append(check(
+        "compute_stale_approved_targets: exactly the 4 real stale rows, nothing extra",
+        len(targets) == 4
+        and target_ids == {"stale_a", "tasty_six_stale", "orphan_shelf_card", "orphan_tasty_six"},
     ))
     a_target = next(t for t in targets if t["player_id"] == "stale_a")
     results.append(check(
         "compute_stale_approved_targets: a target carries the real natural key (event_id/shelf/writer_type), not just player_id",
         a_target == {"player_id": "stale_a", "event_id": "e2", "shelf": "attd_500_699", "writer_type": "shelf_card"},
+    ))
+    ts_target = next(t for t in targets if t["player_id"] == "tasty_six_stale")
+    results.append(check(
+        "compute_stale_approved_targets: the Tasty Six target carries writer_type: tasty_six, not shelf_card",
+        ts_target == {"player_id": "tasty_six_stale", "event_id": "e6", "shelf": "attd_700_plus", "writer_type": "tasty_six"},
     ))
 
     # ------------------------------------------------------------------
