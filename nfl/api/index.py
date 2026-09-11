@@ -86,6 +86,7 @@ from flask import Flask, jsonify, request
 import nfl_data_py as nfl
 import numpy as np
 import pandas as pd
+import requests
 
 from curate_home_shelves import (
     build_prior_state_with_walkback,
