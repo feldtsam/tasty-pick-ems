@@ -113,6 +113,7 @@ from build_stub_week import build_stub_week
 from reconcile_week import reconcile_week, week_is_complete
 from stub_store import shape_stub_rows, stub_week_snapshot, write_stub_rows
 from nfl_grade_bookmarks_live import grade_nfl_bookmarks_for_pending
+from nfl_grade_bookmarks_correction import grade_nfl_bookmarks_for_correction
 
 app = Flask(__name__)
 
@@ -142,6 +143,13 @@ DEFAULT_NFL_PRICE_HISTORY_WRITE_URL = "https://tastypickems.lovable.app/api/publ
 # Lovable app, same real paths.
 DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/api/public/bookmarks-needing-grading-read"
 DEFAULT_BOOKMARK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/bookmark-results-write"
+
+# NFL Grading, Step 2 -- the Thursday nflverse correction pass' own read
+# route (bookmarks-needing-correction-read.ts, added this step -- see its
+# own module docstring for why it's a separate endpoint, not a branch on
+# bookmarks-needing-grading-read.ts). Write side reuses the same shared
+# bookmark-results-write.ts route/constant as the live pass above.
+DEFAULT_BOOKMARKS_NEEDING_CORRECTION_READ_URL = "https://tastypickems.lovable.app/api/public/bookmarks-needing-correction-read"
 
 
 def check_pipeline_secret():
@@ -1818,5 +1826,114 @@ def grade_nfl_bookmarks_live_health_check():
         "usage": "POST /api/grade-nfl-bookmarks-live with {\"season\": int} to grade every ungraded NFL "
                  "bookmark whose game has started via ESPN's live box score, writing only confirmed wins. "
                  "Never writes a loss or void -- see grade_nfl_bookmarks_correction for the authoritative pass.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/grade-nfl-bookmarks-correction", methods=["POST"])
+def grade_nfl_bookmarks_correction_endpoint():
+    """
+    NFL Grading, Step 2 -- the Thursday-morning pass, via nflverse's
+    authoritative, id-native play-by-play (grading.py's
+    grade_pick_nflverse()). Reads NFL bookmarks whose games recently
+    happened and are either still ungraded or ESPN-confirmed "win"
+    (bookmarks-needing-correction-read.ts), re-grades every one against
+    nflverse, and writes whatever changed -- see
+    nfl_grade_bookmarks_correction.py's own module docstring for the exact
+    old-result-vs-new-status table that decides what gets written and
+    when `correction: true` is set.
+
+    UNLIKE the live pass, this one can write all 4 real states (won/lost/
+    void), overturning a same-night ESPN "win" when nflverse disagrees --
+    that's the whole point of this pass existing. "pending" (nflverse
+    itself can't resolve the game, e.g. not final yet) is never written
+    either direction.
+
+    POST body: {"season": int} -- required, same explicit-caller-supplied-
+    season convention as grade-nfl-bookmarks-live. Also accepts an
+    optional {"lookback_days": int}, forwarded to the read endpoint --
+    omitted, it applies its own default (9 as of this build, flagged as
+    provisional pending confirmation before this is wired into Make.com).
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(silent=True) or {}
+    season = data.get("season")
+    if season is None:
+        return jsonify({"error": "season is required, e.g. {\"season\": 2026}"}), 400
+    try:
+        season = int(season)
+    except (TypeError, ValueError):
+        return jsonify({"error": "season must be an integer"}), 400
+
+    lookback_days = data.get("lookback_days")
+    if lookback_days is not None:
+        try:
+            lookback_days = int(lookback_days)
+        except (TypeError, ValueError):
+            return jsonify({"error": "lookback_days must be an integer"}), 400
+
+    secret = os.environ.get("PIPELINE_WEBHOOK_SECRET")
+    if not secret:
+        # Same real gap as grade-nfl-bookmarks-live -- see that route's own
+        # comment on this env var for the full explanation.
+        return jsonify({"error": "PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+
+    read_url = resolve_url_env(
+        "LOVABLE_BOOKMARKS_NEEDING_CORRECTION_READ_URL", DEFAULT_BOOKMARKS_NEEDING_CORRECTION_READ_URL
+    )
+    write_url = resolve_url_env("LOVABLE_BOOKMARK_RESULTS_WRITE_URL", DEFAULT_BOOKMARK_RESULTS_WRITE_URL)
+
+    try:
+        result = grade_nfl_bookmarks_for_correction(secret, read_url, write_url, season, lookback_days)
+    except requests.exceptions.RequestException as e:
+        print(f"[grade-nfl-bookmarks-correction] network_error={e}", flush=True)
+        return jsonify({"error": "Network error reaching nflverse or the read endpoint.", "detail": str(e)}), 502
+
+    if result["error"] is not None:
+        print(f"[grade-nfl-bookmarks-correction] aborted error={result['error']}", flush=True)
+        return jsonify({"graded": False, "error": result["error"]}), 502
+
+    forward = result["forwarded"]
+    forward_success = forward["success"] if forward is not None else True
+
+    print(
+        f"[grade-nfl-bookmarks-correction] season={season} lookback_days={lookback_days} "
+        f"picks_needing_correction={result['picks_needing_correction_count']} "
+        f"newly_graded={result['newly_graded_count']} corrected={result['corrected_count']} "
+        f"unchanged={result['unchanged_count']} still_pending={result['still_pending_count']} "
+        f"grading_errors={len(result['grading_errors'])} "
+        f"forward_success={forward['success'] if forward else None} "
+        f"forward_status={forward['status_code'] if forward else None}",
+        flush=True,
+    )
+
+    return jsonify({
+        "graded": True,
+        "season": season,
+        "lookback_days": lookback_days,
+        "picks_needing_correction_count": result["picks_needing_correction_count"],
+        "newly_graded_count": result["newly_graded_count"],
+        "corrected_count": result["corrected_count"],
+        "unchanged_count": result["unchanged_count"],
+        "still_pending_count": result["still_pending_count"],
+        "grading_errors": result["grading_errors"],
+        "forwarded": forward["success"] if forward else None,
+        "lovable_status_code": forward["status_code"] if forward else None,
+        "forward_error": forward["error"] if forward else None,
+    }), (502 if forward_success is False else 200)
+
+
+@app.route("/api/grade-nfl-bookmarks-correction", methods=["GET"])
+def grade_nfl_bookmarks_correction_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST /api/grade-nfl-bookmarks-correction with {\"season\": int, \"lookback_days\": int "
+                 "(optional)} to re-check NFL bookmarks against nflverse's authoritative play-by-play, "
+                 "writing won/lost/void as appropriate -- including overturning an ESPN-confirmed win when "
+                 "nflverse disagrees. See grade_nfl_bookmarks_for_correction's own docstring for the full "
+                 "old-result-vs-new-status decision table.",
         "deployed_via": "github-auto-deploy",
     })
