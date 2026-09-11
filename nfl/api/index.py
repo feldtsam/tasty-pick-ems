@@ -152,6 +152,15 @@ DEFAULT_BOOKMARK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/publi
 # bookmark-results-write.ts route/constant as the live pass above.
 DEFAULT_BOOKMARKS_NEEDING_CORRECTION_READ_URL = "https://tastypickems.lovable.app/api/public/bookmarks-needing-correction-read"
 
+# NFL Official Recap, System (b) -- the shelf-level read/write routes both
+# grading passes above ALSO call now (decision 4: "one shared grading
+# determination, two destinations, not two separate grading runs"). Same
+# tastypickems.lovable.app app, new routes added alongside the bookmark
+# ones this step.
+DEFAULT_NFL_SHELF_PICKS_NEEDING_GRADING_READ_URL = "https://tastypickems.lovable.app/api/public/nfl-shelf-picks-needing-grading-read"
+DEFAULT_NFL_SHELF_PICKS_NEEDING_CORRECTION_READ_URL = "https://tastypickems.lovable.app/api/public/nfl-shelf-picks-needing-correction-read"
+DEFAULT_NFL_OFFICIAL_PICK_RESULTS_WRITE_URL = "https://tastypickems.lovable.app/api/public/nfl-official-pick-results-write"
+
 
 def check_pipeline_secret():
     """
@@ -1739,6 +1748,14 @@ def grade_nfl_bookmarks_live_endpoint():
     same write endpoint MLB's own /api/grade-bookmarks already calls,
     confirmed sport-agnostic and unmodified for this.
 
+    EXTENDED for NFL Official Recap, System (b), decision 4: this same
+    pass ALSO reads approved nfl_content_drafts rows needing a shelf-
+    level grade (nfl-shelf-picks-needing-grading-read.ts) and forwards
+    their own "won" results to nfl-official-pick-results-write.ts -- one
+    shared grading determination (grade_nfl_picks_live dedupes the union
+    of both sources before ever calling ESPN), two destinations, never a
+    second same-night pass.
+
     ONLY EVER WRITES "won" -- never "lost"/"void". See
     nfl_grade_bookmarks_live.py's own module docstring for why: the ESPN
     player-identity join is name-matched (a real, confirmed fragility,
@@ -1779,13 +1796,23 @@ def grade_nfl_bookmarks_live_endpoint():
         # specific Lovable routes) -- it needs to be added, holding the
         # same secret value the MLB pipeline project's LOVABLE_WEBHOOK_
         # SECRET already holds, before this endpoint can write anything.
+        # Rotating this value? See ../../SHARED_SECRETS.md -- it's one of
+        # three env vars across three dashboards that must all match.
         return jsonify({"error": "PIPELINE_WEBHOOK_SECRET is not configured"}), 500
 
     read_url = resolve_url_env("LOVABLE_BOOKMARKS_NEEDING_GRADING_READ_URL", DEFAULT_BOOKMARKS_NEEDING_GRADING_READ_URL)
     write_url = resolve_url_env("LOVABLE_BOOKMARK_RESULTS_WRITE_URL", DEFAULT_BOOKMARK_RESULTS_WRITE_URL)
+    shelf_read_url = resolve_url_env(
+        "LOVABLE_NFL_SHELF_PICKS_NEEDING_GRADING_READ_URL", DEFAULT_NFL_SHELF_PICKS_NEEDING_GRADING_READ_URL
+    )
+    shelf_write_url = resolve_url_env(
+        "LOVABLE_NFL_OFFICIAL_PICK_RESULTS_WRITE_URL", DEFAULT_NFL_OFFICIAL_PICK_RESULTS_WRITE_URL
+    )
 
     try:
-        result = grade_nfl_bookmarks_for_pending(secret, read_url, write_url, season)
+        result = grade_nfl_bookmarks_for_pending(
+            secret, read_url, write_url, season, shelf_read_url=shelf_read_url, shelf_write_url=shelf_write_url
+        )
     except requests.exceptions.RequestException as e:
         print(f"[grade-nfl-bookmarks-live] network_error={e}", flush=True)
         return jsonify({"error": "Network error reaching ESPN or the read endpoint.", "detail": str(e)}), 502
@@ -1795,7 +1822,12 @@ def grade_nfl_bookmarks_live_endpoint():
         return jsonify({"graded": False, "error": result["error"]}), 502
 
     forward = result["forwarded"]
-    forward_success = forward["success"] if forward is not None else True
+    shelf_forward = result["shelf_forwarded"]
+    # Either destination failing is a real failure -- a shelf write error
+    # must not be masked by a successful bookmark write, and vice versa.
+    forward_success = (forward["success"] if forward is not None else True) and (
+        shelf_forward["success"] if shelf_forward is not None else True
+    )
 
     print(
         f"[grade-nfl-bookmarks-live] season={season} "
@@ -1803,7 +1835,11 @@ def grade_nfl_bookmarks_live_endpoint():
         f"graded={result['graded_count']} still_pending={result['still_pending_count']} "
         f"grading_errors={len(result['grading_errors'])} "
         f"forward_success={forward['success'] if forward else None} "
-        f"forward_status={forward['status_code'] if forward else None}",
+        f"forward_status={forward['status_code'] if forward else None} "
+        f"shelf_picks_needing_grading={result['shelf_picks_needing_grading_count']} "
+        f"shelf_graded={result['shelf_graded_count']} shelf_still_pending={result['shelf_still_pending_count']} "
+        f"shelf_forward_success={shelf_forward['success'] if shelf_forward else None} "
+        f"shelf_forward_status={shelf_forward['status_code'] if shelf_forward else None}",
         flush=True,
     )
 
@@ -1817,6 +1853,12 @@ def grade_nfl_bookmarks_live_endpoint():
         "forwarded": forward["success"] if forward else None,
         "lovable_status_code": forward["status_code"] if forward else None,
         "forward_error": forward["error"] if forward else None,
+        "shelf_picks_needing_grading_count": result["shelf_picks_needing_grading_count"],
+        "shelf_graded_count": result["shelf_graded_count"],
+        "shelf_still_pending_count": result["shelf_still_pending_count"],
+        "shelf_forwarded": shelf_forward["success"] if shelf_forward else None,
+        "shelf_lovable_status_code": shelf_forward["status_code"] if shelf_forward else None,
+        "shelf_forward_error": shelf_forward["error"] if shelf_forward else None,
     }), (502 if forward_success is False else 200)
 
 
@@ -1825,8 +1867,9 @@ def grade_nfl_bookmarks_live_health_check():
     return jsonify({
         "status": "ok",
         "usage": "POST /api/grade-nfl-bookmarks-live with {\"season\": int} to grade every ungraded NFL "
-                 "bookmark whose game has started via ESPN's live box score, writing only confirmed wins. "
-                 "Never writes a loss or void -- see grade_nfl_bookmarks_correction for the authoritative pass.",
+                 "bookmark AND every approved shelf pick awaiting an official grade, both via ESPN's live box "
+                 "score, writing only confirmed wins to bookmarks.result and nfl_official_pick_results. Never "
+                 "writes a loss or void -- see grade_nfl_bookmarks_correction for the authoritative pass.",
         "deployed_via": "github-auto-deploy",
     })
 
@@ -1855,6 +1898,15 @@ def grade_nfl_bookmarks_correction_endpoint():
     optional {"lookback_days": int}, forwarded to the read endpoint --
     omitted, it applies its own default (9 as of this build, flagged as
     provisional pending confirmation before this is wired into Make.com).
+
+    EXTENDED for NFL Official Recap, System (b), decision 4: this same
+    pass ALSO reads approved nfl_content_drafts rows needing a shelf-
+    level correction (nfl-shelf-picks-needing-correction-read.ts, same
+    lookback window) and applies the same old-vs-new decision table
+    independently to nfl_official_pick_results -- one shared grading
+    determination (grade_nfl_picks_correction dedupes the union of both
+    sources before ever calling nflverse), two destinations, each free
+    to write or not write on its own.
     """
     auth_error = check_pipeline_secret()
     if auth_error:
@@ -1886,9 +1938,18 @@ def grade_nfl_bookmarks_correction_endpoint():
         "LOVABLE_BOOKMARKS_NEEDING_CORRECTION_READ_URL", DEFAULT_BOOKMARKS_NEEDING_CORRECTION_READ_URL
     )
     write_url = resolve_url_env("LOVABLE_BOOKMARK_RESULTS_WRITE_URL", DEFAULT_BOOKMARK_RESULTS_WRITE_URL)
+    shelf_read_url = resolve_url_env(
+        "LOVABLE_NFL_SHELF_PICKS_NEEDING_CORRECTION_READ_URL", DEFAULT_NFL_SHELF_PICKS_NEEDING_CORRECTION_READ_URL
+    )
+    shelf_write_url = resolve_url_env(
+        "LOVABLE_NFL_OFFICIAL_PICK_RESULTS_WRITE_URL", DEFAULT_NFL_OFFICIAL_PICK_RESULTS_WRITE_URL
+    )
 
     try:
-        result = grade_nfl_bookmarks_for_correction(secret, read_url, write_url, season, lookback_days)
+        result = grade_nfl_bookmarks_for_correction(
+            secret, read_url, write_url, season, lookback_days,
+            shelf_read_url=shelf_read_url, shelf_write_url=shelf_write_url,
+        )
     except requests.exceptions.RequestException as e:
         print(f"[grade-nfl-bookmarks-correction] network_error={e}", flush=True)
         return jsonify({"error": "Network error reaching nflverse or the read endpoint.", "detail": str(e)}), 502
@@ -1898,7 +1959,10 @@ def grade_nfl_bookmarks_correction_endpoint():
         return jsonify({"graded": False, "error": result["error"]}), 502
 
     forward = result["forwarded"]
-    forward_success = forward["success"] if forward is not None else True
+    shelf_forward = result["shelf_forwarded"]
+    forward_success = (forward["success"] if forward is not None else True) and (
+        shelf_forward["success"] if shelf_forward is not None else True
+    )
 
     print(
         f"[grade-nfl-bookmarks-correction] season={season} lookback_days={lookback_days} "
@@ -1907,7 +1971,12 @@ def grade_nfl_bookmarks_correction_endpoint():
         f"unchanged={result['unchanged_count']} still_pending={result['still_pending_count']} "
         f"grading_errors={len(result['grading_errors'])} "
         f"forward_success={forward['success'] if forward else None} "
-        f"forward_status={forward['status_code'] if forward else None}",
+        f"forward_status={forward['status_code'] if forward else None} "
+        f"shelf_picks_needing_correction={result['shelf_picks_needing_correction_count']} "
+        f"shelf_newly_graded={result['shelf_newly_graded_count']} shelf_corrected={result['shelf_corrected_count']} "
+        f"shelf_unchanged={result['shelf_unchanged_count']} shelf_still_pending={result['shelf_still_pending_count']} "
+        f"shelf_forward_success={shelf_forward['success'] if shelf_forward else None} "
+        f"shelf_forward_status={shelf_forward['status_code'] if shelf_forward else None}",
         flush=True,
     )
 
@@ -1924,6 +1993,14 @@ def grade_nfl_bookmarks_correction_endpoint():
         "forwarded": forward["success"] if forward else None,
         "lovable_status_code": forward["status_code"] if forward else None,
         "forward_error": forward["error"] if forward else None,
+        "shelf_picks_needing_correction_count": result["shelf_picks_needing_correction_count"],
+        "shelf_newly_graded_count": result["shelf_newly_graded_count"],
+        "shelf_corrected_count": result["shelf_corrected_count"],
+        "shelf_unchanged_count": result["shelf_unchanged_count"],
+        "shelf_still_pending_count": result["shelf_still_pending_count"],
+        "shelf_forwarded": shelf_forward["success"] if shelf_forward else None,
+        "shelf_lovable_status_code": shelf_forward["status_code"] if shelf_forward else None,
+        "shelf_forward_error": shelf_forward["error"] if shelf_forward else None,
     }), (502 if forward_success is False else 200)
 
 
@@ -1932,9 +2009,10 @@ def grade_nfl_bookmarks_correction_health_check():
     return jsonify({
         "status": "ok",
         "usage": "POST /api/grade-nfl-bookmarks-correction with {\"season\": int, \"lookback_days\": int "
-                 "(optional)} to re-check NFL bookmarks against nflverse's authoritative play-by-play, "
-                 "writing won/lost/void as appropriate -- including overturning an ESPN-confirmed win when "
-                 "nflverse disagrees. See grade_nfl_bookmarks_for_correction's own docstring for the full "
-                 "old-result-vs-new-status decision table.",
+                 "(optional)} to re-check NFL bookmarks AND approved shelf picks against nflverse's "
+                 "authoritative play-by-play, writing won/lost/void to bookmarks.result and "
+                 "nfl_official_pick_results as appropriate -- including overturning an ESPN-confirmed win when "
+                 "nflverse disagrees, independently per destination. See "
+                 "grade_nfl_bookmarks_for_correction's own docstring for the full old-vs-new decision table.",
         "deployed_via": "github-auto-deploy",
     })

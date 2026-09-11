@@ -11,7 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 
-from nfl_bookmark_grading import grade_nfl_bookmarks_correction, grade_nfl_bookmarks_live
+from nfl_bookmark_grading import (
+    grade_nfl_bookmarks_correction,
+    grade_nfl_bookmarks_live,
+    grade_nfl_picks_correction,
+    grade_nfl_picks_live,
+)
 
 
 def check(label, condition):
@@ -119,6 +124,78 @@ if __name__ == "__main__":
     results.append(check(
         "correction grading: unlike live grading, this source can produce real lost AND void verdicts",
         statuses == {"a": "lost", "b": "void"},
+    ))
+
+    # ------------------------------------------------------------------
+    # grade_nfl_picks_live -- System (b) decision 4, "one shared grading
+    # determination, two destinations"
+    # ------------------------------------------------------------------
+    bookmark_picks = [
+        {"id": "bk-1", "player_key": "p1", "event_key": "e1", "player": "Player One", "team": "NE"},
+    ]
+    shelf_picks = [
+        # SAME real pick as bk-1 -- must not trigger a second ESPN call.
+        {"player_id": "p1", "event_id": "e1", "shelf": "RB Trends", "player_name": "Player One", "team": "NE"},
+        # A DIFFERENT real pick, no matching bookmark at all -- must still get graded.
+        {"player_id": "p2", "event_id": "e2", "shelf": "WR Trends", "player_name": "Player Two", "team": "SEA"},
+    ]
+    with patch(
+        "nfl_bookmark_grading.grade_pick_espn",
+        return_value={"status": "won", "reason": "r", "touchdowns": 1, "espn_event_id": 1},
+    ) as mock_grade:
+        result = grade_nfl_picks_live(bookmark_picks, shelf_picks, pd.DataFrame())
+
+    results.append(check(
+        "combined live grading: the shared (p1, e1) pick triggers exactly ONE real ESPN call, not two",
+        mock_grade.call_count == 2,  # (p1,e1) once + (p2,e2) once == 2 real unique pairs
+    ))
+    results.append(check(
+        "combined live grading: the bookmark destination gets its one result",
+        [r["id"] for r in result["bookmark_results"]] == ["bk-1"] and result["bookmark_results"][0]["status"] == "won",
+    ))
+    results.append(check(
+        "combined live grading: BOTH shelf picks get a result, including the one with no matching bookmark",
+        {(r["player_id"], r["event_id"]) for r in result["shelf_results"]} == {("p1", "e1"), ("p2", "e2")},
+    ))
+    results.append(check(
+        "combined live grading: the shared real pick's bookmark and shelf results agree (same outcome)",
+        result["bookmark_results"][0]["status"]
+        == next(r for r in result["shelf_results"] if r["player_id"] == "p1")["status"],
+    ))
+
+    # An empty shelf_picks list must behave exactly like the bookmark-only function.
+    with patch(
+        "nfl_bookmark_grading.grade_pick_espn",
+        return_value={"status": "won", "reason": "r", "touchdowns": 1, "espn_event_id": 1},
+    ):
+        result_no_shelf = grade_nfl_picks_live(bookmark_picks, [], pd.DataFrame())
+    results.append(check(
+        "combined live grading: empty shelf_picks produces an empty shelf_results, bookmark side unaffected",
+        result_no_shelf["shelf_results"] == [] and len(result_no_shelf["bookmark_results"]) == 1,
+    ))
+
+    # ------------------------------------------------------------------
+    # grade_nfl_picks_correction -- same combination, nflverse source
+    # ------------------------------------------------------------------
+    bookmark_picks_c = [{"id": "bk-1", "player_key": "p1", "event_key": "e1"}]
+    shelf_picks_c = [
+        {"player_id": "p1", "event_id": "e1", "shelf": "RB Trends"},
+        {"player_id": "p2", "event_id": "e2", "shelf": "WR Trends"},
+    ]
+    with patch(
+        "nfl_bookmark_grading.grade_pick_nflverse",
+        return_value={"status": "lost", "reason": "r", "touchdowns": 0, "game_final": True},
+    ) as mock_grade_nv:
+        result = grade_nfl_picks_correction(
+            bookmark_picks_c, shelf_picks_c, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
+        )
+    results.append(check(
+        "combined correction grading: exactly 2 real unique (player_id, event_id) pairs graded",
+        mock_grade_nv.call_count == 2,
+    ))
+    results.append(check(
+        "combined correction grading: both destinations are populated correctly",
+        len(result["bookmark_results"]) == 1 and len(result["shelf_results"]) == 2,
     ))
 
     print()
