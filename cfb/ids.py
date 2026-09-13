@@ -187,6 +187,43 @@ def team_conference_map(season: int) -> dict[int, str]:
     return _TEAM_CONFERENCE_CACHE[season]
 
 
+_TEAM_COLOR_CACHE: dict[int, dict[int, tuple[str, str]]] = {}
+
+
+def team_color_map(season: int) -> dict[int, tuple[str, str]]:
+    """
+    { stable integer team id -> (color, alternateColor) } hex pair for
+    every FBS program in `season`, from the SAME CFBD `/teams/fbs?year=`
+    call fbs_team_ids/team_conference_map use (season-cached separately,
+    since not every caller of one needs the others -- yes, this means up
+    to 3 real calls to the identical endpoint/params when a run needs all
+    three; a shared raw-response cache would remove that, but isn't built
+    here to avoid touching the two existing functions' own call pattern
+    in this pass).
+
+    Both hex fields confirmed 100% populated (non-null, valid #rrggbb)
+    across all 136 real FBS teams in a live 2025 pull, and confirmed
+    stable across 130 schools common to 2019 and 2025 (zero real color
+    differences) -- see that investigation's own report; not re-verified
+    here. Feeds cfb.story_archetype.get_cfb_tint_profile(). A team
+    missing either hex value (should not happen for a real FBS program)
+    is simply absent from this map -- callers treat a missing entry as
+    "no team color available," never fabricate one.
+    """
+    season = int(season)
+    if season not in _TEAM_COLOR_CACHE:
+        rows = cfbd_get("/teams/fbs", {"year": season})
+        out: dict[int, tuple[str, str]] = {}
+        for t in rows or []:
+            if not isinstance(t, dict) or t.get("id") is None:
+                continue
+            color, alt = t.get("color"), t.get("alternateColor")
+            if color and alt:
+                out[int(t["id"])] = (color, alt)
+        _TEAM_COLOR_CACHE[season] = out
+    return _TEAM_COLOR_CACHE[season]
+
+
 def fetch_ap_top25(season: int, week: int, *, season_type: str = "regular") -> dict[int, dict]:
     """
     { team_id -> {rank, school, conference} } for the real AP Top 25 poll
