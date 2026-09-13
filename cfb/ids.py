@@ -158,3 +158,70 @@ def fbs_team_ids(season: int) -> frozenset[int]:
             int(t["id"]) for t in (rows or []) if isinstance(t, dict) and t.get("id") is not None
         )
     return _FBS_IDS_CACHE[season]
+
+
+_TEAM_CONFERENCE_CACHE: dict[int, dict[int, str]] = {}
+
+
+def team_conference_map(season: int) -> dict[int, str]:
+    """
+    { stable integer team id -> conference string } for every FBS program
+    in `season`, from the SAME CFBD `/teams/fbs?year=` call fbs_team_ids
+    uses (season-cached separately since callers of one don't always need
+    the other). Keyed by team_id, not the school-name string every
+    /plays/stats row carries `team`/`opponent` as -- avoids the exact
+    string-matching fragility poll_ncaaf_prop_coverage.py's _match_school
+    exists to work around on a different data source. Conference realign-
+    ment is handled correctly by construction: querying a different
+    `season` returns that season's real alignment (confirmed directly
+    against the CFBD OpenAPI schema and a live call, not assumed).
+    """
+    season = int(season)
+    if season not in _TEAM_CONFERENCE_CACHE:
+        rows = cfbd_get("/teams/fbs", {"year": season})
+        _TEAM_CONFERENCE_CACHE[season] = {
+            int(t["id"]): t.get("conference")
+            for t in (rows or [])
+            if isinstance(t, dict) and t.get("id") is not None
+        }
+    return _TEAM_CONFERENCE_CACHE[season]
+
+
+def fetch_ap_top25(season: int, week: int, *, season_type: str = "regular") -> dict[int, dict]:
+    """
+    { team_id -> {rank, school, conference} } for the real AP Top 25 poll
+    (CFBD's own poll name is exactly "AP Top 25" — confirmed against a
+    real 2025 week-3 response, NOT "Coaches Poll", which is a different
+    real poll CFBD returns in the SAME /rankings response and would
+    silently rank the wrong 25 teams if grabbed by position instead of by
+    name) for one (season, week) — Top 25 TD Watch's eligibility source.
+
+    One CFBD call: GET /rankings?year=&week=&seasonType=. PollRank rows
+    already carry teamId directly (no team-name-string join needed, unlike
+    /plays/stats' team/opponent strings — CFBD's rankings response is
+    id-native).
+
+    Returns {} (not an error) when the poll hasn't been released yet for
+    that (season, week) — e.g. a future week, or a season/week combo
+    before polling starts — same "real zero, not a crash" convention as
+    every other CFBD fetcher in this package.
+    """
+    rows = cfbd_get("/rankings", {"year": int(season), "week": int(week), "seasonType": season_type})
+    if not isinstance(rows, list):
+        raise TypeError(f"/rankings did not return a list: {type(rows)!r}")
+
+    out: dict[int, dict] = {}
+    for poll_week in rows:
+        for poll in poll_week.get("polls") or []:
+            if poll.get("poll") != "AP Top 25":
+                continue
+            for r in poll.get("ranks") or []:
+                tid = r.get("teamId")
+                if tid is None:
+                    continue
+                out[int(tid)] = {
+                    "rank": r.get("rank"),
+                    "school": r.get("school"),
+                    "conference": r.get("conference"),
+                }
+    return out

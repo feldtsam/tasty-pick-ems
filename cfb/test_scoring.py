@@ -29,6 +29,7 @@ from scoring import (
     add_rolling_windows,
     score_defensive_matchup_cfb,
     score_role_momentum_cfb,
+    score_target_magnets_cfb,
     score_td_opportunity_cfb,
 )
 
@@ -152,6 +153,36 @@ def build_role_season(weeks=8):
         for w in range(1, weeks + 1):
             rows.append(_role_row(f"f{i}", f"Filler {i}", "WR" if i % 2 else "RB", 30 + i, 40 + i, 2025, w,
                                   touch_share=max(0.01, tf(w)), ppa=pf(w)))
+    return pd.DataFrame(rows)
+
+
+def _receiving_row(pid, name, pos, team_id, opp_id, season, week, *, target_share, team_targets=20):
+    targets = round((target_share or 0) * team_targets)
+    return {
+        "player_id": pid, "player_name": name, "position_group": pos,
+        "team_id": team_id, "team": f"T{team_id}", "opponent_team_id": opp_id, "opponent": f"T{opp_id}",
+        "season": season, "week": week, "game_id": 5000 + week,
+        "targets": targets, "receptions": max(0, targets - 1), "team_targets": team_targets,
+        "target_share": target_share, "extra": {},
+    }
+
+
+# a rising target-share trajectory, same shape as role_momentum's _RISING_TS
+_RISING_TARGET_SHARE = [0.10, 0.13, 0.16, 0.20, 0.24, 0.28, 0.32, 0.36]
+
+
+def build_receiving_season(weeks=8):
+    rows = []
+    for w in range(1, weeks + 1):
+        ts = _RISING_TARGET_SHARE[w - 1]
+        # riser: a real, rising target-share trajectory -- the Target Magnets case
+        rows.append(_receiving_row("riser", "Rising Target Share", "WR", 10, 90, 2025, w, target_share=ts))
+        # flat: same volume ballpark, no real trend
+        rows.append(_receiving_row("flat", "Flat Target Share", "WR", 11, 91, 2025, w, target_share=0.20))
+        # faller: declining target share
+        rows.append(_receiving_row("faller", "Fading Target Share", "WR", 12, 92, 2025, w, target_share=0.34 - 0.02 * w))
+        # thin: real trend shape but season-total targets never clears the gate
+        rows.append(_receiving_row("thin", "Thin Volume Riser", "WR", 13, 93, 2025, w, target_share=ts, team_targets=4))
     return pd.DataFrame(rows)
 
 
@@ -347,6 +378,61 @@ if __name__ == "__main__":
     r.append(check(
         "no `is_returning` column -> no completeness discount (unknown != False)",
         bs[bs["week"] == 8].set_index("player_id").loc["A", "role_momentum_completeness"] >= 69.0,
+    ))
+
+    # ---- Target Magnets (Phase 5) ------------------------------------
+    tm = score_target_magnets_cfb(build_receiving_season(weeks=8))
+    twk8 = tm[tm["week"] == 8].set_index("player_id")
+    twk2 = tm[tm["week"] == 2].set_index("player_id")
+
+    r.append(check(
+        "not a Universal TPE input -- target_magnets never appears in core_weights",
+        "target_magnets" not in CONFIG["universal_tpe"]["core_weights"],
+    ))
+
+    # football intuition: a real rising target-share trend outscores a
+    # flat one, which outscores a fading one, by wk8
+    r.append(check(
+        "riser outscores flat by wk8 (real rising target-share trend)",
+        twk8.loc["riser", "target_magnets"] > twk8.loc["flat", "target_magnets"],
+    ))
+    r.append(check(
+        "flat outscores faller by wk8",
+        twk8.loc["flat", "target_magnets"] > twk8.loc["faller", "target_magnets"],
+    ))
+    r.append(check(
+        "riser vs faller gap is material (>= 20)",
+        twk8.loc["riser", "target_magnets"] - twk8.loc["faller", "target_magnets"] >= 20,
+    ))
+
+    # thin-volume gate: same rising shape as "riser", but season targets
+    # never clear min_targets_for_qualification -> forced neutral, gated
+    r.append(check(
+        "thin-volume riser is gated (season_total_targets < min_targets_for_qualification)",
+        bool(twk8.loc["thin", "target_magnets_gated"])
+        and twk8.loc["thin", "season_total_targets"] < CONFIG["target_magnets"]["min_targets_for_qualification"],
+    ))
+    r.append(check(
+        "a gated row's target_magnets is exactly neutral 50, not left ambiguous",
+        abs(twk8.loc["thin", "target_magnets"] - 50.0) < 1e-6,
+    ))
+    r.append(check(
+        "a gated row's target_magnets_completeness is exactly 0",
+        twk8.loc["thin", "target_magnets_completeness"] == 0.0,
+    ))
+    r.append(check(
+        "riser (real signal, cleared the gate) is NOT gated by wk8",
+        not bool(twk8.loc["riser", "target_magnets_gated"]),
+    ))
+
+    # cold start: wk2 has too few prior games for a real trend on anyone
+    r.append(check(
+        "wk2: everyone is gated (fewer than trend_window+1 games played yet)",
+        bool(twk2["target_magnets_gated"].all()),
+    ))
+    r.append(check(
+        "wk2: target_magnets is ~50 for everyone",
+        bool(twk2["target_magnets"].between(49.9, 50.1).all()),
     ))
 
     print()

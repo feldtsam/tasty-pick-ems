@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from redzone import aggregate_redzone_allowed_cfb, aggregate_redzone_game_cfb
+from redzone import aggregate_receiving_game_cfb, aggregate_redzone_allowed_cfb, aggregate_redzone_game_cfb
 
 GAMES = [
     {
@@ -182,6 +182,58 @@ if __name__ == "__main__":
     # ---- empty input --------------------------------------------------
     empty_rows, _ = aggregate_redzone_game_cfb([], GAMES, RAW_POS, set(), season=2025, week=3)
     results.append(check("empty play_stats -> [] rows, no crash", empty_rows == []))
+
+    # ---- Aggregation C: cfb_player_receiving_weekly (Phase 5) -----------
+    # Reuses the SAME fixture -- wr2's out-of-red-zone reception (p5, ytg
+    # 45) is the one row the two red-zone aggregations above never see;
+    # it's the direct proof this aggregation is genuinely whole-game, not
+    # red-zone-scoped.
+    recv_rows, rdiag = aggregate_receiving_game_cfb(PLAY_STATS, GAMES, RAW_POS, season=2025, week=3)
+    by_recv = {r["player_id"]: r for r in recv_rows}
+
+    results.append(check(
+        "receiving rows are wr1 / wr2 / x1 only -- rb1/rb2/qb1 never targeted, excluded entirely",
+        set(by_recv) == {"wr1", "wr2", "x1"},
+    ))
+    results.append(check(
+        "wr2's OUT-OF-RED-ZONE reception (ytg 45) counts here -- proves whole-game, not red-zone-scoped",
+        by_recv.get("wr2", {}).get("targets") == 1,
+    ))
+    wr1r = by_recv.get("wr1", {})
+    results.append(check(
+        "wr1 targets = 2 (Reception@p3 + Target@p4, both whole-game, no ytg filter)",
+        wr1r.get("targets") == 2,
+    ))
+    results.append(check("wr1 receptions = 1 (only p3 was a completion)", wr1r.get("receptions") == 1))
+    results.append(check(
+        "Team A team_targets = 4 (wr1 2 + wr2 1 + x1 1 -- everyone incl. unresolved)",
+        wr1r.get("team_targets") == 4,
+    ))
+    results.append(check("wr1 target_share = 0.5 (2 / 4)", wr1r.get("target_share") == 0.5))
+    results.append(check("wr2 target_share = 0.25 (1 / 4)", by_recv.get("wr2", {}).get("target_share") == 0.25))
+
+    x1r = by_recv.get("x1", {})
+    results.append(check(
+        "x1 position_group NULL + extra.unresolved, same never-dropped convention as Aggregation A",
+        x1r.get("position_group") is None and x1r.get("extra", {}).get("unresolved") is True,
+    ))
+    results.append(check("x1 targets = 1, receptions = 0 (Target@p7 only)",
+                         x1r.get("targets") == 1 and x1r.get("receptions") == 0))
+
+    results.append(check(
+        "target_totals diagnostics: 4 targets, 2 receptions total",
+        rdiag.get("target_totals") == {"targets": 4, "receptions": 2},
+    ))
+
+    empty_recv, _ = aggregate_receiving_game_cfb([], GAMES, RAW_POS, season=2025, week=3)
+    results.append(check("empty play_stats -> [] receiving rows, no crash", empty_recv == []))
+
+    rush_only = [_row("Team A", "Team B", "p1", "rb1", "Rush", 8)]
+    rush_only_rows, rush_only_diag = aggregate_receiving_game_cfb(rush_only, GAMES, RAW_POS, season=2025, week=3)
+    results.append(check(
+        "rush-only input -> zero receiving rows (rush is never a receiving touch)",
+        rush_only_rows == [] and "note" in rush_only_diag,
+    ))
 
     print()
     passed = sum(results)

@@ -70,6 +70,7 @@ from scoring import (
     score_defensive_matchup_cfb,
     score_evidence_quality_cfb,
     score_role_momentum_cfb,
+    score_target_magnets_cfb,
     score_td_opportunity_cfb,
     score_universal_tpe_cfb,
 )
@@ -102,6 +103,15 @@ CFB_PLAYER_ROLE_WEEKLY_TYPED_COLUMNS = [
     "touches", "team_touches", "touch_share", "ppa", "is_returning",
 ]
 
+# Phase 5 — confirmed directly against cfb/redzone.py::
+# aggregate_receiving_game_cfb's real row-dict construction (same
+# discipline as the three column lists above).
+CFB_PLAYER_RECEIVING_WEEKLY_TYPED_COLUMNS = [
+    "player_id", "player_name", "position_group", "team_id", "team",
+    "opponent_team_id", "opponent", "season", "week", "game_id",
+    "targets", "receptions", "team_targets", "target_share",
+]
+
 
 # ---------------------------------------------------------------------------
 # Signed reads -- same real forward_to_lovable-as-read reuse NFL's own
@@ -115,6 +125,7 @@ CFB_PLAYER_ROLE_WEEKLY_TYPED_COLUMNS = [
 DEFAULT_CFB_PLAYER_REDZONE_WEEKLY_READ_URL = "https://tastypickems.com/api/public/cfb-player-redzone-weekly-read"
 DEFAULT_CFB_DEFENSE_REDZONE_ALLOWED_WEEKLY_READ_URL = "https://tastypickems.com/api/public/cfb-defense-redzone-allowed-weekly-read"
 DEFAULT_CFB_PLAYER_ROLE_WEEKLY_READ_URL = "https://tastypickems.com/api/public/cfb-player-role-weekly-read"
+DEFAULT_CFB_PLAYER_RECEIVING_WEEKLY_READ_URL = "https://tastypickems.com/api/public/cfb-player-receiving-weekly-read"
 DEFAULT_CFB_PLAYER_SHELF_SCORES_WRITE_URL = "https://tastypickems.com/api/public/cfb-player-shelf-scores-write"
 
 
@@ -180,6 +191,23 @@ def read_cfb_player_role_weekly_rows(season: int, secret: str, read_url: str = N
     )
 
 
+def read_cfb_player_receiving_weekly_rows(season: int, secret: str, read_url: str = None) -> dict:
+    """
+    Whole-season cfb_player_receiving_weekly rows. See _read_rows.
+
+    Same honest-gap posture as read_cfb_player_role_weekly_rows: no
+    deployed ingestion endpoint writes this table yet either (Phase 5
+    built the aggregation function — aggregate_receiving_game_cfb — and
+    this read wrapper, not a live write path). Returns zero rows today,
+    which curate_cfb_shelves() below degrades around exactly the way it
+    already does for role_weekly (gap 2).
+    """
+    return _read_rows(
+        season, secret, "LOVABLE_CFB_PLAYER_RECEIVING_WEEKLY_READ_URL",
+        DEFAULT_CFB_PLAYER_RECEIVING_WEEKLY_READ_URL, read_url, "player_receiving_weekly",
+    )
+
+
 def _snapshot(rows: list, typed_columns: list) -> pd.DataFrame:
     """A genuinely empty read returns a correctly-shaped, zero-row
     DataFrame with every typed column present -- every downstream
@@ -205,6 +233,11 @@ def cfb_player_role_weekly_snapshot(season: int, secret: str, read_url: str = No
     return _snapshot(result["rows"], CFB_PLAYER_ROLE_WEEKLY_TYPED_COLUMNS)
 
 
+def cfb_player_receiving_weekly_snapshot(season: int, secret: str, read_url: str = None) -> pd.DataFrame:
+    result = read_cfb_player_receiving_weekly_rows(season, secret, read_url)
+    return _snapshot(result["rows"], CFB_PLAYER_RECEIVING_WEEKLY_TYPED_COLUMNS)
+
+
 # ---------------------------------------------------------------------------
 # Orchestration -- pure DataFrame-in / dict-out, no I/O. Mirrors nfl/api/
 # curate_home_shelves.py's own split (read helpers / pure scoring-and-
@@ -219,8 +252,19 @@ CFB_SHELF_SCORE_COLUMNS = [
     "defensive_matchup_vulnerability", "defensive_matchup_completeness",
     "situation", "situation_completeness",
     "role_momentum", "role_momentum_completeness",
+    # Phase 5 — standalone shelf-ranking signal, NOT a Universal TPE input
+    # (see score_target_magnets_cfb's own docstring). Carried on the same
+    # per-player-week row as every other pillar for one shared read/write
+    # shape, exactly like role_momentum's own columns above.
+    "target_magnets", "target_magnets_completeness", "target_magnets_gated",
     "evidence_completeness", "evidence_convergence", "evidence_quality",
     "core_score", "confidence_multiplier", "tpe_score",
+    # Phase 5 -- shelf-membership convergence tracking (see
+    # add_shelf_convergence). Only present on week_rows once that function
+    # has run; shape_cfb_shelf_score_rows' own column-existence guard
+    # (record.get(col)) means calling it BEFORE add_shelf_convergence
+    # simply omits these two (None), not a KeyError.
+    "shelves", "shelf_count",
 ]
 
 
@@ -232,6 +276,7 @@ def curate_cfb_shelves(
     week: int,
     fbs_ids: frozenset[int],
     config: dict = CONFIG,
+    receiving_weekly: pd.DataFrame = None,
 ) -> dict:
     """
     The real scoring chain, steps 1-6, for one (season, week): FBS-
@@ -251,6 +296,16 @@ def curate_cfb_shelves(
     `role_weekly`: a whole season's real rows from cfb_player_role_weekly
     -- genuinely empty today (see module docstring, gap 2); every step
     below already degrades correctly around that.
+
+    `receiving_weekly` (Phase 5, optional): a whole season's real rows
+    from cfb_player_receiving_weekly (cfb/redzone.py::
+    aggregate_receiving_game_cfb). Same merge-in-by-key pattern as
+    role_weekly, same honest-absent-column degradation when omitted or
+    empty (no deployed ingestion endpoint for this table yet either --
+    see read_cfb_player_receiving_weekly_rows). target_magnets is NOT a
+    Universal TPE input (see score_target_magnets_cfb), so unlike role_
+    momentum its absence never affects core_score's renormalization --
+    it just means the Target Magnets shelf has nothing to rank by yet.
 
     `fbs_ids`: this season's real FBS team ids (cfb.ids.fbs_team_ids) --
     threaded through as a parameter, not fetched here, so a caller that
@@ -284,6 +339,26 @@ def curate_cfb_shelves(
         # operate on floats, not a pd.NA-tainted object-dtype column.
         scored["role_momentum"] = float("nan")
         scored["role_momentum_completeness"] = float("nan")
+
+    if receiving_weekly is not None and len(receiving_weekly):
+        tm_scored = score_target_magnets_cfb(receiving_weekly, config)
+        tm_cols = tm_scored[
+            ["player_id", "season", "week", "target_magnets", "target_magnets_completeness", "target_magnets_gated"]
+        ]
+        scored = scored.drop(
+            columns=["target_magnets", "target_magnets_completeness", "target_magnets_gated"], errors="ignore"
+        )
+        scored = scored.merge(tm_cols, on=["player_id", "season", "week"], how="left")
+    else:
+        scored["target_magnets"] = float("nan")
+        scored["target_magnets_completeness"] = float("nan")
+        # True (not pd.NA) -- "no receiving data at all for this player-
+        # week" is structurally the same as "gated": no trustworthy
+        # signal, exclude from the Target Magnets shelf. Also avoids a
+        # real crash a nullable pd.NA would cause the first time
+        # assign_cfb_shelves() below does `== False` as a boolean mask
+        # (pandas raises on NA-containing boolean masks).
+        scored["target_magnets_gated"] = True
 
     scored = score_evidence_quality_cfb(scored, config)
     scored = score_universal_tpe_cfb(scored, config)
@@ -324,3 +399,204 @@ def write_cfb_player_shelf_scores(rows: list, secret: str, write_url: str = None
         "LOVABLE_CFB_PLAYER_SHELF_SCORES_WRITE_URL", DEFAULT_CFB_PLAYER_SHELF_SCORES_WRITE_URL,
     )
     return forward_to_lovable(rows, secret, url)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 (2026-09) -- 8-shelf CFB Picks curation. CFB's first real shelf
+# taxonomy: this module's own header docstring, written 2026-09-04, said
+# "CFB has no shelf taxonomy yet ... no NFL-style multi-shelf assignment,
+# no Tasty Six selection" -- this section is exactly that, backend only
+# (no frontend/UI work in this pass, per spec).
+# ---------------------------------------------------------------------------
+
+PLAYER_BEHAVIOR_SHELVES = ("goal_line_favorites", "workhorses", "target_magnets")
+
+# Exact CFBD conference spelling (confirmed against cfb/scripts/
+# fbs_teams_2026.json and a live /rankings response) -- "Big 12"/"Big Ten"
+# with the space, never a squashed/abbreviated form.
+CONFERENCE_TD_WATCH_SHELVES = {
+    "sec_td_watch": "SEC",
+    "big_ten_td_watch": "Big Ten",
+    "big12_td_watch": "Big 12",
+    "acc_td_watch": "ACC",
+}
+
+CFB_WORLD_SHELVES = ("top25_td_watch",) + tuple(CONFERENCE_TD_WATCH_SHELVES)
+
+# The 8 real shelves, in display order -- also Tasty Six's own walk order
+# (select_cfb_tasty_six). Tasty Six itself is NOT one of these 8 -- it's a
+# derived showcase drawn FROM them (spec: "8-shelf curation logic" lists 9
+# names including Tasty Six, but frames Tasty Six as "the top pick from a
+# subset of these 8 shelves" -- it is the +1, not a 9th independent
+# eligibility population, and is excluded from shelf_count/"N SHELVES
+# AGREE" for the same reason).
+CFB_SHELF_ORDER = PLAYER_BEHAVIOR_SHELVES + CFB_WORLD_SHELVES
+
+# ASSUMPTION, flagged: spec gives an explicit "top 6" only for the 5
+# CFB-world shelves. Applied here to the 3 player-behavior shelves too,
+# for one consistent shelf size across all 8 -- flag back if Goal-Line
+# Favorites/Workhorses/Target Magnets should use a different cap.
+SHELF_SIZE = 6
+
+
+def _top_n(df: pd.DataFrame, sort_col: str, n: int) -> pd.DataFrame:
+    return df.sort_values(sort_col, ascending=False).head(n)
+
+
+def assign_cfb_shelves(
+    week_rows: pd.DataFrame,
+    ap_ranks: dict,
+    team_conference: dict,
+    shelf_size: int = SHELF_SIZE,
+) -> dict:
+    """
+    Build the 8 real CFB Picks shelves for one already-scored week
+    (curate_cfb_shelves()'s own `week_rows` output). Pure function, no
+    I/O -- `ap_ranks` (cfb.ids.fetch_ap_top25) / `team_conference`
+    (cfb.ids.team_conference_map) are pre-fetched by the caller, so this
+    stays synchronous and testable with a synthetic dict, no real CFBD
+    call.
+
+    NO DEDUP ACROSS SHELVES (explicit spec decision, unlike MLB/NFL): a
+    player can legitimately appear on multiple shelves -- each shelf's
+    DataFrame is built independently; nothing here filters a player out
+    for already appearing on an earlier one. Do not add
+    _resolve_player_conflicts/_dedupe_by_player-style logic to this
+    function.
+
+    Player-behavior shelves (rank by the player's own signal, never
+    composite tpe_score):
+      * goal_line_favorites -- td_opportunity, excluding
+        td_opportunity_gated rows (a gated row is forced to exactly
+        neutral 50 by construction -- score_td_opportunity_cfb -- so
+        including it would rank real scores against fake-neutral ones on
+        the same scale).
+      * workhorses -- role_momentum, excluding rows with
+        role_momentum_completeness == 0. role_momentum_cfb has no
+        explicit _gated boolean the way td_opportunity does; completeness
+        == 0 is the honest proxy -- that value is only possible when both
+        of its trend inputs were NaN (thin history), the same real
+        condition td_opportunity's own gate tests for.
+      * target_magnets -- target_magnets (this same Phase 5 build),
+        excluding target_magnets_gated rows -- that flag was modeled
+        directly on td_opportunity_gated for exactly this symmetry.
+
+    CFB-world shelves (an eligibility POPULATION, then ranked by the real
+    composite tpe_score within it -- never a player-behavior signal):
+      * top25_td_watch -- team_id present in ap_ranks (this week's real
+        AP Top 25; poll name "AP Top 25" specifically, never "Coaches
+        Poll" -- resolved by the caller's fetch_ap_top25 call, not here).
+      * {conf}_td_watch -- team_conference[team_id] equals the real
+        conference string (CONFERENCE_TD_WATCH_SHELVES' exact spelling).
+
+    REAL GAP, NOT SILENTLY SUBSTITUTED: spec asked for a second
+    eligibility leg on the 4 conference shelves -- "player meets the
+    existing ATTD odds-floor eligibility rule already used elsewhere in
+    CFB scoring." Investigated directly before writing this (grepped cfb/
+    for odds_floor/min_odds/ATTD/qualifying_odds): no such rule exists
+    anywhere. CFB has no Market Value/odds data source at all yet (see
+    this module's own header docstring and cfb/scoring.py's -- both
+    explicit that it's deferred to v2). Rather than invent an unrelated
+    stand-in gate that would LOOK like it's doing the referenced job while
+    actually checking something else, this function applies ONLY the
+    conference/AP-rank membership test on these 4-5 shelves -- the odds
+    leg is simply not applied, flagged here and in the build report. Flag
+    back if a different interim gate (e.g. a minimum-sample floor) is
+    wanted instead.
+
+    Returns {shelf_name: DataFrame}, one entry per CFB_SHELF_ORDER name,
+    each already sorted best-first and capped at `shelf_size` rows -- a
+    thin week can legitimately return fewer, never backfilled.
+    """
+    shelves: dict = {}
+
+    glf = week_rows[week_rows["td_opportunity_gated"] == False]  # noqa: E712 -- explicit bool column
+    shelves["goal_line_favorites"] = _top_n(glf, "td_opportunity", shelf_size)
+
+    wh = week_rows[week_rows["role_momentum_completeness"].fillna(0) > 0]
+    shelves["workhorses"] = _top_n(wh, "role_momentum", shelf_size)
+
+    tm = week_rows[week_rows["target_magnets_gated"] == False]  # noqa: E712
+    shelves["target_magnets"] = _top_n(tm, "target_magnets", shelf_size)
+
+    top25 = week_rows[week_rows["team_id"].isin(ap_ranks.keys())]
+    shelves["top25_td_watch"] = _top_n(top25, "tpe_score", shelf_size)
+
+    conference = week_rows["team_id"].map(team_conference)
+    for shelf_name, conf_name in CONFERENCE_TD_WATCH_SHELVES.items():
+        pool = week_rows[conference == conf_name]
+        shelves[shelf_name] = _top_n(pool, "tpe_score", shelf_size)
+
+    return shelves
+
+
+def add_shelf_convergence(week_rows: pd.DataFrame, shelves: dict) -> pd.DataFrame:
+    """
+    Attach `shelves` (list[str]) and `shelf_count` (int) to every row in
+    week_rows -- "N SHELVES AGREE" is exactly this: how many of the 8 real
+    shelves (CFB_SHELF_ORDER; Tasty Six itself is excluded, see that
+    constant's own comment) a player's row landed on, and which ones.
+    Pure aggregation over assign_cfb_shelves' own output -- no new
+    scoring, no re-ranking, matches the spec's own framing exactly
+    ("just aggregating existing shelf-membership data").
+
+    A player absent from every shelf still gets a row here (shelves=[],
+    shelf_count=0), not dropped -- week_rows is the full scored
+    population; shelf membership is informational on top of it.
+    """
+    membership: dict = {pid: [] for pid in week_rows["player_id"]}
+    for shelf_name in CFB_SHELF_ORDER:
+        pool = shelves.get(shelf_name)
+        if pool is None or pool.empty:
+            continue
+        for pid in pool["player_id"]:
+            membership.setdefault(pid, []).append(shelf_name)
+
+    out = week_rows.copy()
+    out["shelves"] = out["player_id"].map(membership)
+    out["shelf_count"] = out["shelves"].map(len)
+    return out
+
+
+def select_cfb_tasty_six(shelves: dict, n: int = 6) -> list:
+    """
+    DEFAULT rule (spec: "confirm with me which shelves feed Tasty Six ...
+    or default to one-per-shelf-family logic if that's ambiguous" --
+    defaulting here per that explicit permission, flagged in the build
+    report for confirmation/correction): walk CFB_SHELF_ORDER (the 8 real
+    shelves) and take each shelf's own top-ranked player not already
+    claimed by an earlier shelf in the walk, falling back to that shelf's
+    next-ranked entry when its top pick is already claimed -- the SAME
+    fallback-to-next-eligible mechanism MLB/NFL's own Tasty Six selection
+    already uses, just walking shelves (one claim each) instead of one
+    ranked list.
+
+    If a shelf is exhausted (every one of its rows already claimed by an
+    earlier shelf) it contributes nothing and the walk continues -- Tasty
+    Six can come back with fewer than `n` picks on a genuinely thin week;
+    never backfilled with a lower-quality choice just to force a full six.
+
+    Returns up to `n` dicts (each shelves[...]'s own row, as a dict) plus
+    a `tasty_six_source` key naming which shelf it was claimed from, so a
+    caller can show why a player is in the six, not just that they are.
+    """
+    picks: list = []
+    claimed: set = set()
+
+    for shelf_name in CFB_SHELF_ORDER:
+        if len(picks) >= n:
+            break
+        pool = shelves.get(shelf_name)
+        if pool is None or pool.empty:
+            continue
+        for _, row in pool.iterrows():
+            pid = row["player_id"]
+            if pid in claimed:
+                continue
+            record = row.to_dict()
+            record["tasty_six_source"] = shelf_name
+            picks.append(record)
+            claimed.add(pid)
+            break  # exactly one claim per shelf per walk
+
+    return picks[:n]

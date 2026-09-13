@@ -158,6 +158,31 @@ CONFIG = {
         # 1.0 = returning / established, < 1.0 = new to team.
         "new_team_completeness_factor": 0.75,
     },
+    "target_magnets": {
+        # Phase 5 (2026-09): a standalone receiving-opportunity signal for
+        # the Target Magnets shelf, NOT a fourth Universal TPE pillar (it
+        # is not in core_weights below, on purpose — shelf-ranking use
+        # only, same status as td_opportunity/role_momentum's own use on
+        # Goal-Line Favorites/Workhorses). Deliberately mirrors role_
+        # momentum's touch_share_trend mechanic exactly (same trend_window,
+        # same _trend_delta/percentile shape) rather than inventing a new
+        # one — "analogous to touch_share" per spec.
+        #
+        # Single input (target_share_trend only) — unlike role_momentum's
+        # 70/30 touch_share/PPA blend, there is no CFB-native receiving
+        # efficiency axis analogous to PPA scoped to targets alone (PPA
+        # itself is a whole-play value, already used by role_momentum;
+        # reusing it here would double-count the same signal under a
+        # different name, not add a second one).
+        "trend_window": 3,
+        # PROVISIONAL — chosen from first principles (CFB's real per-game
+        # target volume: roughly 3-8 for a featured receiver), not from a
+        # weeks-N real-data validation the other pillars' thresholds had
+        # (td_opportunity's 15/role_momentum's 20 both cite a real "weeks-
+        # 1-8 validation" this number has no equivalent of yet). Flag back
+        # if a real multi-week pull shows this gates too loose/tight.
+        "min_targets_for_qualification": 12,
+    },
     # Locked (spec §5): Evidence Quality is a pure meta-layer over the
     # three pillars' own outputs, ported verbatim from nfl/scoring.py's
     # score_evidence_quality with only the family/completeness column
@@ -791,6 +816,82 @@ def score_role_momentum_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.D
     weekly["_rm_ppa_renormed"] = ppa_renormed
     weekly["role_momentum"] = role_momentum.round(1)
     weekly["role_momentum_completeness"] = role_momentum_completeness.round(1)
+
+    return weekly
+
+
+# ===========================================================================
+# Target Magnets (Phase 5) — receiving-opportunity signal, shelf-ranking only
+# ===========================================================================
+def score_target_magnets_cfb(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+    """
+    Score every row of `cfb_player_receiving_weekly` (a whole season's
+    rows, one per RB/WR/TE per game — assembled by cfb/redzone.py's
+    aggregate_receiving_game_cfb) for Target Magnets.
+
+        target_magnets = pct(target_share_trend)
+
+    One scored input: a 3-game-smoothed trend (last-3-game mean minus
+    season-to-date average, the shared _trend_delta) on target_share,
+    percentile-normalized against the qualified reference population —
+    the exact same mechanic role_momentum_cfb uses for touch_share_trend,
+    scoped to receiving touches only. See CONFIG["target_magnets"] for
+    why this is single-input (no PPA-equivalent efficiency axis) and why
+    the qualification threshold is provisional.
+
+    NOT a Universal TPE pillar — this function's output is consumed
+    directly by the Target Magnets shelf (rank by target_magnets), the
+    same standalone role td_opportunity/role_momentum already play for
+    Goal-Line Favorites/Workhorses. Not listed in
+    CONFIG["universal_tpe"]["core_weights"], and score_universal_tpe_cfb
+    is never called with this column merged in.
+
+    target_magnets_gated (bool, explicit — mirrors td_opportunity_gated's
+    pattern rather than role_momentum's implicit near-50-on-thin-history):
+    True whenever a player's season-total targets are below
+    config["target_magnets"]["min_targets_for_qualification"], OR the
+    trend itself is still NaN (fewer than trend_window+1 games played) —
+    either way there's no trustworthy receiving-opportunity signal yet,
+    and target_magnets is forced to exactly neutral 50 rather than left to
+    rank ambiguously among other near-50 rows. Callers ranking the Target
+    Magnets shelf should filter this flag out, the same way Goal-Line
+    Favorites already filters td_opportunity_gated.
+
+    Only shift(1)'d trend inputs are used — the score reflects what was
+    knowable heading INTO that game. Same DataFrame-in / DataFrame-out
+    shape as the other score_*_cfb functions.
+    """
+    weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
+    tm_cfg = config["target_magnets"]
+    window = tm_cfg["trend_window"]
+
+    weekly = add_rolling_windows(
+        weekly, metrics=["target_share"], group_cols=["player_id", "season"]
+    )
+
+    season_total_targets = weekly.groupby(["player_id", "season"])["targets"].transform("sum")
+    thin_sample = season_total_targets < tm_cfg["min_targets_for_qualification"]
+    qualified = season_total_targets >= tm_cfg["min_targets_for_qualification"]
+
+    def pct(values: pd.Series) -> pd.Series:
+        raw = percentile_lookup(values, build_reference_scale(values, qualified))
+        return fill_neutral(raw)
+
+    ts_delta = _trend_delta(weekly, "target_share", window).where(~thin_sample)
+    ts_pct = pct(ts_delta)
+
+    gated = thin_sample | ts_delta.isna()
+    target_magnets = ts_pct.clip(0, 100).mask(gated, 50.0)
+
+    target_magnets_completeness = pd.Series(
+        np.where(gated, 0.0, 100.0), index=weekly.index
+    )
+
+    weekly["target_share_trend_pct"] = ts_pct.round(1)
+    weekly["target_magnets"] = target_magnets.round(1)
+    weekly["target_magnets_completeness"] = target_magnets_completeness.round(1)
+    weekly["target_magnets_gated"] = gated
+    weekly["season_total_targets"] = season_total_targets.astype(int)
 
     return weekly
 

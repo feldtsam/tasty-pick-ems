@@ -587,6 +587,167 @@ def aggregate_redzone_allowed_cfb(
 
 
 # --------------------------------------------------------------------------
+# Aggregation C — cfb_player_receiving_weekly  (Target Magnets, Phase 5)
+# --------------------------------------------------------------------------
+# Receiving-only touch types: Target (incomplete) + Reception (complete) —
+# together, CFBD's real encoding of "this player was thrown to" regardless
+# of outcome, matching standard football "targets" usage. Rush is
+# deliberately excluded from both numerator and denominator — this is a
+# receiving-opportunity signal, not a combined-touch one (that's
+# role_momentum's touch_share, cfb/role_momentum.py).
+_RECEIVING_TOUCH_TYPES = ("target", "reception")
+
+
+def aggregate_receiving_game_cfb(
+    play_stats: list[dict],
+    games: list[dict],
+    raw_pos_lookup: dict[str, str],
+    *,
+    season: int,
+    week: int,
+) -> tuple[list[dict], dict]:
+    """
+    One row per (player_id, season, week) with WHOLE-GAME receiving
+    touches and the player's share of his offense's total receiving
+    touches — the Target Magnets input, alongside (not derived from)
+    aggregate_redzone_game_cfb.
+
+    Reuses _touches()'s same per-touch table the red-zone aggregation
+    builds (same /plays/stats rows, same touch_type tagging) — passed
+    `td_play_ids=set()` since this signal has no TD/scoring component at
+    all (own_touchdown is computed but never read here); no red-zone
+    yardsToGoal filter either, unlike aggregate_redzone_game_cfb — every
+    touch anywhere on the field counts.
+
+    Rows are emitted for RB / WR / TE and for players not resolvable to
+    one of those (position_group = NULL, `extra.unresolved` /
+    `extra.position_raw` set — same never-dropped convention as
+    aggregate_redzone_game_cfb). QBs never appear here at all — a
+    quarterback is the passer, never the athleteId on a Target/Reception
+    stat row, so there is no QB-exclusion step analogous to the red-zone
+    aggregation's qb_rz handling.
+
+    Columns: player_id season week game_id team_id team opponent_team_id
+    opponent player_name position_group targets receptions team_targets
+    target_share extra
+      * targets       — Target + Reception touch rows (the real
+                        opportunity count: thrown to, whether caught or not)
+      * receptions    — Reception touch rows only (informational; not the
+                        ranking metric)
+      * team_targets  — his offense's total targets that game, EVERYONE
+                        included (unresolved/NULL-position players too) —
+                        the honest denominator, same rule as rz_touch_share
+                        and role_momentum's team_touches
+      * target_share  — targets / team_targets
+    """
+    from roster import POSITION_GROUPS  # local import: avoids a module-load cycle in tests
+
+    touches = _touches(play_stats, set())
+    diagnostics: dict = {
+        "aggregation": "cfb_player_receiving_weekly",
+        "season": season, "week": week,
+        "touch_rows": int(len(touches)),
+        "stat_type_distribution": stat_type_distribution(play_stats),
+    }
+    if touches.empty:
+        diagnostics["note"] = "no Rush/Target/Reception touch rows in the input"
+        return [], diagnostics
+
+    name_map = team_id_map_from_games(games)
+
+    touches = touches.copy()
+    touches["raw_position"] = touches["athlete_id"].map(raw_pos_lookup)
+    touches["position_group"] = touches["raw_position"].where(
+        touches["raw_position"].isin(POSITION_GROUPS)
+    )
+    touches["team_id"] = touches["team"].map(name_map)
+    touches["opponent_team_id"] = touches["opponent"].map(name_map)
+
+    receiving = touches[touches["touch_type"].isin(_RECEIVING_TOUCH_TYPES)]
+    if receiving.empty:
+        diagnostics["note"] = "no Target/Reception touch rows in the input"
+        return [], diagnostics
+
+    team_name_misses = sorted(set(receiving.loc[receiving["team_id"].isna(), "team"].dropna()))
+    unresolved_ids = sorted(set(receiving.loc[receiving["raw_position"].isna(), "athlete_id"]))
+
+    # team-wide receiving-touch totals per offense — the denominator.
+    # EVERYONE included (unresolved/NULL-position too), same reasoning as
+    # aggregate_redzone_game_cfb's team_rz totals.
+    team_targets = receiving.groupby("team_id", dropna=False).size().to_dict()
+
+    per_player = (
+        receiving.groupby("athlete_id", dropna=False)
+        .agg(
+            targets=("touch_type", "count"),
+            receptions=("touch_type", lambda s: (s == "reception").sum()),
+            team=("team", _first),
+            team_id=("team_id", _first),
+            opponent=("opponent", _first),
+            opponent_team_id=("opponent_team_id", _first),
+            game_id=("game_id", _first),
+            player_name=("athlete_name", _first),
+            position_group=("position_group", _first),
+            raw_position=("raw_position", _first),
+            conference=("conference", _first),
+            n_games=("game_id", lambda s: s.nunique()),
+        )
+        .reset_index()
+    )
+
+    rows: list[dict] = []
+    for r in per_player.to_dict("records"):
+        tt = int(team_targets.get(r["team_id"], 0)) if r["team_id"] is not None else 0
+        targets = int(r["targets"])
+        share = round(targets / tt, 3) if tt else None
+
+        extra: dict = {"conference": r.get("conference")}
+        if r.get("raw_position") is None:
+            extra["unresolved"] = True
+        elif r.get("position_group") is None:
+            extra["position_raw"] = r.get("raw_position")
+        if int(r.get("n_games", 1) or 1) > 1:
+            extra["multi_game_week"] = int(r["n_games"])
+
+        rows.append(
+            {
+                "player_id": r["athlete_id"],
+                "season": season,
+                "week": week,
+                "game_id": _int_or_none(r["game_id"]),
+                "team_id": _int_or_none(r["team_id"]),
+                "team": _str_or_none(r["team"]),
+                "opponent_team_id": _int_or_none(r["opponent_team_id"]),
+                "opponent": _str_or_none(r["opponent"]),
+                "player_name": _str_or_none(r["player_name"]),
+                "position_group": _str_or_none(r["position_group"]),
+                "targets": targets,
+                "receptions": int(r["receptions"]),
+                "team_targets": tt or None,
+                "target_share": share,
+                "extra": extra,
+            }
+        )
+
+    rows.sort(key=lambda x: (-(x["targets"]), x["player_id"]))
+
+    diagnostics.update(
+        {
+            "rows": len(rows),
+            "position_group_counts": _value_counts([x["position_group"] for x in rows]),
+            "unresolved_athlete_ids": unresolved_ids[:50],
+            "unresolved_athlete_count": len(unresolved_ids),
+            "team_name_id_misses": team_name_misses,
+            "target_totals": {
+                "targets": sum(x["targets"] for x in rows),
+                "receptions": sum(x["receptions"] for x in rows),
+            },
+        }
+    )
+    return rows, diagnostics
+
+
+# --------------------------------------------------------------------------
 # small helpers
 # --------------------------------------------------------------------------
 def _first(s: pd.Series):

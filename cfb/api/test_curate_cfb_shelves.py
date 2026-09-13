@@ -21,8 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 
 from curate_cfb_shelves import (
+    CFB_SHELF_ORDER,
     CFB_SHELF_SCORE_COLUMNS,
+    add_shelf_convergence,
+    assign_cfb_shelves,
     curate_cfb_shelves,
+    select_cfb_tasty_six,
     shape_cfb_shelf_score_rows,
 )
 from test_scoring import build_defense_season, build_player_season, build_role_season
@@ -132,6 +136,135 @@ if __name__ == "__main__":
     except Exception as e:  # noqa: BLE001 — the check itself is "did this raise"
         empty_ok = False
     r.append(check("wholly empty player/defense/role inputs degrade to zero rows, not a crash", empty_ok))
+
+    # ---- Phase 5: 8-shelf assignment / convergence / Tasty Six -----------
+    # Hand-built week_rows fixture, not run through the full scoring
+    # chain -- isolates assign_cfb_shelves/add_shelf_convergence/
+    # select_cfb_tasty_six's OWN logic from scoring.py's math (already
+    # covered by test_scoring.py), same "test this layer directly" choice
+    # test_redzone.py makes for its aggregations.
+    def _wk_row(pid, name, team_id, team, pos, *, td_opp, td_gated, rm, rm_comp, tmag, tmag_gated, tpe):
+        return {
+            "player_id": pid, "player_name": name, "team_id": team_id, "team": team,
+            "position_group": pos, "td_opportunity": td_opp, "td_opportunity_gated": td_gated,
+            "role_momentum": rm, "role_momentum_completeness": rm_comp,
+            "target_magnets": tmag, "target_magnets_gated": tmag_gated, "tpe_score": tpe,
+        }
+
+    shelf_rows = pd.DataFrame([
+        # Goal-Line Favorites pool (2 ungated, 1 gated-excluded)
+        _wk_row("glf1", "GLF One", 100, "TeamA", "RB", td_opp=90, td_gated=False, rm=10, rm_comp=100, tmag=10, tmag_gated=True, tpe=40),
+        _wk_row("glf2", "GLF Two", 100, "TeamA", "RB", td_opp=70, td_gated=False, rm=10, rm_comp=100, tmag=10, tmag_gated=True, tpe=35),
+        _wk_row("glf_gated", "GLF Gated", 100, "TeamA", "WR", td_opp=99, td_gated=True, rm=10, rm_comp=100, tmag=10, tmag_gated=True, tpe=5),
+        # Workhorses pool (2 real, 1 thin-history-excluded via completeness==0)
+        _wk_row("wh1", "WH One", 101, "TeamB", "RB", td_opp=10, td_gated=True, rm=95, rm_comp=100, tmag=10, tmag_gated=True, tpe=30),
+        _wk_row("wh2", "WH Two", 101, "TeamB", "RB", td_opp=10, td_gated=True, rm=80, rm_comp=90, tmag=10, tmag_gated=True, tpe=25),
+        _wk_row("wh_thin", "WH Thin", 101, "TeamB", "RB", td_opp=10, td_gated=True, rm=99, rm_comp=0, tmag=10, tmag_gated=True, tpe=20),
+        # Target Magnets pool (2 real, 1 gated-excluded)
+        _wk_row("tm1", "TM One", 102, "TeamC", "WR", td_opp=10, td_gated=True, rm=10, rm_comp=100, tmag=92, tmag_gated=False, tpe=45),
+        _wk_row("tm2", "TM Two", 102, "TeamC", "WR", td_opp=10, td_gated=True, rm=10, rm_comp=100, tmag=88, tmag_gated=False, tpe=42),
+        _wk_row("tm_gated", "TM Gated", 102, "TeamC", "WR", td_opp=10, td_gated=True, rm=10, rm_comp=100, tmag=99, tmag_gated=True, tpe=15),
+        # "dual" -- ALSO Goal-Line Favorites' #1 by td_opportunity AND this
+        # week's #1 AP-ranked-team player by tpe_score -- forces both a
+        # real convergence hit AND a Tasty Six fallback (glf1 would
+        # otherwise be claimed twice).
+        _wk_row("dual", "Dual Star", 200, "RankedTeam", "RB", td_opp=95, td_gated=False, rm=10, rm_comp=100, tmag=10, tmag_gated=True, tpe=99),
+        # SEC-conference player, not otherwise on any shelf
+        _wk_row("sec1", "SEC One", 300, "SecTeam", "WR", td_opp=10, td_gated=True, rm=10, rm_comp=100, tmag=10, tmag_gated=True, tpe=60),
+        # a team/conference this fixture never assigns -- must never appear anywhere
+        _wk_row("nowhere", "Nowhere Guy", 999, "NoConfTeam", "RB", td_opp=10, td_gated=True, rm=10, rm_comp=100, tmag=10, tmag_gated=True, tpe=1),
+    ])
+
+    ap_ranks = {200: {"rank": 1, "school": "RankedTeam", "conference": "Independent"}}
+    team_conference = {100: "Big Ten", 101: "Big Ten", 102: "ACC", 200: "Independent", 300: "SEC"}
+
+    shelves = assign_cfb_shelves(shelf_rows, ap_ranks, team_conference, shelf_size=2)
+
+    r.append(check(
+        "assign_cfb_shelves returns exactly the 8 real shelf names",
+        set(shelves.keys()) == set(CFB_SHELF_ORDER) and len(CFB_SHELF_ORDER) == 8,
+    ))
+    r.append(check(
+        "goal_line_favorites: capped at 2, gated row excluded, ranked by td_opportunity",
+        list(shelves["goal_line_favorites"]["player_id"]) == ["dual", "glf1"],
+    ))
+    r.append(check(
+        "workhorses: thin-history (completeness==0) row excluded, ranked by role_momentum",
+        list(shelves["workhorses"]["player_id"]) == ["wh1", "wh2"],
+    ))
+    r.append(check(
+        "target_magnets: gated row excluded, ranked by target_magnets",
+        list(shelves["target_magnets"]["player_id"]) == ["tm1", "tm2"],
+    ))
+    r.append(check(
+        "top25_td_watch: only the AP-ranked team's player is eligible",
+        list(shelves["top25_td_watch"]["player_id"]) == ["dual"],
+    ))
+    r.append(check(
+        "sec_td_watch: only the real SEC-conference player is eligible",
+        list(shelves["sec_td_watch"]["player_id"]) == ["sec1"],
+    ))
+    r.append(check(
+        "big_ten_td_watch: TeamA/TeamB players eligible (Big Ten), ranked by tpe_score",
+        list(shelves["big_ten_td_watch"]["player_id"]) == ["glf1", "glf2"],
+    ))
+    r.append(check(
+        "acc_td_watch: TeamC players eligible (ACC)",
+        set(shelves["acc_td_watch"]["player_id"]) == {"tm1", "tm2"},
+    ))
+    r.append(check(
+        "big12_td_watch: no team in this fixture is Big 12 -- empty, not an error",
+        shelves["big12_td_watch"].empty,
+    ))
+    r.append(check(
+        "'nowhere' (no conference entry, not ranked, gated everywhere) appears on NO shelf",
+        all("nowhere" not in shelves[s]["player_id"].values for s in CFB_SHELF_ORDER),
+    ))
+    r.append(check(
+        "NO cross-shelf dedup: 'dual' legitimately appears on 2 different shelves at once",
+        ("dual" in shelves["goal_line_favorites"]["player_id"].values)
+        and ("dual" in shelves["top25_td_watch"]["player_id"].values),
+    ))
+
+    conv = add_shelf_convergence(shelf_rows, shelves)
+    conv_by_id = conv.set_index("player_id")
+    r.append(check(
+        "convergence: 'dual' is on exactly 2 shelves, named correctly",
+        conv_by_id.loc["dual", "shelf_count"] == 2
+        and set(conv_by_id.loc["dual", "shelves"]) == {"goal_line_favorites", "top25_td_watch"},
+    ))
+    r.append(check(
+        "convergence: a single-shelf player (glf2) shows shelf_count 1",
+        conv_by_id.loc["glf2", "shelf_count"] == 1,
+    ))
+    r.append(check(
+        "convergence: a player on no shelf ('nowhere') still gets a row -- shelf_count 0, not dropped",
+        conv_by_id.loc["nowhere", "shelf_count"] == 0 and conv_by_id.loc["nowhere", "shelves"] == [],
+    ))
+    r.append(check(
+        "convergence: total row count is unchanged (informational overlay, not a filter)",
+        len(conv) == len(shelf_rows),
+    ))
+
+    tasty_six = select_cfb_tasty_six(shelves, n=6)
+    tasty_ids = [p["player_id"] for p in tasty_six]
+    r.append(check(
+        "Tasty Six: no duplicate player across the six picks",
+        len(tasty_ids) == len(set(tasty_ids)),
+    ))
+    r.append(check(
+        "Tasty Six: 'dual' is claimed by goal_line_favorites (first in CFB_SHELF_ORDER) ...",
+        any(p["player_id"] == "dual" and p["tasty_six_source"] == "goal_line_favorites" for p in tasty_six),
+    ))
+    r.append(check(
+        "... so top25_td_watch's own pick falls back to its NEXT-eligible row -- "
+        "but that shelf has only 'dual' in this fixture, so it contributes nothing (not backfilled)",
+        not any(p["tasty_six_source"] == "top25_td_watch" for p in tasty_six),
+    ))
+    r.append(check(
+        "Tasty Six: every OTHER shelf's own top pick is present (glf's runner-up wasn't needed)",
+        {"glf1", "wh1", "tm1", "sec1"} <= set(tasty_ids),
+    ))
 
     print()
     p = sum(r)
