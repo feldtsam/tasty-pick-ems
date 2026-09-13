@@ -432,11 +432,15 @@ CFB_WORLD_SHELVES = ("top25_td_watch",) + tuple(CONFERENCE_TD_WATCH_SHELVES)
 # AGREE" for the same reason).
 CFB_SHELF_ORDER = PLAYER_BEHAVIOR_SHELVES + CFB_WORLD_SHELVES
 
-# ASSUMPTION, flagged: spec gives an explicit "top 6" only for the 5
-# CFB-world shelves. Applied here to the 3 player-behavior shelves too,
-# for one consistent shelf size across all 8 -- flag back if Goal-Line
-# Favorites/Workhorses/Target Magnets should use a different cap.
-SHELF_SIZE = 6
+# Confirmed (2026-09-13): 15, uniformly across all 8 shelves -- was 6
+# (an earlier flagged assumption, extending the 5 CFB-world shelves' own
+# originally-scoped cap to the 3 player-behavior shelves too). Same
+# uniform-across-all-8 application either way; only the number changed.
+# select_cfb_tasty_six's own `n=6` default is a SEPARATE literal (how
+# many final picks the showcase itself surfaces) and does not read this
+# constant -- raising the per-shelf pool size doesn't change Tasty Six's
+# own output count.
+SHELF_SIZE = 15
 
 
 def _top_n(df: pd.DataFrame, sort_col: str, n: int) -> pd.DataFrame:
