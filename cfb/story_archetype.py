@@ -1,15 +1,13 @@
 """
 CFB Visual Resolver, Phase 1 — story_archetype.py.
 
-The Story Archetype Resolver: maps one real scored player-week row (plus
-which of the 8 real shelves it landed on — curate_cfb_shelves.add_shelf_
-convergence's own `shelves` list) to a fixed illustration archetype for
-that card, a team-color tint pair, and any subordinate shelf-context
-motifs. Mirrors nfl/story_archetype.py's role and its split from the art/
-rendering layer (nfl-archetype-prompts.ts / nfl-visual.ts) — this module
-never generates art, never picks an asset file, never renders anything.
-Pure functions, no I/O, no DB writes, same "takes scoring output as
-input" contract as cfb/scoring.py.
+The Story Archetype Resolver: maps one real scored player-week row, for
+ONE specific shelf placement, to a fixed illustration archetype for that
+card, plus a team-color tint pair. Mirrors nfl/story_archetype.py's role
+and its split from the art/rendering layer (nfl-archetype-prompts.ts /
+nfl-visual.ts) — this module never generates art, never picks an asset
+file, never renders anything. Pure functions, no I/O, no DB writes, same
+"takes scoring output as input" contract as cfb/scoring.py.
 
 Phase 1 only (per spec): resolver structure. Art prompts, generation, and
 pipeline wiring are later phases, exactly like NFL's own build order
@@ -17,83 +15,143 @@ pipeline wiring are later phases, exactly like NFL's own build order
 and before ad3eb21 wired resolve_archetype() into NFL's live curation
 pipeline).
 
-THE PIPELINE — Sport → Shelf → Story Archetype → Team Identity →
-Context:
-  1. Shelf: caller already knows which of the 8 real shelves (assign_
-     cfb_shelves) this player-week landed on.
+REWORK (this task, supersedes the original 80b0f66 build): the priority
+between shelf identity and per-player signal has REVERSED. Originally,
+signal-driven story always won and shelf placement (Top 25 rank,
+conference) was a subordinate background motif that never overrode it.
+Now, shelf identity wins outright for any shelf that has its own
+dedicated archetype — the conference or the Top 25 ranking IS the story
+for that placement, full stop, and the player's own td_opportunity /
+role_momentum / target_magnets / defensive_matchup_vulnerability scores
+are never consulted for that placement. Independent signal-driven
+resolution survives only as the path for a placement with NO dedicated
+shelf identity (Tasty Six, or any future context without one).
+
+THE PIPELINE — Sport → Shelf → Story Archetype → Team Identity:
+  1. Shelf: caller already knows which shelf placement is being resolved.
   2. Story Archetype: resolve_cfb_archetype() below.
   3. Team Identity: get_cfb_tint_profile() below.
-  4. Context: resolve_cfb_shelf_context() below.
+There is no separate "Context" step any more — see the removed-function
+note below.
 
-ARCHETYPE RESOLUTION IS PER-PLAYER, NOT PER-SHELF-PLACEMENT — a
-deliberate difference from how resolve_cfb_archetype() is invoked here
-vs. how NFL's resolve_archetype(shelf, row) takes a single shelf. CFB's
-own design decision (this task's own spec) is what forces this: "when a
-card has both a story archetype and a shelf-context motif [e.g. a player
-on both Goal-Line Favorites and SEC TD Watch], the story archetype wins
-— shelf-context becomes a subordinate background motif." That only
-makes sense as ONE resolution per player-week that looks at ALL of a
-player's shelf memberships together, not one independent resolution per
-shelf a player happens to appear on (which would leave no way to decide
-which of two simultaneous archetypes "wins" when a player is genuinely
-on two behavior shelves, or would silently produce two different card
-identities for the same player in the same week). So both functions
-below take the row's full `shelves` list (curate_cfb_shelves.add_shelf_
-convergence's own output, or an equivalent caller-supplied list for
-direct testing) rather than a single shelf name.
+ARCHITECTURE QUESTION, ANSWERED: resolution is now PER-SHELF-PLACEMENT,
+not per-player-week. The original build made it per-player-week
+specifically because the old priority rule needed exactly one winner
+across all of a player's shelves (signal-driven story always won,
+regardless of shelf). That reasoning no longer holds: a player on BOTH
+Goal-Line Favorites and SEC TD Watch now has TWO EQUALLY VALID,
+mutually-exclusive locked stories (GOAL_LINE and SEC) with no principled
+way to pick one as "more true" than the other — neither is a fallback or
+a subordinate motif of the other any more. The only coherent answer is
+that the same player's card genuinely looks different depending on WHICH
+shelf it's being rendered on this week. So resolve_cfb_archetype() now
+takes a single `shelf` (matching NFL's own resolve_archetype(shelf, row)
+shape almost exactly, now that shelf identity has real narrative
+primacy here too) rather than the row's full `shelves` list — call it
+once per placement a caller wants to render, not once per player-week.
+A caller that wants every archetype a player could show (e.g. to render
+every shelf they landed on) calls this once per shelf in `row["shelves"]`
+in a loop; nothing in this module does that aggregation for them.
 
-PART 1 — THE OPEN ITEM, RESOLVED: defensive_matchup_vulnerability gets
-its own 5th archetype, THE MISMATCH, not left out of archetype
-resolution. Recommendation, with the tradeoff named rather than picked
-silently (per this task's own instruction):
+REMOVED: resolve_cfb_shelf_context() and its TOP25_RANK / CONFERENCE_
+TENDENCY motif types are gone entirely, superseded by the locked-
+archetype behavior above — a shelf that used to contribute a subordinate
+background motif now just IS the archetype outright. Also confirmed
+this session: the Top 25 ranking NUMBER is explicitly not rendered on
+any card — THE_RANKED's own art (next phase) uses abstract/decorative
+numeral shapes, not a real dynamic number pulled from that week's AP
+poll. Nothing in this module builds or references dynamic-number
+rendering.
+
+OUT OF SCOPE: GOING_NUCLEAR is not built or referenced anywhere in this
+module — deferred, per this task's explicit instruction.
+
+THE 10 ARCHETYPE VALUES: GOAL_LINE, WORKHORSE, TARGET_MAGNET, MISMATCH,
+SEC, BIG_TEN, BIG_12, ACC, THE_RANKED (all 9 in the ARCHETYPES tuple
+below) plus the fallback SATURDAY_POSTER (kept as its own FALLBACK_
+ARCHETYPE constant, same convention as the original build and as NFL's
+own GENERIC — a distinct "nothing won" value, not one more entry in the
+same tuple as the real archetypes).
+
+  * Behavioral shelves (goal_line_favorites / workhorses / target_
+    magnets): UNCHANGED from the original build — locks to that shelf's
+    own governing signal (GOAL_LINE / WORKHORSE / TARGET_MAGNET), and
+    still reports that signal's own real score as `confidence` (there IS
+    a real per-player number backing these three, it's just no longer in
+    competition with anything — the shelf placement already guarantees
+    it wins).
+  * Identity shelves (sec_td_watch / big_ten_td_watch / big12_td_watch /
+    acc_td_watch): NEW — locks to that conference's own dedicated
+    archetype (SEC / BIG_TEN / BIG_12 / ACC), completely ignoring the
+    player's own signal scores. `governing_signal` and `confidence` are
+    both None here — deliberately, not an oversight: there is no real
+    per-player number that produced this archetype (any player on the
+    shelf gets the same archetype regardless of their own scores), so
+    reporting a number would misrepresent what actually drove the
+    resolution. Same honest-None principle nfl/story_archetype.py uses
+    for GENERIC's own confidence.
+  * Editorial shelf (top25_td_watch): NEW — same override logic, locks
+    to THE_RANKED. Same None/None reporting shape as the identity
+    shelves, same reasoning.
+  * No dedicated shelf identity (shelf is None, "tasty_six", or any
+    other value not in the 8 real shelves): resolved INDEPENDENTLY from
+    signal — see _resolve_independent below. GOAL_LINE / WORKHORSE /
+    TARGET_MAGNET are still reachable this way too (e.g. a Tasty-Six-only
+    placement with no locked shelf backing it), but MISMATCH is ONLY
+    ever reachable through this path — it has no shelf of its own on any
+    path, a tradeoff named explicitly in Part 1 below.
+
+PART 1 — THE OPEN ITEM FROM THE ORIGINAL BUILD, UNCHANGED BY THIS
+REWORK: defensive_matchup_vulnerability still gets its own archetype,
+MISMATCH, rather than being left out of archetype resolution entirely.
+Recommendation, with the tradeoff named rather than picked silently (per
+the original task's own instruction — this reasoning stood on its own
+merits before this rework and still does):
 
   Reasoning FOR adding it: (a) it is a fully validated, live signal —
   same standing as the other 3 — and NFL's own story_archetype.py
   already treats the IDENTICAL underlying concept (defensive_matchup_
   vulnerability) as archetype-worthy via its own MISMATCH archetype, so
   this isn't a new narrative invented from nothing, it's a direct,
-  low-risk precedent already proven out in the sibling sport. (b)
-  Architecturally free: population-shelf archetype resolution (see
-  _resolve_independent below) was already going to be signal-driven and
-  independent of which specific shelf triggered it, for the other 3
-  archetypes — Top 25 / conference shelves never had a shelf of their
-  own reinforcing WHICH of td_opportunity / role_momentum / target_
-  magnets a given card's story comes from either. Adding a 4th candidate
-  signal to that same independent-resolution pool is one more entry in
-  an existing table, not new resolver shape. (c) The alternative (option
-  b, leaving it out) means one of CFB's 4 headline evidence pillars is
-  never visually representable at all — a real, likely-to-resurface gap
-  once someone asks why defensive_matchup_vulnerability never shows up
-  in the art despite being scored, live, and load-bearing in the
-  Universal TPE composite every shelf already ranks by.
+  low-risk precedent already proven out in the sibling sport. (b) The
+  alternative (leaving it out) means one of CFB's 4 headline evidence
+  pillars is never visually representable at all — a real,
+  likely-to-resurface gap once someone asks why defensive_matchup_
+  vulnerability never shows up in the art despite being scored, live,
+  and load-bearing in the Universal TPE composite every shelf already
+  ranks by.
 
-  The tradeoff, named honestly: unlike Goal-Line/Workhorse/Target Magnet,
-  no shelf headlines "The Mismatch" the way those three do — a card can
-  carry this story with no on-screen shelf context explaining "why," and
-  there's no near-term shelf planned to close that gap (no "Weak Defense
-  Watch" shelf exists or is scoped). This is the SAME class of thing
-  already true for any population-shelf resolution today (a player's
-  Top-25-shelf card can already carry a Workhorse story despite not being
-  on the Workhorses shelf) — so it's not a NEW kind of risk, but it does
-  mean Mismatch inherits that risk MORE than the other three, since it
-  has literally no shelf of its own on any path, ever. Flagging this
-  explicitly rather than treating it as free.
+  The tradeoff, named honestly, UPDATED for this rework (this got
+  meaningfully worse under the new priority rule, worth re-flagging, not
+  just carrying forward unchanged): under the original priority rule,
+  every population-shelf placement was signal-driven, so Mismatch's "no
+  shelf of its own" gap was the SAME KIND of gap Goal-Line/Workhorse/
+  Target Magnet already had off their own shelves. Under THIS rule, Top
+  25 and the 4 conference shelves are now ALL locked to their own
+  dedicated identity archetypes — meaning Mismatch is now the ONLY one
+  of the 5 real archetypes that can NEVER be reached from ANY of the 8
+  real shelves, on any placement, ever. It is reachable only from a
+  shelf-less context (Tasty Six today; nothing else is scoped). That is
+  a materially narrower path to the screen than this recommendation
+  originally accounted for — flagging it again here rather than treating
+  the original Part 1 answer as still fully accurate as-is.
 
   Ships as archetype key "MISMATCH", governing signal defensive_matchup_
   vulnerability, gate = defensive_matchup_completeness > 0 (see
   _mismatch_eligible's own comment for why completeness > 0, not a
   boolean, is the right gate shape for this specific signal).
 
-THE FLOOR — 55.0. Same underlying reasoning NFL's story_archetype.py
-used (a fixed distance above the KNOWN neutral-fill sentinel, not a
-number tuned to any one week's own sparsity), CONFIRMED transferable:
-cfb/normalize.py's fill_neutral has the exact same real 50.0 default
-CFB-side (checked directly, not assumed) — every CFB pillar here is,
-like NFL's, a percentile-ranked 0-100 score that degrades to exactly
-50.0 when a real reference population is missing. A floor set as a fixed
-distance above that known sentinel keeps working regardless of how
-populated the real reference distribution is at any given point in the
-season, for the same reason it does on the NFL side.
+THE FLOOR — 55.0, UNCHANGED by this rework (still only relevant to the
+independent, no-locked-shelf path). Same underlying reasoning NFL's
+story_archetype.py used (a fixed distance above the KNOWN neutral-fill
+sentinel, not a number tuned to any one week's own sparsity), CONFIRMED
+transferable: cfb/normalize.py's fill_neutral has the exact same real
+50.0 default CFB-side (checked directly, not assumed) — every CFB pillar
+here is, like NFL's, a percentile-ranked 0-100 score that degrades to
+exactly 50.0 when a real reference population is missing. A floor set as
+a fixed distance above that known sentinel keeps working regardless of
+how populated the real reference distribution is at any given point in
+the season, for the same reason it does on the NFL side.
 
 Full honesty on ONE real difference from NFL's own floor derivation,
 worth naming rather than glossing over: NFL's 55.0 was a REUSE of an
@@ -120,23 +178,21 @@ real season are available to check it against (the same posture NFL's
 own floor was left in — confirmed necessary via real data, not assumed
 permanent).
 
-TIE-BREAKING (population-shelf resolution only — behavior-shelf locks
-have no tie to break, see resolve_cfb_archetype's own docstring): all 4
-candidate signals are independently-scaled percentiles (each ranked
-against its own real reference population), so a literal tie at the same
-rounded score is coincidental, not a meaningful signal collision — an
-arbitrary but DETERMINISTIC rule is all that's needed. Ties go to
-whichever candidate is earliest in _ARCHETYPE_SPECS' own fixed order:
-GOAL_LINE, WORKHORSE, TARGET_MAGNET, MISMATCH — the first 3 in the same
-priority CFB_SHELF_ORDER already uses for its own real shelves (they at
-least have an on-screen shelf backing them), MISMATCH last since it has
-none (see Part 1's own tradeoff note above). Not NFL's own tie-break
-rule (which favors the calling shelf's own "primary signal family" —
-that concept doesn't exist here, since this module is never called with
-a single governing shelf the way NFL's is) — a fresh, CFB-appropriate
-tie-break, not a blind copy.
+TIE-BREAKING — UNCHANGED, and now relevant ONLY to the independent,
+no-locked-shelf path (a locked shelf has nothing to tie against; it
+always wins outright). All 4 candidate signals are independently-scaled
+percentiles (each ranked against its own real reference population), so
+a literal tie at the same rounded score is coincidental, not a
+meaningful signal collision — an arbitrary but DETERMINISTIC rule is all
+that's needed. Ties go to whichever candidate is earliest in
+_ARCHETYPE_SPECS' own fixed order: GOAL_LINE, WORKHORSE, TARGET_MAGNET,
+MISMATCH — MISMATCH last since, per Part 1 above, it's the one archetype
+with no shelf of its own on any path. Not NFL's own tie-break rule (which
+favors the calling shelf's own "primary signal family" — that concept
+doesn't exist here). A fresh, CFB-appropriate tie-break, not a blind
+copy.
 
-TEAM IDENTITY (tint) — reuses NFL's exact getNFLTintProfile() mechanism
+TEAM IDENTITY (tint) — UNCHANGED by this rework. Reuses NFL's exact getNFLTintProfile() mechanism
 (nfl-visual.ts), ported to Python: same HSL clamp band (lightness
 [0.22, 0.74], saturation <= 0.70), same reasoning (a near-black or
 near-white raw team color needs a floor/ceiling so it stays visible
@@ -155,18 +211,23 @@ docstring) even though real coverage makes that path rare in practice.
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Part 1 — the 5 archetypes (4 signal-driven + the fallback)
+# The 10 archetype values (9 real + the fallback), and the shelf-lock
+# tables that give 8 of the 9 a dedicated shelf. See module docstring for
+# the full reasoning behind each category.
 # ---------------------------------------------------------------------------
 
-ARCHETYPES = ("GOAL_LINE", "WORKHORSE", "TARGET_MAGNET", "MISMATCH")
+ARCHETYPES = (
+    "GOAL_LINE", "WORKHORSE", "TARGET_MAGNET", "MISMATCH",
+    "SEC", "BIG_TEN", "BIG_12", "ACC", "THE_RANKED",
+)
 FALLBACK_ARCHETYPE = "SATURDAY_POSTER"
 
 FLOOR = 55.0
 
 # {behavior_shelf_name: archetype it locks} -- same 3 behavior shelves
 # curate_cfb_shelves.PLAYER_BEHAVIOR_SHELVES defines, duplicated here
-# rather than imported (a trivial 3-entry table) to keep story_archetype.py
-# free of any dependency on cfb/api/ -- the reverse direction (api code
+# rather than imported (a trivial table) to keep story_archetype.py free
+# of any dependency on cfb/api/ -- the reverse direction (api code
 # depending on this module in a later pipeline-wiring phase) is the one
 # that's actually expected to happen, matching NFL's own story_archetype.py
 # -> curate_home_shelves.py wiring direction.
@@ -176,19 +237,37 @@ _BEHAVIOR_SHELF_ARCHETYPE = {
     "target_magnets": "TARGET_MAGNET",
 }
 
-# Priority order when a row is (unusually) on more than one behavior
-# shelf at once -- same order as curate_cfb_shelves.PLAYER_BEHAVIOR_SHELVES
-# / CFB_SHELF_ORDER's own walk order.
-_BEHAVIOR_SHELF_PRIORITY = ("goal_line_favorites", "workhorses", "target_magnets")
-
-# Same real conference-shelf spelling as curate_cfb_shelves.
-# CONFERENCE_TD_WATCH_SHELVES, duplicated here for the same cross-module
-# reason as _BEHAVIOR_SHELF_ARCHETYPE above.
-_CONFERENCE_TD_WATCH_SHELVES = {
+# {conference_shelf_name: archetype it locks} -- same real shelf spelling
+# as curate_cfb_shelves.CONFERENCE_TD_WATCH_SHELVES, but mapped to this
+# module's own archetype keys rather than the human-readable conference
+# name (that display name has no consumer left in this module now that
+# resolve_cfb_shelf_context is gone -- see module docstring).
+_CONFERENCE_SHELF_ARCHETYPE = {
     "sec_td_watch": "SEC",
-    "big_ten_td_watch": "Big Ten",
-    "big12_td_watch": "Big 12",
+    "big_ten_td_watch": "BIG_TEN",
+    "big12_td_watch": "BIG_12",
     "acc_td_watch": "ACC",
+}
+
+# {editorial_shelf_name: archetype it locks} -- just the one shelf today;
+# kept as its own table (rather than folded into _CONFERENCE_SHELF_
+# ARCHETYPE) since it's a conceptually distinct category (editorial
+# ranking, not team identity) even though both lock the same way.
+_EDITORIAL_SHELF_ARCHETYPE = {
+    "top25_td_watch": "THE_RANKED",
+}
+
+# Every real shelf that locks an archetype by identity alone, regardless
+# of category -- union of the three tables above. Under this rework all
+# three categories take priority over independent signal resolution
+# equally; only the REPORTED governing_signal/confidence shape differs
+# (behavior locks still report the player's own real score; identity/
+# editorial locks report None/None -- see resolve_cfb_archetype's own
+# docstring for why).
+_LOCKED_SHELF_ARCHETYPE = {
+    **_BEHAVIOR_SHELF_ARCHETYPE,
+    **_CONFERENCE_SHELF_ARCHETYPE,
+    **_EDITORIAL_SHELF_ARCHETYPE,
 }
 
 
@@ -282,122 +361,78 @@ def _resolve_independent(row: dict) -> dict:
     return {"archetype": archetype, "governing_signal": signal_col, "confidence": round(score, 1)}
 
 
-def resolve_cfb_archetype(row: dict, shelves: list | None = None) -> dict:
+def resolve_cfb_archetype(shelf: str | None, row: dict) -> dict:
     """
-    Resolves one player-week row to its story archetype.
+    Resolves ONE shelf placement of one player-week row to its story
+    archetype. Call once per placement a caller wants to render — a
+    player on multiple shelves this week gets one call per shelf, and can
+    genuinely get a different archetype back each time (see module
+    docstring's "architecture question" section for why this is
+    per-placement rather than per-player-week).
+
+    `shelf`: the specific shelf this card is being rendered for — one of
+    the 8 real shelf names (curate_cfb_shelves.CFB_SHELF_ORDER), or
+    anything else (None, "tasty_six", an unrecognized string) for a
+    placement with no dedicated shelf identity.
 
     `row`: one real scored weekly row (dict or pandas Series — converted
     via .to_dict() transparently, same "either works" convention as
     nfl/story_archetype.py's own resolve_archetype).
 
-    `shelves`: the row's own real shelf memberships this week
-    (curate_cfb_shelves.add_shelf_convergence's `shelves` column — a
-    list of the 8 real shelf names). Falls back to row["shelves"] when
-    not passed explicitly, so a caller already holding an add_shelf_
-    convergence-enriched row doesn't need to pass it twice; still
-    overridable for direct/synthetic testing.
-
-    Sport -> Shelf -> Story Archetype: on ANY behavior shelf (Goal-Line
-    Favorites / Workhorses / Target Magnets — checked in that priority
-    order, see _BEHAVIOR_SHELF_PRIORITY), the archetype is LOCKED to that
-    shelf's own governing signal — no ambiguity, the shelf already tells
-    you the story, exactly as spec'd. A row on more than one behavior
-    shelf at once (unusual, not structurally prevented) resolves to
-    whichever comes first in that priority order. A row on NO behavior
-    shelf (Top 25 / a conference shelf / Tasty Six only, or no shelf at
-    all) is resolved INDEPENDENTLY via _resolve_independent — same
-    evidence-first principle NFL's own resolver uses, falling back to
-    SATURDAY_POSTER when nothing clears FLOOR.
+    Sport -> Shelf -> Story Archetype:
+      * `shelf` is a behavior shelf (goal_line_favorites / workhorses /
+        target_magnets): locks to that shelf's own governing signal.
+        `governing_signal`/`confidence` report the player's own real
+        score for that signal — there IS a real number behind these
+        three, it's just no longer competing with anything.
+      * `shelf` is an identity shelf (a conference *_td_watch) or the
+        editorial shelf (top25_td_watch): locks to that shelf's own
+        dedicated archetype (SEC/BIG_TEN/BIG_12/ACC/THE_RANKED),
+        completely ignoring the player's own signal scores.
+        `governing_signal`/`confidence` are both None — deliberately:
+        no per-player number actually produced this archetype, so
+        reporting one would misrepresent what happened.
+      * `shelf` is anything else (no dedicated shelf identity): resolved
+        INDEPENDENTLY via _resolve_independent — whichever of the 4
+        signals is highest wins, provided it clears FLOOR, falling back
+        to SATURDAY_POSTER when nothing does.
 
     Returns {"archetype": one of ARCHETYPES or FALLBACK_ARCHETYPE,
-    "governing_signal": the winning signal's own column name (None for
-    the fallback), "confidence": the winning signal's own real 0-100
-    score rounded to 1 decimal (None for the fallback), "locked_by_shelf":
-    the specific behavior shelf name that locked this resolution, or None
-    when it was resolved independently}.
+    "governing_signal": the winning signal's own column name, or None
+    (fallback, or an identity/editorial lock), "confidence": the winning
+    signal's own real 0-100 score rounded to 1 decimal, or None (same two
+    cases), "locked_by_shelf": the specific shelf name that locked this
+    resolution (behavior OR identity OR editorial), or None when it was
+    resolved independently}.
     """
     if hasattr(row, "to_dict"):
         row = row.to_dict()
-    shelves = shelves if shelves is not None else (row.get("shelves") or [])
 
-    locked_shelf = next((s for s in _BEHAVIOR_SHELF_PRIORITY if s in shelves), None)
-    if locked_shelf is not None:
-        archetype = _BEHAVIOR_SHELF_ARCHETYPE[locked_shelf]
-        signal_col = _ARCHETYPE_SPECS[archetype][0]
-        confidence = _real(row.get(signal_col))
+    archetype = _LOCKED_SHELF_ARCHETYPE.get(shelf)
+    if archetype is not None:
+        if shelf in _BEHAVIOR_SHELF_ARCHETYPE:
+            signal_col = _ARCHETYPE_SPECS[archetype][0]
+            confidence = _real(row.get(signal_col))
+            return {
+                "archetype": archetype,
+                "governing_signal": signal_col,
+                "confidence": round(confidence, 1) if confidence is not None else None,
+                "locked_by_shelf": shelf,
+            }
+        # Identity (conference) and editorial (Top 25) locks: the shelf
+        # IS the story -- no per-player signal drives it at all, so
+        # there's honestly no governing_signal/confidence to report
+        # (see this function's own docstring).
         return {
             "archetype": archetype,
-            "governing_signal": signal_col,
-            "confidence": round(confidence, 1) if confidence is not None else None,
-            "locked_by_shelf": locked_shelf,
+            "governing_signal": None,
+            "confidence": None,
+            "locked_by_shelf": shelf,
         }
 
     resolved = _resolve_independent(row)
     resolved["locked_by_shelf"] = None
     return resolved
-
-
-# ---------------------------------------------------------------------------
-# Shelf-context motif — subordinate layer, never overrides the archetype
-# resolved above (see module docstring's design-decision restatement).
-# ---------------------------------------------------------------------------
-
-# Documented ART-DIRECTION TENDENCIES for the next phase's prompt-writing,
-# NOT literal per-card rules enforced anywhere in this module — resolve_
-# cfb_shelf_context only ever returns the conference NAME; a later phase
-# decides how (or whether) to lean on the tendency text below for any
-# individual card.
-CONFERENCE_ART_TENDENCIES = {
-    "SEC": "Saturday night under the lights — warm sodium-vapor stadium glow, thick humid air, a packed dark bowl.",
-    "Big Ten": "Colder and older — stone/brick monumental architecture, visible breath, a flatter grey daylight.",
-    "Big 12": "Expansive sky — wide open plains horizon, long low-angle sunset light, more air than architecture.",
-    "ACC": "East Coast/Southeast, no single unifying look — the most varied of the four; keep this one flexible rather than reaching for one setting.",
-}
-
-
-def resolve_cfb_shelf_context(shelves: list, team_id, ap_ranks: dict, team_conference: dict) -> list:
-    """
-    Subordinate background motifs for a player-week's real shelf
-    memberships — never used to pick the archetype itself (resolve_cfb_
-    archetype above), only layered behind it.
-
-    `shelves`: same list resolve_cfb_archetype takes (add_shelf_
-    convergence's `shelves` column, or a caller-supplied equivalent).
-    `team_id`: the row's own team_id.
-    `ap_ranks`: cfb.ids.fetch_ap_top25's own output ({team_id: {rank,
-    school, conference}}) for the week being rendered.
-    `team_conference`: cfb.ids.team_conference_map's own output
-    ({team_id: conference}).
-
-    Returns a list of motif dicts (possibly more than one — a player can
-    legitimately be on Top 25 AND a conference shelf at once):
-      * {"motif": "TOP25_RANK", "rank": <int>} when "top25_td_watch" is in
-        `shelves` and a real rank is resolvable for `team_id` this week
-        (translucent large ranking number + broadcast/stadium-spotlight
-        atmosphere, per spec — the actual compositing is a later phase).
-      * {"motif": "CONFERENCE_TENDENCY", "conference": <name>} for each
-        real conference shelf `team_id` is actually on (never inferred
-        from team_conference alone — only a shelf the row is REALLY
-        assigned to produces a motif, so this stays in sync with assign_
-        cfb_shelves' own eligibility logic rather than recomputing it).
-
-    A row on no population shelf (behavior shelves only, or no shelf at
-    all) returns [] — there's no shelf-context to layer in that case,
-    not an error.
-    """
-    context = []
-
-    if "top25_td_watch" in shelves:
-        info = ap_ranks.get(team_id)
-        rank = info.get("rank") if info else None
-        if rank is not None:
-            context.append({"motif": "TOP25_RANK", "rank": int(rank)})
-
-    for shelf_name, conf_name in _CONFERENCE_TD_WATCH_SHELVES.items():
-        if shelf_name in shelves:
-            context.append({"motif": "CONFERENCE_TENDENCY", "conference": conf_name})
-
-    return context
 
 
 # ---------------------------------------------------------------------------
