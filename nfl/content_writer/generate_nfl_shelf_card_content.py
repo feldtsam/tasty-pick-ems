@@ -4,21 +4,26 @@ NFL Content Generation V1, Part 1 — generate_nfl_shelf_card_content.py.
 Ties everything built for NFL's regular shelf card writer into one real
 call: resolve this player+shelf's real editorial lens (editorial_lenses.
 py) -> scope source facts down to that lens's own eligible fields ->
-prompt construction (nfl_shelf_card_prompt.py) -> a real Claude API call
-(forced tool-use against NFL_SHELF_CARD_TOOL_SCHEMA, via card_writer_
-common.call_claude_with_tool(), reused unmodified) -> the full
-deterministic validation suite (schema shape, citations, numeric
-grounding, star consistency, banned language) -> shaping the result into
-a content_drafts-ready row.
+find the tension (nfl_tension.py -- new pipeline stage, Editorial Voice
+Spec's "Find the Tension" addition) -> prompt construction (nfl_shelf_
+card_prompt.py) -> a real Claude API call (forced tool-use against
+NFL_SHELF_CARD_TOOL_SCHEMA, via card_writer_common.call_claude_with_
+tool(), reused unmodified) -> the full deterministic validation suite
+(schema shape, citations, numeric grounding, star consistency,
+field-narration, banned language) -> shaping the result into a
+content_drafts-ready row.
 
 Mirrors generate_nfl_tasty_six_draft() closely (same validators, same
 real API call, same candidate-shaping via build_nfl_writer_candidate) —
-the two real structural differences are (1) no editorial_sentence field
-anywhere here (see nfl_shelf_card_writer_schema.py), and (2) source_
-facts is SCOPED to the editorial lens's own fields, not the full NFL_
-TOP_LEVEL_CITABLE_FIELDS list — the whole mechanism that makes "write
-from the primary lens" real rather than aspirational (see nfl_shelf_
-card_prompt.py's own docstring).
+the real structural differences are (1) a `story` field this writer now
+has and Tasty Six's `editorial_sentence` does not (a differently-scoped
+field, not the same one renamed -- see nfl_shelf_card_writer_schema.py's
+own docstring), fed by its own real Tension Object (Tasty Six does not
+yet get one -- see this module's own history for why regular shelf cards
+were the confirmed first target), and (2) source_facts is SCOPED to the
+editorial lens's own fields, not the full NFL_TOP_LEVEL_CITABLE_FIELDS
+list — the whole mechanism that makes "write from the primary lens" real
+rather than aspirational (see nfl_shelf_card_prompt.py's own docstring).
 
 Callable for ANY qualifying player on ANY shelf, not just the one Tasty
 Six pick per shelf — this is the writer that closes the real gap this
@@ -59,6 +64,7 @@ from nfl_writer_common import (  # noqa: E402
 )
 from nfl_shelf_card_prompt import build_system_prompt, build_user_prompt  # noqa: E402
 from nfl_shelf_card_writer_schema import NFL_SHELF_CARD_TOOL_SCHEMA, validate_schema_shape  # noqa: E402
+from nfl_tension import find_tension  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from editorial_lenses import citable_fields_for_lens, resolve_editorial_lens  # noqa: E402
@@ -98,6 +104,50 @@ def call_claude_for_nfl_shelf_card(api_key: str, system_prompt: str, user_prompt
     return call_claude_with_tool(api_key, system_prompt, user_prompt, NFL_SHELF_CARD_TOOL_SCHEMA)
 
 
+# Skip source-fact values this small -- a jersey number, a single-digit
+# star rating, an ordinary small count. A raw field value THIS size can
+# appear in ordinary English by pure coincidence ("he's their No. 2
+# option") without being field-narration at all; the real failure mode
+# this check exists for is a distinctive, clearly-evidence-shaped number
+# (a percentile score, a completeness percentage, an odds price) landing
+# verbatim in prose.
+_FIELD_NARRATION_MIN_ABS_VALUE = 10
+
+
+def validate_no_field_narration(story: str, source_facts: dict) -> list[dict]:
+    """
+    Automated slice of the Editorial Voice Spec's hard rule: "the writing
+    agent is prohibited from generating a sentence that could be produced
+    by reading a Story Object field aloud in prose." This is NOT the full
+    check the spec's own "Editorial QA pass (future)" section describes
+    (that needs a real LLM-based read of the whole sentence, out of this
+    task's scope) -- it's the cheapest, least-ambiguous slice that's
+    directly automatable today: does `story` contain a raw NUMERIC
+    source-fact value, verbatim? A `story` that quotes "72.9" or "57.1"
+    or "30" straight out of the facts it was given is field-narration by
+    definition, regardless of the surrounding sentence -- numbers are
+    evidence (why_reasons' job), never the story.
+
+    Checks both the value's natural string form and its rounded-integer
+    form (a model narrating "73" instead of "72.9" is still narrating the
+    same real field, not writing around it). Skips booleans (a stray
+    "True"/"False" is never a field-narration risk) and small integers
+    (see _FIELD_NARRATION_MIN_ABS_VALUE's own comment).
+    """
+    issues = []
+    for key, value in source_facts.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if abs(value) < _FIELD_NARRATION_MIN_ABS_VALUE:
+            continue
+        candidates = {str(value), str(round(value))}
+        for candidate in candidates:
+            if candidate in story:
+                issues.append({"field": key, "value": value, "matched_text": candidate})
+                break
+    return issues
+
+
 def run_all_validators(output: dict, source_facts: dict) -> list:
     """
     Same combination as generate_tasty_six_content.py's version, minus
@@ -109,7 +159,13 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     reason's cited evidence must actually belong to the pillar it's
     tagged with, not just cite SOME real key and pass a real star check
     against a DIFFERENT field), then banned language checked against
-    title and every reason_text.
+    title, story, and every reason_text.
+
+    PLUS (Editorial Voice Spec, "Find the Tension" addition):
+    field-narration checked against `story` specifically (see
+    validate_no_field_narration's own docstring) — why_reasons is
+    EXEMPT from this check on purpose, since citing real numbers is
+    exactly its job; `story` is the one field this rule applies to.
     """
     issues = []
 
@@ -119,13 +175,15 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
         return issues
 
     why_reasons = output["why_reasons"]
+    story = output["story"]
 
     issues.extend({"check": "citation", **v} for v in validate_citations(why_reasons, source_facts))
     issues.extend({"check": "numeric_grounding", **v} for v in validate_numeric_grounding(why_reasons, source_facts, nfl_tolerance_for_key))
     issues.extend({"check": "star_consistency", **v} for v in validate_star_consistency(why_reasons, source_facts, NFL_PILLAR_NAMES, NFL_STAR_PILLAR_SCORE_KEYS))
     issues.extend({"check": "pillar_field_consistency", **v} for v in validate_pillar_field_consistency(why_reasons))
+    issues.extend({"check": "field_narration", **v} for v in validate_no_field_narration(story, source_facts))
 
-    banned_targets = [("title", output["title"])]
+    banned_targets = [("title", output["title"]), ("story", story)]
     banned_targets += [(f"why_reasons[{i}].reason_text", r["reason_text"]) for i, r in enumerate(why_reasons)]
     for field, text in banned_targets:
         found = find_banned_phrases(text)
@@ -178,26 +236,37 @@ def generate_nfl_shelf_card_draft(
     Returns:
       {
         "player_id":..., "shelf":..., "writer_type": "shelf_card",
-        "title":..., "why_reasons":..., "confidence_band":...,
+        "title":..., "story":..., "why_reasons":..., "confidence_band":...,
         "model_name":..., "validation_passed": bool,
         "validation_issues": [...], "review_status": "pending_review"|"flagged",
-        "opening_phrase": str, "_editorial_lens": {...}, "_raw_model_output": {...},
+        "opening_phrase": str, "_editorial_lens": {...}, "_tension": {...},
+        "_raw_model_output": {...},
       }
+    `story` (Editorial Voice Spec, "Find the Tension" addition) is the
+    real Story-tier text — see nfl_shelf_card_writer_schema.py's own
+    docstring for why this is a new field, not editorial_sentence
+    renamed. `_tension` is the real Tension Object (nfl_tension.find_
+    tension's own output) that produced it — underscore-prefixed and
+    stripped before a real write by draft_for_write() below, same as
+    _editorial_lens, but kept on the return value for inspection/
+    debugging/QA (the spec's own "storable, inspectable" requirement).
+
     `opening_phrase` is real, non-underscore output (unlike _editorial_
-    lens/_raw_model_output) — draft_for_write() below still strips it
-    before a real write, since nfl_content_drafts has no column for it,
-    but the CALLER (shape_content_draft_rows' own batch loop) needs it
-    un-prefixed and readable to grow avoid_opening_phrases across the
-    batch, the same way it already reads draft["title"] for avoid_
-    headlines.
+    lens/_tension/_raw_model_output) — draft_for_write() below still
+    strips it before a real write, since nfl_content_drafts has no
+    column for it, but the CALLER (shape_content_draft_rows' own batch
+    loop) needs it un-prefixed and readable to grow avoid_opening_
+    phrases across the batch, the same way it already reads
+    draft["title"] for avoid_headlines.
     """
     candidate = build_nfl_writer_candidate(row)
     lens = resolve_editorial_lens(shelf, candidate)
     scoped_fields = citable_fields_for_lens(lens)
     source_facts = flatten_source_facts(candidate, scoped_fields)
+    tension = find_tension(candidate, lens)
 
     system_prompt = build_system_prompt(
-        shelf, confidence_band, lens, avoid_headlines=avoid_headlines, avoid_opening_phrases=avoid_opening_phrases,
+        shelf, confidence_band, lens, tension, avoid_headlines=avoid_headlines, avoid_opening_phrases=avoid_opening_phrases,
     )
     user_prompt = build_user_prompt(source_facts)
 
@@ -213,6 +282,7 @@ def generate_nfl_shelf_card_draft(
         "shelf": shelf,
         "writer_type": WRITER_TYPE,
         "title": title,
+        "story": output.get("story"),
         "why_reasons": output.get("why_reasons"),
         "confidence_band": confidence_band,
         "model_name": MODEL_NAME,
@@ -221,6 +291,7 @@ def generate_nfl_shelf_card_draft(
         "review_status": "pending_review" if not issues else "flagged",
         "opening_phrase": opening_phrase(title),
         "_editorial_lens": lens,
+        "_tension": tension,
         "_raw_model_output": output,
     }
 
