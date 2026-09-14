@@ -19,6 +19,10 @@ prints:
   - Tasty Six picks + which shelf each came from
   - AP Top 25 composition compared across an earlier week and target_week
     (does the eligible population actually move)
+  - Story Archetype Resolver validation (added for the archetype-wiring
+    task): shape_cfb_shelf_placement_rows' real per-shelf archetype
+    distribution across all 8 shelves, plus a real player-on-2-shelves
+    spot check confirming two different archetypes on the two rows
 
 Usage:
     CFBD_API_KEY=<key> python3 cfb/scripts/shelf_sanity.py 2025 1 6
@@ -48,6 +52,7 @@ from curate_cfb_shelves import (  # noqa: E402
     assign_cfb_shelves,
     curate_cfb_shelves,
     select_cfb_tasty_six,
+    shape_cfb_shelf_placement_rows,
 )
 
 pd.set_option("display.width", 160)
@@ -250,3 +255,41 @@ if __name__ == "__main__":
         pool = shelves[shelf_name]
         teams = sorted(set(pool["team"].dropna()))
         print(f"  {shelf_name}: {len(pool)} players, teams = {teams}")
+
+    # ================= Story Archetype Resolver (this task) =================
+    print("\n" + "=" * 78)
+    print(f"STORY ARCHETYPE RESOLVER — {season} week {target_week} placement rows")
+    print("=" * 78)
+    placements = shape_cfb_shelf_placement_rows(shelves)
+    placements_df = pd.DataFrame(placements)
+    print(f"\n  total placement rows: {len(placements)} (sum of every shelf's own real membership)")
+    print("\n--- archetype distribution per shelf ---")
+    for shelf_name in CFB_SHELF_ORDER:
+        shelf_rows = placements_df[placements_df["shelf"] == shelf_name] if len(placements_df) else placements_df
+        if len(shelf_rows) == 0:
+            print(f"  {shelf_name}: (no placements this week)")
+            continue
+        counts = shelf_rows["archetype"].value_counts().to_dict()
+        print(f"  {shelf_name} ({len(shelf_rows)} rows): {counts}")
+
+    real_none = int(placements_df["archetype"].isna().sum()) if len(placements_df) else 0
+    print(f"\n  rows with a NULL/missing archetype: {real_none} (should be 0 -- every placement row must resolve to something)")
+
+    # Real player-on-2(+)-shelves spot check -- reuses the SAME convergence
+    # data already computed above (week_rows_conv), so this checks a real
+    # multi-shelf player this exact real week actually produced, not a
+    # cherry-picked or synthetic one.
+    print("\n--- player-on-multiple-shelves spot check (real data, this week) ---")
+    if len(top_conv):
+        spot = top_conv.iloc[0]
+        spot_id = spot["player_id"]
+        spot_rows = placements_df[placements_df["player_id"] == spot_id]
+        print(f"  {spot['player_name']} ({spot['team']}) is on {spot['shelf_count']} shelves: {spot['shelves']}")
+        print(spot_rows[["shelf", "archetype"]].to_string(index=False))
+        distinct = spot_rows["archetype"].nunique()
+        print(
+            f"  -> {distinct} distinct archetype value(s) across {len(spot_rows)} placement rows "
+            f"({'CONFIRMED different archetypes per shelf' if distinct > 1 else 'same archetype on every shelf -- worth a second look'})"
+        )
+    else:
+        print("  (no player is on more than one shelf this week -- nothing to spot-check)")

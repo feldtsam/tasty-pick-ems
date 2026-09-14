@@ -27,6 +27,7 @@ from curate_cfb_shelves import (
     assign_cfb_shelves,
     curate_cfb_shelves,
     select_cfb_tasty_six,
+    shape_cfb_shelf_placement_rows,
     shape_cfb_shelf_score_rows,
 )
 from test_scoring import build_defense_season, build_player_season, build_role_season
@@ -264,6 +265,71 @@ if __name__ == "__main__":
     r.append(check(
         "Tasty Six: every OTHER shelf's own top pick is present (glf's runner-up wasn't needed)",
         {"glf1", "wh1", "tm1", "sec1"} <= set(tasty_ids),
+    ))
+
+    # ---- Story Archetype Resolver wiring: shape_cfb_shelf_placement_rows --
+    placements = shape_cfb_shelf_placement_rows(shelves)
+    by_pid: dict = {}
+    for row in placements:
+        by_pid.setdefault(row["player_id"], []).append(row)
+
+    expected_total = sum(len(shelves[s]) for s in CFB_SHELF_ORDER)
+    r.append(check(
+        "placement row count == sum of every shelf's own real membership (2+2+2+1+1+2+2+0)",
+        len(placements) == expected_total and expected_total == 12,
+    ))
+    r.append(check(
+        "every placement row's `shelf` is a real, non-null CFB_SHELF_ORDER name",
+        all(row["shelf"] in CFB_SHELF_ORDER for row in placements),
+    ))
+    r.append(check(
+        "every placement row has a real (non-null) archetype",
+        all(row["archetype"] for row in placements),
+    ))
+    r.append(check(
+        "'nowhere' (on zero shelves) gets ZERO placement rows -- not one row with a null shelf",
+        "nowhere" not in by_pid,
+    ))
+
+    dual_by_shelf = {row["shelf"]: row["archetype"] for row in by_pid["dual"]}
+    r.append(check(
+        "'dual' gets exactly 2 placement rows, one per real shelf it's actually on",
+        len(by_pid["dual"]) == 2 and set(dual_by_shelf) == {"goal_line_favorites", "top25_td_watch"},
+    ))
+    r.append(check(
+        "'dual' resolves to GOAL_LINE on its behavior-shelf row (locked, ignores tpe_score)",
+        dual_by_shelf["goal_line_favorites"] == "GOAL_LINE",
+    ))
+    r.append(check(
+        "the SAME 'dual' row resolves to THE_RANKED on its editorial-shelf row -- two different archetypes",
+        dual_by_shelf["top25_td_watch"] == "THE_RANKED",
+    ))
+
+    glf1_by_shelf = {row["shelf"]: row["archetype"] for row in by_pid["glf1"]}
+    r.append(check(
+        "'glf1' (also on Big Ten TD Watch) gets 2 rows: GOAL_LINE and BIG_TEN",
+        len(by_pid["glf1"]) == 2
+        and glf1_by_shelf["goal_line_favorites"] == "GOAL_LINE"
+        and glf1_by_shelf["big_ten_td_watch"] == "BIG_TEN",
+    ))
+    r.append(check(
+        "'glf2' (capped OUT of goal_line_favorites, still on Big Ten TD Watch) gets exactly 1 row: BIG_TEN",
+        len(by_pid["glf2"]) == 1 and by_pid["glf2"][0]["shelf"] == "big_ten_td_watch"
+        and by_pid["glf2"][0]["archetype"] == "BIG_TEN",
+    ))
+    r.append(check(
+        "'sec1' (SEC TD Watch only) resolves to SEC, ignoring its own thin/gated signal scores",
+        len(by_pid["sec1"]) == 1 and by_pid["sec1"][0]["archetype"] == "SEC",
+    ))
+    r.append(check(
+        "'tm1' (Target Magnets + ACC TD Watch) gets 2 rows: TARGET_MAGNET and ACC",
+        len(by_pid["tm1"]) == 2
+        and {row["shelf"]: row["archetype"] for row in by_pid["tm1"]}
+        == {"target_magnets": "TARGET_MAGNET", "acc_td_watch": "ACC"},
+    ))
+    r.append(check(
+        "'wh1'/'wh2' (Workhorses only) each resolve to WORKHORSE with exactly 1 row",
+        all(len(by_pid[pid]) == 1 and by_pid[pid][0]["archetype"] == "WORKHORSE" for pid in ("wh1", "wh2")),
     ))
 
     print()

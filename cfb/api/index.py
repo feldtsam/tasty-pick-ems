@@ -51,13 +51,16 @@ import requests
 from flask import Flask, jsonify, request
 
 from curate_cfb_shelves import (
+    assign_cfb_shelves,
     cfb_defense_redzone_allowed_weekly_snapshot,
+    cfb_player_receiving_weekly_snapshot,
     cfb_player_redzone_weekly_snapshot,
     cfb_player_role_weekly_snapshot,
     curate_cfb_shelves,
+    shape_cfb_shelf_placement_rows,
     write_cfb_player_shelf_scores,
 )
-from ids import CFBDError, fbs_team_ids
+from ids import CFBDError, fbs_team_ids, fetch_ap_top25, team_conference_map
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
 from plays_stats import (
     completed_games,
@@ -316,21 +319,44 @@ def curate_and_write_cfb_shelves_endpoint():
     mechanism /api/ingest-and-write-redzone already uses — a small, fixed,
     human/Make.com-only trigger, not a genuinely attacker-shaped body).
 
-    Reads the whole season back from the three raw ingestion tables
+    Reads the whole season back from the four raw ingestion tables
     (season-scoped signed reads — see curate_cfb_shelves.py), runs the
-    real scoring chain, and forwards this week's scored rows to
-    cfb_player_shelf_scores — unless preview_only, same convention
-    ingest-and-write-redzone already uses. Reuses CFB_PIPELINE_WEBHOOK_
-    SECRET for BOTH the reads and the write, same as NFL's own reconcile_
-    week.py reuses NFL_PIPELINE_WEBHOOK_SECRET for both nfl-price-history-
-    read and nfl-player-redzone-weekly-write (confirmed: identical env
-    var both directions on that side).
+    real scoring chain, assigns the 8 real shelves (assign_cfb_shelves),
+    resolves each shelf placement's own story archetype (story_
+    archetype.resolve_cfb_archetype, via shape_cfb_shelf_placement_rows),
+    and forwards those placement rows to cfb_player_shelf_scores — unless
+    preview_only, same convention ingest-and-write-redzone already uses.
+    Reuses CFB_PIPELINE_WEBHOOK_SECRET for BOTH the reads and the write,
+    same as NFL's own reconcile_week.py reuses NFL_PIPELINE_WEBHOOK_
+    SECRET for both nfl-price-history-read and nfl-player-redzone-
+    weekly-write (confirmed: identical env var both directions on that
+    side).
 
-    Every real per-request external call (fbs_team_ids, the three signed
-    reads, the signed write) is wrapped so a real failure returns a
-    diagnostic 502/500 with `stage`, not a bare Flask 500 — same shape
-    ingest-and-write-redzone's own CFBDError/Exception handling already
-    uses.
+    STORY ARCHETYPE RESOLVER WIRING (this task) — a real behavior change
+    from this endpoint's prior form, flagged explicitly: this used to
+    forward `shelf_score_rows` (curate_cfb_shelves()'s own one-row-per-
+    scored-player output — the WHOLE population, `shelf` always null,
+    Target Magnets/8-shelf assignment never actually run here despite
+    existing in curate_cfb_shelves.py since Phase 5). Investigation
+    before this task confirmed assign_cfb_shelves/add_shelf_convergence/
+    resolve_cfb_archetype had NEVER been called from this endpoint —
+    only exercised locally via cfb/scripts/shelf_sanity.py. This endpoint
+    now forwards shape_cfb_shelf_placement_rows' output instead: ONLY
+    players who made at least one of the 8 real shelves get written, and
+    a player on N shelves gets N rows — one per shelf, each with that
+    shelf's own real (possibly different) resolved archetype. See
+    shape_cfb_shelf_placement_rows' and story_archetype.resolve_cfb_
+    archetype's own docstrings for why. This requires the companion
+    migration that changes cfb_player_shelf_scores' unique constraint
+    from (player_id, season, week) to (player_id, season, week, shelf)
+    and the matching tastypickems write-route change (onConflict) — see
+    that migration's own file for both.
+
+    Every real per-request external call (fbs_team_ids, the four signed
+    reads, fetch_ap_top25, team_conference_map, the signed write) is
+    wrapped so a real failure returns a diagnostic 502/500 with `stage`,
+    not a bare Flask 500 — same shape ingest-and-write-redzone's own
+    CFBDError/Exception handling already uses.
     """
     auth_error = check_pipeline_secret()
     if auth_error:
@@ -354,9 +380,17 @@ def curate_and_write_cfb_shelves_endpoint():
         print(f"[curate-and-write-cfb-shelves] season={season} week={week} stage=fbs_ids error={e!r}", flush=True)
         return jsonify({"status": "error", "stage": "fbs_ids", "season": season, "week": week, "error": str(e)}), 502
 
+    try:
+        ap_ranks = fetch_ap_top25(season, week)
+        team_conference = team_conference_map(season)
+    except CFBDError as e:
+        print(f"[curate-and-write-cfb-shelves] season={season} week={week} stage=shelf_lookups error={e!r}", flush=True)
+        return jsonify({"status": "error", "stage": "shelf_lookups", "season": season, "week": week, "error": str(e)}), 502
+
     player_weekly = cfb_player_redzone_weekly_snapshot(season, secret)
     allowed_weekly = cfb_defense_redzone_allowed_weekly_snapshot(season, secret)
     role_weekly = cfb_player_role_weekly_snapshot(season, secret)
+    receiving_weekly = cfb_player_receiving_weekly_snapshot(season, secret)
 
     if len(player_weekly) == 0:
         return jsonify({
@@ -368,14 +402,19 @@ def curate_and_write_cfb_shelves_endpoint():
             ),
         }), 404
 
-    result = curate_cfb_shelves(player_weekly, allowed_weekly, role_weekly, season, week, ids)
-    shelf_score_rows = result["shelf_score_rows"]
+    result = curate_cfb_shelves(
+        player_weekly, allowed_weekly, role_weekly, season, week, ids, receiving_weekly=receiving_weekly,
+    )
+    week_rows = result["week_rows"]
+    shelves = assign_cfb_shelves(week_rows, ap_ranks, team_conference)
+    placement_rows = shape_cfb_shelf_placement_rows(shelves)
 
     forward = {"skipped": "preview_only"}
     if not preview_only:
-        forward = _forward(shelf_score_rows, secret, "LOVABLE_CFB_PLAYER_SHELF_SCORES_WRITE_URL",
+        forward = _forward(placement_rows, secret, "LOVABLE_CFB_PLAYER_SHELF_SCORES_WRITE_URL",
                             "https://tastypickems.lovable.app/api/public/cfb-player-shelf-scores-write")
 
+    shelf_counts = {name: len(shelves.get(name, [])) for name in shelves}
     response = {
         "status": "ok",
         "season": season,
@@ -385,15 +424,20 @@ def curate_and_write_cfb_shelves_endpoint():
         "defense_rows_read": len(allowed_weekly),
         "role_rows_read": len(role_weekly),
         "role_momentum_available": bool(len(role_weekly)),
-        "week_rows": len(result["week_rows"]),
-        "shelf_score_rows": len(shelf_score_rows),
+        "receiving_rows_read": len(receiving_weekly),
+        "target_magnets_available": bool(len(receiving_weekly)),
+        "week_rows": len(week_rows),
+        "shelf_counts": shelf_counts,
+        "placement_rows": len(placement_rows),
         "forward": forward,
-        "sample": shelf_score_rows[:3],
+        "sample": placement_rows[:3],
     }
     print(
         f"[curate-and-write-cfb-shelves] season={season} week={week} preview_only={preview_only} "
         f"players_read={len(player_weekly)} role_rows_read={len(role_weekly)} "
-        f"week_rows={len(result['week_rows'])} forward={forward.get('success')}/{forward.get('status_code')} "
+        f"receiving_rows_read={len(receiving_weekly)} week_rows={len(week_rows)} "
+        f"shelf_counts={shelf_counts} placement_rows={len(placement_rows)} "
+        f"forward={forward.get('success')}/{forward.get('status_code')} "
         f"forward_body={truncate_for_log(forward.get('response_body'), 500)!r}",
         flush=True,
     )
@@ -408,9 +452,12 @@ def curate_and_write_cfb_shelves_health_check():
             "POST {\"season\": int, \"week\": int, \"preview_only\": bool (optional)}. "
             "Auth: X-Pipeline-Secret header. Reads the whole season back from "
             "cfb_player_redzone_weekly / cfb_defense_redzone_allowed_weekly / "
-            "cfb_player_role_weekly, runs the real TD Opportunity + Situation + "
-            "Role & Momentum + Evidence Quality + Universal TPE scoring chain "
-            "(cfb/scoring.py, unmodified), and forwards this week's rows to "
+            "cfb_player_role_weekly / cfb_player_receiving_weekly, runs the real TD "
+            "Opportunity + Situation + Role & Momentum + Target Magnets + Evidence "
+            "Quality + Universal TPE scoring chain (cfb/scoring.py, unmodified), "
+            "assigns the 8 real shelves (assign_cfb_shelves), resolves each shelf "
+            "placement's own story archetype (story_archetype.resolve_cfb_archetype), "
+            "and forwards one row per real (player, shelf) placement to "
             "cfb_player_shelf_scores."
         ),
         "scope": "Curation/orchestration only (Track B). Does not re-implement any scoring math.",

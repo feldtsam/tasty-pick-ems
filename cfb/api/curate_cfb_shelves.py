@@ -5,8 +5,24 @@ signed reads — same real pattern nfl/scripts/reconcile_week.py's
 read_player_redzone_weekly_rows/role_defensive_weekly_snapshot already
 establish), runs the real CFB scoring chain (cfb/scoring.py, unmodified
 math — this module orchestrates and writes, it does not recompute
-anything scoring.py already owns), and shapes + writes one row per
-scored player-week to the new cfb_player_shelf_scores table.
+anything scoring.py already owns), and shapes + writes scored rows to
+the cfb_player_shelf_scores table.
+
+UPDATED (Phase 5 + this task) — the paragraph below is the module's
+ORIGINAL framing and is now partly stale: CFB DOES have a real shelf
+taxonomy as of Phase 5 (the 8-shelf section at the end of this file --
+assign_cfb_shelves / add_shelf_convergence / select_cfb_tasty_six), and
+this task wires story_archetype.resolve_cfb_archetype() into a NEW
+per-shelf-placement write path (shape_cfb_shelf_placement_rows, below)
+that is now what the live endpoint actually forwards to
+cfb_player_shelf_scores -- see that function's own docstring. shape_cfb_
+shelf_score_rows (the ORIGINAL one-row-per-player-week shaping this
+paragraph describes) is kept, unmodified, for the whole-population raw
+scored snapshot it always was -- it is a different, still-valid output,
+just no longer the one the live endpoint writes to this table. Left the
+rest of this historical paragraph as originally written below (Market
+Value/odds are still genuinely deferred to v2, unaffected by Phase 5 or
+this task):
 
 Deliberately mirrors nfl/api/curate_home_shelves.py's STRUCTURE (read
 helpers -> pure orchestration function -> row-shaping -> write helper,
@@ -74,6 +90,7 @@ from scoring import (
     score_td_opportunity_cfb,
     score_universal_tpe_cfb,
 )
+from story_archetype import resolve_cfb_archetype
 
 # ---------------------------------------------------------------------------
 # Real typed-column shapes, confirmed directly against cfb/redzone.py's and
@@ -248,6 +265,16 @@ def cfb_player_receiving_weekly_snapshot(season: int, secret: str, read_url: str
 CFB_SHELF_SCORE_COLUMNS = [
     "player_id", "player_name", "season", "week", "game_id",
     "team_id", "team", "opponent_team_id", "opponent", "position_group",
+    # `shelf` was always in the live DB schema (original migration's own
+    # comment: "reserved so a future shelf-assignment task can populate
+    # it") but never in this list, since shape_cfb_shelf_score_rows'
+    # per-player rows have no single real shelf value to put here. Now
+    # genuinely populated -- but only by shape_cfb_shelf_placement_rows
+    # (below), one real shelf name per row. shape_cfb_shelf_score_rows'
+    # own rows still read this back as None (week_rows has no "shelf"
+    # column), which is correct -- an unfiltered whole-population row
+    # was never ON any one shelf.
+    "shelf",
     "td_opportunity", "td_opportunity_completeness", "td_opportunity_gated",
     "defensive_matchup_vulnerability", "defensive_matchup_completeness",
     "situation", "situation_completeness",
@@ -265,6 +292,13 @@ CFB_SHELF_SCORE_COLUMNS = [
     # (record.get(col)) means calling it BEFORE add_shelf_convergence
     # simply omits these two (None), not a KeyError.
     "shelves", "shelf_count",
+    # Story Archetype Resolver wiring (this task) -- story_archetype.
+    # resolve_cfb_archetype()'s own output, resolved PER SHELF PLACEMENT
+    # by shape_cfb_shelf_placement_rows (below), never by shape_cfb_
+    # shelf_score_rows (a per-player row with no single shelf has no one
+    # correct archetype to resolve -- reads back None here, same as
+    # `shelf` above, for the same reason).
+    "archetype",
 ]
 
 
@@ -604,3 +638,58 @@ def select_cfb_tasty_six(shelves: dict, n: int = 6) -> list:
             break  # exactly one claim per shelf per walk
 
     return picks[:n]
+
+
+# ---------------------------------------------------------------------------
+# Story Archetype Resolver wiring (this task) — the real per-shelf-
+# placement write path. See story_archetype.py's own module docstring
+# for the full resolver design; this is only the shaping step that turns
+# assign_cfb_shelves' output into cfb_player_shelf_scores rows.
+# ---------------------------------------------------------------------------
+
+
+def shape_cfb_shelf_placement_rows(shelves: dict) -> list:
+    """
+    One row per REAL (player, shelf) placement — THE actual "shelf-
+    assignment" write, as distinct from shape_cfb_shelf_score_rows (the
+    whole scored population, one row per player, `shelf`/`archetype`
+    always None there — see CFB_SHELF_SCORE_COLUMNS' own comments).
+
+    Expands assign_cfb_shelves()'s own {shelf_name: DataFrame} output:
+    only players who made at least one of the 8 real shelves get a row
+    here (a player on zero shelves this week gets none), and a player on
+    N shelves gets N rows — one per shelf, `shelf` set to that shelf's
+    real name and `archetype` resolved INDEPENDENTLY per placement via
+    story_archetype.resolve_cfb_archetype(shelf_name, row). This is
+    deliberately NOT deduplicated across shelves, extending assign_cfb_
+    shelves' own "no dedup across shelves" rule to the write layer: a
+    player on both Goal-Line Favorites and SEC TD Watch produces TWO
+    rows here — GOAL_LINE on one, SEC on the other — never one row
+    picking a winner between them (see story_archetype.py's own module
+    docstring for why the same player genuinely gets a different
+    archetype depending on which shelf's row it is).
+
+    `shelves`: assign_cfb_shelves()'s own {shelf_name: DataFrame} output
+    — already sorted best-first and capped at shelf_size per shelf. Row
+    order within each shelf's own block in the returned list preserves
+    that rank order.
+
+    Uses the same to_json()-round-trip JSON-safety idiom shape_cfb_
+    shelf_score_rows already establishes (numpy int64/float64/NaN/pd.NA
+    survive a naive .to_dict("records") call untouched; to_json()'s own
+    encoder handles them correctly).
+    """
+    rows: list = []
+    for shelf_name in CFB_SHELF_ORDER:
+        pool = shelves.get(shelf_name)
+        if pool is None or pool.empty:
+            continue
+        records = json.loads(pool.to_json(orient="records"))
+        for record in records:
+            archetype_result = resolve_cfb_archetype(shelf_name, record)
+            typed = {col: record.get(col) for col in CFB_SHELF_SCORE_COLUMNS if col not in ("shelf", "archetype")}
+            typed["shelf"] = shelf_name
+            typed["archetype"] = archetype_result["archetype"]
+            typed["extra"] = {k: v for k, v in record.items() if k not in CFB_SHELF_SCORE_COLUMNS}
+            rows.append(typed)
+    return rows
