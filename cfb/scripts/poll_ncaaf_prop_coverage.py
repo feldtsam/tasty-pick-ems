@@ -31,6 +31,30 @@ Usage:
 The 11 prop market keys are frozen to match the 2026-08-30 sweeps exactly
 -- do not reorder or swap without also noting it in the findings doc, or
 run-to-run comparison breaks.
+
+ATTD OUTCOME CAPTURE (2026-09-13 investigation, small fix): fetch_event_
+props used to build ONLY {market_key: [book_keys]} -- book PRESENCE, not
+the outcomes themselves. Every outcome (per book, per player) was parsed
+out of the response and then thrown away, so no run of this script ever
+recorded a real price. Fixed by also collecting each player_anytime_td
+outcome's raw fields (see ATTD_MARKET / fetch_event_props below) onto
+each game as `attd_outcomes`, and persisting them in the .jsonl log
+alongside the existing book-presence summary.
+
+DELIBERATELY SCHEMA-AGNOSTIC: captures BOTH `name` and `description`
+raw, unchanged, rather than picking one and calling it "player_name" --
+this investigation's own Part 2 could not confirm CFB's real outcome
+shape (see the findings report; every real game probed 2026-09-13 was
+4+ days from kickoff with zero live coverage, same "posts late" pattern
+this module's own docstring already documents -- not a code gap, a
+calendar one). NFL's player_anytime_td is confirmed inverted (name is
+always the constant "Yes", the player is in `description` -- see nfl/
+market_value.py's own docstring) but CFB was never confirmed to match
+that shape rather than assumed to. Interpreting which field holds the
+player name is deliberately left to whoever re-runs this once real
+coverage exists (inside ~2 days of a real kickoff) and can check
+directly -- guessing here would risk exactly the kind of silent
+misread nfl/market_value.py's own docstring warns against.
 """
 import argparse
 import json
@@ -146,19 +170,55 @@ def fetch_events(api_key: str) -> list[dict]:
     return data
 
 
-def fetch_event_props(api_key: str, event_id: str) -> tuple[dict, str | None]:
+ATTD_MARKET = "player_anytime_td"
+
+
+def parse_event_odds(data: dict) -> tuple[dict, list[dict]]:
+    """
+    Pure parse of one event's already-fetched `/events/{id}/odds` response
+    body. Split out from fetch_event_props (the network call) so this
+    part -- the part that actually matters for this investigation -- is
+    testable with a plain dict fixture, no network/mocking required. Same
+    "script layer does I/O, a plain function does the parsing" split
+    nfl/market_value.py's own parse_attd_event uses.
+
+    Returns ({market_key: [book_keys]} -- book presence, unchanged shape
+    from before this investigation), [attd_outcome, ...] -- one dict per
+    REAL (book, outcome) row on the player_anytime_td market specifically,
+    raw and uninterpreted:
+        {book_key, book_title, name, description, price, point}
+    `name`/`description` are captured VERBATIM from the API, not relabeled
+    as "player"/"team" -- see this module's own docstring for why picking
+    an interpretation here would be guessing, not confirming.
+    """
+    markets: dict[str, list[str]] = {}
+    attd_outcomes: list[dict] = []
+    if isinstance(data, dict):
+        for book in data.get("bookmakers", []):
+            for m in book.get("markets", []):
+                markets.setdefault(m["key"], []).append(book["key"])
+                if m["key"] == ATTD_MARKET:
+                    for outcome in m.get("outcomes", []):
+                        attd_outcomes.append({
+                            "book_key": book.get("key"),
+                            "book_title": book.get("title"),
+                            "name": outcome.get("name"),
+                            "description": outcome.get("description"),
+                            "price": outcome.get("price"),
+                            "point": outcome.get("point"),
+                        })
+    return {k: sorted(set(v)) for k, v in markets.items()}, attd_outcomes
+
+
+def fetch_event_props(api_key: str, event_id: str) -> tuple[dict, list[dict], str | None]:
     url = (
         f"{ODDS_BASE}/events/{event_id}/odds?apiKey={api_key}"
         f"&regions=us&oddsFormat=american&markets={','.join(PROP_MARKET_KEYS)}"
     )
     hdr, data = _get(url)
     rem = hdr.get("x-requests-remaining")
-    markets: dict[str, list[str]] = {}
-    if isinstance(data, dict):
-        for book in data.get("bookmakers", []):
-            for m in book.get("markets", []):
-                markets.setdefault(m["key"], []).append(book["key"])
-    return {k: sorted(set(v)) for k, v in markets.items()}, rem
+    markets, attd_outcomes = parse_event_odds(data)
+    return markets, attd_outcomes, rem
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +243,7 @@ def run_sweep(api_key: str, days_ahead: int) -> dict:
     games = []
     rem = None
     for i, (e, ct, lead) in enumerate(week):
-        markets, rem = fetch_event_props(api_key, e["id"])
+        markets, attd_outcomes, rem = fetch_event_props(api_key, e["id"])
         games.append({
             "away": e["away_team"],
             "home": e["home_team"],
@@ -193,6 +253,7 @@ def run_sweep(api_key: str, days_ahead: int) -> dict:
             "tier": tier_for(e["away_team"], e["home_team"], ref, combos),
             "markets": markets,
             "anytime_td_books": len(markets.get("player_anytime_td", [])),
+            "attd_outcomes": attd_outcomes,
         })
         tag = ",".join(sorted(markets)) if markets else "-"
         print(f"  [{i + 1:>2}/{len(week)}] lead={lead:5.2f}d {games[-1]['tier']:3} "
@@ -275,6 +336,19 @@ def print_report(s: dict) -> None:
         print(f"\n  no props at all -- {len(none)} (tier counts: "
               + ", ".join(f"{t}={sum(1 for g in none if g['tier'] == t)}" for t in ('P4', 'G5', 'FCS')) + ")")
 
+    with_attd = [g for g in s["games"] if g.get("attd_outcomes")]
+    if with_attd:
+        print(f"\n  real player_anytime_td outcomes captured -- {sum(len(g['attd_outcomes']) for g in with_attd)} "
+              f"rows across {len(with_attd)} game(s), raw (name/description uninterpreted -- see module docstring):")
+        for g in with_attd[:3]:
+            print(f"    {g['away']} @ {g['home']}:")
+            for o in g["attd_outcomes"][:5]:
+                print(f"      [{o['book_key']:<12}] name={o['name']!r:<8} description={o['description']!r:<28} "
+                      f"price={o['price']} point={o['point']}")
+    else:
+        print("\n  real player_anytime_td outcomes captured -- NONE this run "
+              "(0 games had live coverage -- see module docstring's 'posts late' pattern)")
+
     print(f"\n  quota remaining: {s['quota_remaining']}")
 
 
@@ -290,7 +364,12 @@ def append_log(summary: dict) -> None:
     record["propped_games"] = [
         {"away": g["away"], "home": g["home"], "kickoff_utc": g["kickoff_utc"],
          "lead_days": g["lead_days"], "bucket": g["bucket"], "tier": g["tier"],
-         "markets": sorted(g["markets"]), "anytime_td_books": g["anytime_td_books"]}
+         "markets": sorted(g["markets"]), "anytime_td_books": g["anytime_td_books"],
+         # Raw, uninterpreted outcome rows (2026-09-13 investigation) --
+         # only ever non-empty when the game actually carries
+         # player_anytime_td (a game with only e.g. player_rush_yds has
+         # anytime_td_books == 0 and this stays []).
+         "attd_outcomes": g.get("attd_outcomes", [])}
         for g in propped
     ]
     record["empty_games_by_tier"] = {
