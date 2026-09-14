@@ -972,6 +972,16 @@ def shape_content_draft_rows(
                 kickoff_utc = ku.isoformat()
 
         title = editorial_sentence = None
+        # Editorial Voice Spec, "Find the Tension" addition -- the real
+        # Story-tier field generate_nfl_shelf_card_draft() now returns as
+        # draft["story"]. Named `story_text` here, NOT `story`, to avoid
+        # colliding with this function's own PRE-EXISTING `story` local
+        # (the _story_for_row() templated dict two lines below, unrelated
+        # and much older -- headline/why_this_hits/role_signals). The
+        # write-row's own JSON key stays "story" (see rows.append below);
+        # only this Python identifier is renamed to keep both real,
+        # unrelated things distinct in the same function scope.
+        story_text = None
         why_reasons = []
         writer_type = "shelf_card"
         model_name = None
@@ -1086,6 +1096,7 @@ def shape_content_draft_rows(
                     draft = None
                 if draft is not None:
                     title = draft.get("title")
+                    story_text = draft.get("story")
                     why_reasons = _llm_why_reasons_for_write(draft.get("why_reasons"))
                     confidence_band = draft.get("confidence_band") or confidence_band
                     model_name = draft.get("model_name")
@@ -1096,6 +1107,12 @@ def shape_content_draft_rows(
                 else:
                     title = story["headline"]
                     why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
+                    # story_text stays None -- the deterministic template
+                    # (Part A) has no Tension Object behind it, so there is
+                    # no real Story-tier text to fall back to here. Honest
+                    # None, not why_this_hits repurposed as a stand-in (see
+                    # this task's own module docstring on why why_this_hits
+                    # is evidence-tier, not story-tier, by design).
             else:
                 title = story["headline"]
                 why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
@@ -1125,6 +1142,13 @@ def shape_content_draft_rows(
             "week": week,
             "title": title,
             "editorial_sentence": editorial_sentence,
+            # Editorial Voice Spec, "Find the Tension" addition -- the real
+            # Story-tier text (see the story_text local's own comment
+            # above for why this Python identifier differs from the JSON
+            # key). None whenever this row fell back to the deterministic
+            # template (no LLM call made, or one failed) -- honest
+            # absence, not why_this_hits or editorial_sentence repurposed.
+            "story": story_text,
             "why_reasons": why_reasons,
             "confidence_band": confidence_band,
             "why_this_hits": why_this_hits,

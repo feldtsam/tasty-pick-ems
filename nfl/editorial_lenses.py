@@ -150,6 +150,28 @@ SIGNAL_TO_CITABLE_FIELDS = {
 # drops the player's own name or team.
 ALWAYS_INCLUDED_FIELDS = ("player_name", "posteam", "position_group", "consensus_price_american")
 
+# Natural-language framing per real signal name — MOVED here (Editorial
+# Voice Spec, Find the Tension addition) from nfl_shelf_card_prompt.py's
+# own former private _SIGNAL_DESCRIPTIONS/_signal_phrase, which nfl_
+# tension.py also needs verbatim. Two independently-maintained copies of
+# the same 5 English descriptions would drift the moment either file's
+# wording changed — this has real prose content, not the trivial-table
+# case this codebase's usual "duplicate rather than cross-import"
+# convention is meant for. editorial_lenses.py is the natural shared home
+# since it already owns "what a signal name means" for every other
+# purpose (EDITORIAL_LENSES, SIGNAL_TO_CITABLE_FIELDS).
+SIGNAL_DESCRIPTIONS = {
+    "td_opportunity": "how much real red-zone/goal-line opportunity this player has actually been getting",
+    "role_momentum": "how this player's real on-field role/usage has been trending",
+    "situation": "the real matchup/environment context this player is stepping into this week",
+    "evidence_quality": "how much the model's other real signals agree with each other on this player",
+    "market_value": "where the real betting market itself currently prices this player",
+}
+
+
+def signal_phrase(signal_name: str) -> str:
+    return SIGNAL_DESCRIPTIONS.get(signal_name, signal_name)
+
 
 def resolve_supporting_signals(shelf: str, row: dict) -> tuple:
     """
