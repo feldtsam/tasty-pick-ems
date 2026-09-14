@@ -114,7 +114,13 @@ def bucket_for(lead_days: float) -> str:
 # happens (the rebuilt Pac-12 already landed here as G5-tier, correctly).
 # A team The Odds API names that isn't in that file is treated as FCS.
 # ---------------------------------------------------------------------------
-def _load_fbs_ref() -> dict:
+def load_fbs_ref() -> dict:
+    """Public (Editorial Voice Spec's own precedent for promoting a
+    formerly-private helper when a second real module needs it verbatim
+    -- see editorial_lenses.signal_phrase's own history): cfb/attd_match.py
+    needs this exact real school resolver too, and a second, independently
+    -maintained copy of fuzzy-matching logic would drift the moment either
+    file's own matching rules changed."""
     ref = json.loads(FBS_REF_PATH.read_text())
     # {"<school> <mascot>": school} for exact matching against Odds API's
     # "<school> <mascot>" team strings, plus the raw ref for fallbacks.
@@ -122,7 +128,7 @@ def _load_fbs_ref() -> dict:
     return ref, combos
 
 
-def _match_school(odds_team: str, ref: dict, combos: dict) -> str | None:
+def match_school(odds_team: str, ref: dict, combos: dict) -> str | None:
     if odds_team in combos:
         return combos[odds_team]
     # CFBD uses short school forms ("Massachusetts", not "UMass") -- fall
@@ -143,7 +149,7 @@ def tier_for(away: str, home: str, ref: dict, combos: dict) -> str:
     """P4 if either side is a power-conf/Notre Dame program; FCS if either
     side isn't FBS at all; G5 otherwise. FCS wins over P4 because a
     P4-vs-FCS blowout is a no-prop game, not a marquee one."""
-    schools = [_match_school(away, ref, combos), _match_school(home, ref, combos)]
+    schools = [match_school(away, ref, combos), match_school(home, ref, combos)]
     if any(s is None for s in schools):
         return "FCS"
     tiers = {ref[s]["tier"] for s in schools}
@@ -226,7 +232,7 @@ def fetch_event_props(api_key: str, event_id: str) -> tuple[dict, list[dict], st
 # ---------------------------------------------------------------------------
 def run_sweep(api_key: str, days_ahead: int) -> dict:
     now = datetime.now(timezone.utc)
-    ref, combos = _load_fbs_ref()
+    ref, combos = load_fbs_ref()
 
     events = fetch_events(api_key)
     horizon = now.timestamp() + days_ahead * 86400
