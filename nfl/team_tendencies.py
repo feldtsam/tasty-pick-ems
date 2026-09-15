@@ -205,12 +205,37 @@ def _weekly_percentile(team_week: pd.DataFrame, value_col: str, qualified_col: s
     gate, not to blank out the score (same separation of concerns as
     defensive_trends.py's games_played mask gating STORIES, not the
     underlying pillar value).
+
+    REAL BUG FIXED HERE (2026-09): this used to be a single
+    `team_week.groupby([...], group_keys=False).apply(_group_pct)` call.
+    With 2+ (season, week) groups, pandas concatenates each group's
+    per-row Series back into one Series, correctly. With EXACTLY ONE
+    group — true for every Week 1 of every season, since every team has
+    played exactly one game and there's no earlier week yet — pandas
+    takes a different internal path and reshapes that single group's
+    per-row Series into a one-row DataFrame instead (the original row
+    positions become columns), which blew up the caller's `df[col] =
+    _weekly_percentile(...)` assignment with "Cannot set a DataFrame
+    with multiple columns to the single column ...". Reproduced directly
+    (a 5-row single-group synthetic frame hits this; the same frame with
+    a second group does not) before writing this fix — see
+    test_team_tendencies.py's synthetic single-group check.
+
+    Fixed by building the per-group Series explicitly and pd.concat-ing
+    them, which is immune to group-count-dependent reshaping: this
+    always returns a Series, whether there's one group or twenty. A
+    plain equality check on group membership guarantees every row is
+    covered by exactly one group's contribution, so concatenation order
+    doesn't matter — the caller's `df[col] = ...` assignment aligns by
+    index label, not position.
     """
     def _group_pct(g: pd.DataFrame) -> pd.Series:
         scale = build_reference_scale(g[value_col], g[qualified_col])
         return pd.Series(percentile_lookup(g[value_col], scale), index=g.index)
 
-    raw = team_week.groupby(["season", "week"], group_keys=False).apply(_group_pct)
+    groups = team_week.groupby(["season", "week"], group_keys=False)
+    parts = [_group_pct(g) for _, g in groups]
+    raw = pd.concat(parts) if parts else pd.Series(dtype=float)
     return fill_neutral(raw)
 
 
