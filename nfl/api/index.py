@@ -1674,9 +1674,18 @@ def generate_and_write_intelligence_endpoint():
     round trip without a live secret.
 
     Does NOT write anything to nfl_intelligence_story_history/
-    nfl_intelligence_stories in preview mode, and does not run Coaching
-    Trends (still deferred — no persisted read-back exists yet for its
-    primary pbp input, a genuinely different, larger problem).
+    nfl_intelligence_stories in preview mode.
+
+    Coaching Trends IS included by default (Phase 5, intelligence_
+    generate.py's own FAMILIES dict) — a stale version of this docstring
+    used to say it was still deferred; it isn't. Real, confirmed
+    consequence of that: every family in FAMILIES is generated fully in
+    memory in one loop with no per-family try/except before a single
+    combined write, so an unhandled exception in ANY one family's
+    generation (Coaching Trends' own single-Week-1-group pandas bug,
+    fixed 2026-09, was one real instance of this) takes every other
+    requested family's write down with it too, even families that
+    generated successfully moments earlier in the same loop.
     """
     auth_error = check_pipeline_secret()
     if auth_error:

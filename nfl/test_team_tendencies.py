@@ -33,7 +33,9 @@ from team_tendencies import (
     build_redzone_play_calling_stories,
     build_team_tendencies_stories,
     _score_fourth_down_aggressiveness,
+    _score_pace,
     _score_redzone_play_calling,
+    _weekly_percentile,
 )
 
 WEEKLY_PATH = Path(__file__).resolve().parent / "scripts" / "player_redzone_weekly.csv"
@@ -48,24 +50,141 @@ def check(label, condition):
 if __name__ == "__main__":
     results = []
 
+    # ============================================================
+    # REGRESSION: the real single-group `.groupby().apply()` bug (fixed
+    # 2026-09) — every team has played exactly one game in Week 1 of
+    # any season, so team_week has exactly ONE (season, week) group at
+    # that point, which is exactly what broke `_weekly_percentile`'s
+    # old `.apply(_group_pct)` call (pandas reshaped the single group's
+    # per-row Series into a one-row DataFrame instead of concatenating a
+    # Series, blowing up the caller's `df[col] = ...` assignment with
+    # "Cannot set a DataFrame with multiple columns to the single column
+    # ..."). Purely synthetic, no network/CSV dependency, so this always
+    # runs regardless of environment — the whole point is catching this
+    # again at the start of a future season before it reaches
+    # production. Season 2099 throughout, per project convention.
+    # ============================================================
+    single_group = pd.DataFrame({
+        "season": [2099] * 5,
+        "week": [1] * 5,
+        "_val": [0.1, 0.2, 0.3, 0.4, 0.5],
+        "_qual": [True] * 5,
+    })
+    single_group_result = _weekly_percentile(single_group, "_val", "_qual")
+    results.append(check(
+        "_weekly_percentile returns a Series (not a DataFrame) on a single-group (one season/week) input — the real Week 1 shape",
+        isinstance(single_group_result, pd.Series),
+    ))
+    if isinstance(single_group_result, pd.Series):
+        results.append(check(
+            "single-group result assigns cleanly onto the frame as a real column, same as the production call site",
+            (lambda df: (df.__setitem__("out", single_group_result), "out" in df.columns)[1])(single_group.copy()),
+        ))
+        results.append(check(
+            "single-group percentiles are real and ordered (not all collapsed to neutral 50)",
+            list(single_group_result) == sorted(single_group_result),
+        ))
+
+    multi_group = pd.DataFrame({
+        "season": [2099] * 10,
+        "week": [1] * 5 + [2] * 5,
+        "_val": [0.1, 0.2, 0.3, 0.4, 0.5] * 2,
+        "_qual": [True] * 10,
+    })
+    multi_group_result = _weekly_percentile(multi_group, "_val", "_qual")
+    results.append(check(
+        "_weekly_percentile still returns a Series on a 2+-group input — no regression on the previously-working path",
+        isinstance(multi_group_result, pd.Series) and len(multi_group_result) == 10,
+    ))
+    results.append(check(
+        "each week's percentiles are ranked within that week only, not pooled across weeks (both weeks share the same 5 input values, so both should produce the same 0/20/40/60/80 spread)",
+        list(multi_group_result.iloc[:5]) == list(multi_group_result.iloc[5:]),
+    ))
+
+    empty_result = _weekly_percentile(single_group.iloc[0:0], "_val", "_qual")
+    results.append(check(
+        "_weekly_percentile handles a zero-row input without raising (empty Series, not a crash)",
+        isinstance(empty_result, pd.Series) and len(empty_result) == 0,
+    ))
+
+    # Detector-level confirmation, not just the isolated helper: all
+    # three real Coaching Trends detectors call _weekly_percentile via
+    # their own _score_* function, and all three independently broke on
+    # a real Week 1 before this fix (the production error only ever
+    # named the red-zone one because build_team_tendencies_stories calls
+    # the three builders in a plain unguarded sum, so execution never
+    # reached the other two — but the underlying bug was never
+    # red-zone-specific).
+    rz_week1 = pd.DataFrame({
+        "team": ["AAA", "BBB", "CCC", "DDD"],
+        "season": [2099] * 4,
+        "week": [1] * 4,
+        "rz_rush_attempts": [15, 5, 20, 8],
+        "rz_pass_attempts": [5, 15, 5, 12],
+        "rz_plays": [20, 20, 25, 20],
+        "i20_rush_attempts": [18, 8, 24, 12],
+        "i20_pass_attempts": [7, 17, 6, 13],
+        "i20_plays": [25, 25, 30, 25],
+    })
+    try:
+        _score_redzone_play_calling(rz_week1, CONFIG)
+        rz_ok = True
+    except ValueError as e:
+        rz_ok = False
+        print(f"    (red-zone detector raised: {e!r})")
+    results.append(check("_score_redzone_play_calling runs on a real single-week (Week 1 shape) synthetic fixture without raising", rz_ok))
+
+    fd_week1 = pd.DataFrame({
+        "team": ["AAA", "BBB", "CCC", "DDD"],
+        "season": [2099] * 4,
+        "week": [1] * 4,
+        "go_attempts": [6, 2, 9, 4],
+        "fourth_down_decisions": [10, 10, 12, 10],
+    })
+    try:
+        _score_fourth_down_aggressiveness(fd_week1, CONFIG)
+        fd_ok = True
+    except ValueError as e:
+        fd_ok = False
+        print(f"    (fourth-down detector raised: {e!r})")
+    results.append(check("_score_fourth_down_aggressiveness runs on a real single-week (Week 1 shape) synthetic fixture without raising", fd_ok))
+
+    pace_week1 = pd.DataFrame({
+        "team": ["AAA", "BBB", "CCC", "DDD"],
+        "season": [2099] * 4,
+        "week": [1] * 4,
+        "drives_count": [11, 10, 12, 9],
+        "seconds_per_play": [28.5, 31.2, 26.8, 33.0],
+    })
+    try:
+        _score_pace(pace_week1, CONFIG)
+        pace_ok = True
+    except ValueError as e:
+        pace_ok = False
+        print(f"    (pace detector raised: {e!r})")
+    results.append(check("_score_pace runs on a real single-week (Week 1 shape) synthetic fixture without raising", pace_ok))
+
     if not WEEKLY_PATH.exists():
-        print(f"SKIPPED all checks — {WEEKLY_PATH} not present in this environment.")
-        raise SystemExit(0)
+        print(f"\n{sum(results)}/{len(results)} synthetic checks passed. "
+              f"SKIPPING real-data checks below — {WEEKLY_PATH} not present in this environment.")
+        raise SystemExit(0 if all(results) else 1)
 
     try:
         import nfl_data_py as nfl
     except ImportError:
-        print("SKIPPED all checks — nfl_data_py not importable in this environment.")
-        raise SystemExit(0)
+        print(f"\n{sum(results)}/{len(results)} synthetic checks passed. "
+              f"SKIPPING real-data checks below — nfl_data_py not importable in this environment.")
+        raise SystemExit(0 if all(results) else 1)
 
     weekly = pd.read_csv(WEEKLY_PATH)
 
     try:
         pbp2025 = nfl.import_pbp_data([2025], downcast=True)
     except Exception as e:
-        print(f"SKIPPED all checks — could not pull real pbp data ({e}). "
+        print(f"\n{sum(results)}/{len(results)} synthetic checks passed. "
+              f"SKIPPING real-data checks below — could not pull real pbp data ({e}). "
               f"Try: export SSL_CERT_FILE=$(python3 -c 'import certifi; print(certifi.where())')")
-        raise SystemExit(0)
+        raise SystemExit(0 if all(results) else 1)
 
     weeks_2025 = sorted(int(w) for w in pbp2025["week"].dropna().unique())
 
