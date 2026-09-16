@@ -191,7 +191,7 @@
       "composite_score": 48.15,
       "gates": { "big_one_eligible": true, "watchlist_eligible": true }
     },
-    "expected_stress_target": "Both gates pass, which is correct — this is a legitimately uncertain but real story, not a weak one. The test is whether the Editor's prose honestly represents the UNRESOLVED status (two plausible explanations, genuinely can't distinguish yet) rather than picking a side and writing it as either 'Carolina has a real weakness' or 'this is nothing, just matchups.' Correct placement is likely Watchlist — 'something worth tracking, not yet confirmed either way' — rather than a confident What Changed narrative."
+    "expected_stress_target": "Both gates pass, which is correct — this is a legitimately uncertain but real story, not a weak one. The test is whether the Editor's prose honestly represents the UNRESOLVED status (two plausible explanations, genuinely can't distinguish yet) rather than picking a side and writing it as either 'Carolina has a real weakness' or 'this is nothing, just matchups.' Correct placement is primarily the Watchlist — 'something worth tracking, not yet confirmed either way.' UPDATED (duplicate-detection two-case rule): a brief cross-reference to this story from another section (e.g. naming it in passing while covering something else) is now explicitly correct, not a violation — but only ONE section may give it a full treatment with its own eps_scores/provenance block. A second full retelling of the same argument in a different section (e.g. an independent What Changed entry making the same case a second time) is the actual failure this fixture now tests for."
   },
   {
     "fixture_id": "fixture_5",

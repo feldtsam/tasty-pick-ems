@@ -33,6 +33,14 @@ this file just tracks what's actually landed here vs. what's still open.
   the real first run's output and its grading against the fixture
   spec's own checklist. See gap below for what this run does and
   doesn't establish.
+- **`fixture_v2_run2_raw.json`** / **`fixture_v2_run2_results.md`** —
+  run 2, after a surgical clarification to Step 2's duplicate-detection
+  rule (two cases: consolidate different Story Objects covering the
+  same situation; give one Story Object relevant to multiple sections
+  exactly one full treatment, with cross-references elsewhere allowed
+  only as a sentence, never a second full entry with its own
+  `eps_scores`). Graded primarily against the fixture that clarification
+  targeted (Fixture 4) — see gap below for the real, honest result.
 
 ## Real, open gaps — flagged, not silently worked around
 
@@ -86,15 +94,33 @@ this run — not production calling code) are both committed. Results:
 run1_results.md` (graded against the fixture spec's own six checks
 plus the prompt's own "Calibration scope for this edit" watch-list).
 
-**Status: Calibration Fixture V2, first run — 5 of 6 stress cases
-passed cleanly, 1 (Fixture 4) passed the reasoning test but produced a
-placement worth a second look (appeared in both What Changed and
-Watchlist), and 1 unrelated prose-generation defect surfaced (an
-aborted mid-sentence entity mix-up, not an EPS-consumption issue).**
-This is one run with no correction pass behind it — the original
-calibration was two rounds with a real fix applied in between. Do not
-cite this as having "recalibrated" the prompt; cite it as a first,
-mostly-passing run of a new test, per `fixture_v2_run1_results.md`'s
-own explicit framing. A second run (and, if Fixture 4's double-
-placement or the prose defect recur, a prompt fix) is the natural next
-step before this status upgrades to "calibrated."
+**Run 1 status:** 5 of 6 stress cases passed cleanly; Fixture 4 passed
+the reasoning test but produced a placement worth a second look
+(appeared in both What Changed and Watchlist, each a full entry); one
+unrelated prose-generation defect surfaced (an aborted mid-sentence
+entity mix-up — see `task_a793e35a`, filed separately, not blocking).
+
+**Run 2 status — the duplicate-detection clarification did not fix
+what it targeted.** After adding the prompt's two-case duplicate rule
+and updating Fixture 4's expected outcome to match, Fixture 4 *still*
+received two full entries (What Changed + Watchlist), each carrying
+its own complete `eps_scores`/provenance block — structurally the same
+shape as run 1, not the "one primary treatment + a brief cross-
+reference" the clarification asked for. Worse, the same pattern spread
+to Fixture 1 (Keane) this run, which now appears in three sections
+(Big One, Who It Affects, Watchlist) each with a full entry — a new
+occurrence, not present in run 1. The other five fixtures showed no
+regression. Full detail, including a real hypothesis about why (the
+output tool schema has no lightweight structural option for "a bare
+cross-reference," only full `stories[]` entries with required
+`eps_scores`), in `fixture_v2_run2_results.md`.
+
+**Do not cite either run as having "recalibrated" the prompt.** Two
+runs in, zero correction passes have actually landed a fix — the
+original two-round calibration had a real fix applied and confirmed
+between rounds; these two rounds still have an open, unresolved
+finding. The natural next step is a decision on how to fix the
+duplicate-entry behavior (prompt wording again, vs. a schema change
+giving the model a real lightweight cross-reference option) before
+attempting a third run — not layering another unprompted iteration on
+top of this one.

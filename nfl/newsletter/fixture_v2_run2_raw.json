@@ -1,0 +1,172 @@
+{
+  "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+  "sections": [
+    {
+      "section_type": "from_the_desk",
+      "stories": [
+        {
+          "headline": "On things that happen quietly",
+          "body": "Nobody sends a memo when a backfield changes hands. There's no press conference for a role that's been drifting for three weeks. Teams just keep putting a player on the field until the rest of us are forced to notice.\n\nThis week gave me one situation where the noticing was easy \u2014 the evidence held up every time I tried to talk myself out of it \u2014 and a couple of others where I'm still not sure what I'm looking at. I think both kinds are worth your time. They're just worth it differently.",
+          "intelligence_story_ids": [],
+          "player_ids": [],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "big_one",
+      "stories": [
+        {
+          "headline": "Keane's goal-line role has quietly taken over",
+          "body": "Three weeks ago, the incumbent back in this backfield controlled better than two-thirds of the goal-line work. Today it's Dorsey Keane holding the majority share, and the tidy explanation \u2014 that this was just an injury absence \u2014 doesn't survive contact with the schedule.\n\nThe incumbent came back to full practice in Week 5. Keane kept the job anyway, taking 5 of 7 goal-line opportunities in the two weeks since. That's the part that changes how I read this. An injury explains a temporary blip. It doesn't explain a back holding the role after the guy he was supposedly filling in for is standing on the practice field again.\n\nSnap share and red-zone targets moved with the goal-line work, not against it, and the market has already started to notice \u2014 the touchdown price has come in from +650 to +400. What I don't know yet is whether this is a permanent decision or an extended look. Those read the same for three weeks. They don't read the same for ten.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "what_changed",
+      "stories": [
+        {
+          "headline": "Osei's red-zone role only half-reverted",
+          "body": "When a starting tight end goes down, whoever picks up the slack is supposed to hand the role back when the starter returns. Palmer Osei mostly did that. Mostly.\n\nHis red-zone snap share jumped from 12% to 34% while the starter sat out with a hamstring injury \u2014 unremarkable on its own. What's more interesting is what happened when the starter came back: Osei's share fell to 26%, not back to 12%. Part of this reverted. Part of it didn't. The offensive coordinator has also leaned on two-tight-end red-zone sets more since Week 9 than in the first five weeks of the season, which at least gives the retained piece a plausible mechanism rather than leaving it unexplained.\n\nThe touchdown price nudged from +1100 to +850 \u2014 modest, matching a modest, partial story. I'm not ready to call 26% Osei's new number. I'd want to see it hold a few more weeks before I trusted it as a level rather than a landing spot mid-descent.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-5"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 44,
+            "evidence_strength": 58,
+            "betting_relevance": 49,
+            "novelty": 47,
+            "story_tension": 61,
+            "audience_relevance": 25,
+            "eps_total": 49.5
+          }
+        },
+        {
+          "headline": "Carolina's slot coverage: vulnerability, or just bad luck of the schedule?",
+          "body": "Opposing slot receivers have beaten expectation against Carolina in two of the last three games, and I'd love to tell you that means something about the defense. The problem is the two receivers who did the damage are both top-8 in the league at the position this season \u2014 which means the more boring explanation, that Carolina just ran into good players, is sitting right there too.\n\nI tried the obvious test: was the one game where Carolina held up against a weaker slot receiver? Yes. Which is exactly what you'd expect whether the real story is a scheme vulnerability or simple opponent quality. The data doesn't separate the two explanations \u2014 it's not weak evidence for a soft spot, it's genuinely ambiguous evidence, which is a different thing.\n\nI'm filing this as open, not solved. If a middling slot receiver has a big week against Carolina next, that tells me something the last three games couldn't.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "who_it_affects",
+      "stories": [
+        {
+          "headline": "Where this points on the roster",
+          "body": "The clearest read-through this week is on Keane himself \u2014 a role this durable changes how his floor looks weekly, not just in goal-line spots. The more interesting downstream question is what it means for the back he passed on the depth chart, whose workload now depends on staying involved on early downs to matter at all. I don't have new data on that player specifically this week, but it's the natural next thing to watch.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "tasty_connection",
+      "stories": []
+    },
+    {
+      "section_type": "watchlist",
+      "stories": [
+        {
+          "headline": "Keane's price versus his role \u2014 still open",
+          "body": "The touchdown price has already moved to reflect some of what's happened here. I'm not convinced it's moved all the way. A role change that survived the incumbent's return is a stronger signal than a three-week sample usually gets to make, and I'd rather watch one more cycle of pricing than assume the market's fully caught up.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        },
+        {
+          "headline": "Carolina's slot coverage, again",
+          "body": "I'm keeping this one open rather than resolved. The next slot receiver Carolina faces who isn't a top-tier name will tell me more than the last three games combined.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ]
+    }
+  ],
+  "watchlist_populated": true,
+  "notes_for_human_reviewer": "This is Fixture V2 -- a new calibration test of the EPS-consumption behavior added in this version of the prompt, not a reproduction or reconfirmation of the original two-round voice calibration (that original fixture is unrecoverable per the README note).\n\nComposition decisions:\n- Big One: SYNTHETIC-FIXTURE-1 (Keane) was the only story with both gates true and a genuinely strong dimension profile (high evidence + high tension + high betting relevance) -- straightforward call, not a \"sort by eps_total\" pick, since I checked its dimension shape before treating it as the lead rather than just its total.\n- What Changed: chose Osei (FIXTURE-5) and Carolina slot defense (FIXTURE-4) over the two market_intelligence \"nothing happened\" stories (FIXTURE-2 Rhoads, FIXTURE-6 Voss) and over the Denver coaching-trends story (FIXTURE-3). Rhoads and Voss both read as confirmations of stability/noise -- correctly low on significance/novelty/tension -- and I didn't force them into the issue just because they cleared the Big One evidence floor; they have no editorial story to tell. Denver (FIXTURE-3) failed both gates (NOT_TESTABLE evidence, confounded by game script) and was excluded entirely, not softened into a hedge-y watchlist item.\n- Market Knows Something: no section included. Neither market_intelligence story (Rhoads, Voss) had a real story independent of \"the market accurately reflects an unchanged situation\" -- including either would have been padding a slot rather than reporting something.\n- Who It Affects: kept to the Keane situation since it was the only story this week with a clear, evidence-supported downstream player implication. I was careful to flag that the depth-chart-loser angle is inference, not new data, rather than implying a second confirmed signal.\n- Tasty Connection: left empty per the fixture note -- no live picks data exists, so no connection was manufactured.\n- Watchlist: both eligible stories (Keane, Carolina) included; that's 2 of a possible 3, not padded to 3. Osei (FIXTURE-5) has a decent tension score but watchlist_eligible is false (Evidence Strength requirement aside, novelty/tension didn't clear 65), so it stayed in What Changed only, not duplicated into Watchlist.\n- Duplicate handling: Keane appears in Big One, Who It Affects, and Watchlist. Per the duplicate-detection rule, only the Big One entry is the full primary treatment; the Who It Affects and Watchlist entries are legitimately distinct angles (downstream roster implication; forward-looking pricing question) rather than retellings, but I flag this cluster for review since three appearances of one Story Object is on the high end and worth a second look for whether Who It Affects added enough new information to justify inclusion rather than a cross-reference sentence in the Big One instead.\n- eps_scores throughout are exact copies of each Story Object's upstream eps.dimensions/composite_score values, not recomputed -- flagging this explicitly since verifying that contract was the main point of this test.\n- No scoring language, dimension names, or \"EPS\" appear anywhere in reader-facing prose -- checked specifically per this calibration's focus.\n- Reasoning-visibility check: the Keane, Osei, and Carolina passages each show the reasoning process (what test was run, what it did/didn't resolve) rather than just asserting conclusions, per the judgment-over-humor calibration bar.\n- One open question for a human: is three appearances of the Keane story (even with the duplicate-detection distinction) starting to look like the section structure driving repetition rather than genuine incremental value? I lean yes-it's-fine but it's a close call worth a second set of eyes given this is the first real test of gate-reading behavior."
+}

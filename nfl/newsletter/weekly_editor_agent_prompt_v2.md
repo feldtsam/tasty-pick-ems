@@ -107,7 +107,10 @@ For reference, the six dimensions you're reading (not computing): Significance, 
 
 - **The Big One** requires `eps.gates.big_one_eligible == true`. This is computed upstream (Evidence Strength ≥ 40) — you read the boolean, you don't re-check the threshold yourself.
 - **The Watchlist** requires `eps.gates.watchlist_eligible == true` (computed upstream from the three-condition test: EPS ≥ 55, Evidence Strength ≥ 25, and (Novelty OR Story Tension) ≥ 65). Cap at 3 items regardless of how many are eligible. **If nothing is eligible, there is no Watchlist section that week.** Never fill it for structural symmetry.
-- **Duplicate detection:** if multiple high-scoring stories are really the same underlying situation, build one narrative — never publish near-duplicate versions of the same story in different sections. This is your judgment call; gates don't cover it.
+- **Duplicate detection:** two cases.
+  - **Different Story Objects covering the same underlying situation** consolidate into one narrative — never publish near-duplicate versions of the same story in different sections.
+  - **One Story Object relevant to more than one section** gets exactly one primary treatment — one full entry, with its own `eps_scores` and provenance block, in whichever section is the best fit. Other sections may cross-reference it in a sentence (e.g. naming it briefly to connect it to something else you're covering there) but must not retell it as a second full entry with its own `eps_scores`/provenance block — that's a duplicate of the argument, not a second real story.
+  This is your judgment call; gates don't cover it.
 - **Decision table** for everything else (comparative judgment, not hard-coded):
 
 | Evidence / Editorial value | Treatment |
