@@ -1,0 +1,112 @@
+{
+  "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+  "sections": [
+    {
+      "section_type": "from_the_desk",
+      "stories": [
+        {
+          "headline": "Nobody sends a memo",
+          "body": "NFL teams are remarkably polite about not telling us what they've decided.\n\nNo press release goes out when a backfield changes hands. No one announces that a depth chart has quietly been rewritten between Tuesday's practice and Sunday's kickoff. They just keep putting the new guy on the field until the rest of us are forced to notice.\n\nThis week I noticed twice \u2014 once because a role change survived the exact test I'd have used to dismiss it, and once because a defensive story that looked, for a moment, like a real finding turned out to still be arguing with itself. I trust the first one more than the second. I'm not sure I trust either one enough to stop watching.",
+          "intelligence_story_ids": [],
+          "player_ids": [],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "big_one",
+      "stories": [
+        {
+          "headline": "Keane's goal-line takeover survived the obvious explanation",
+          "body": "Here's what usually happens when a backup back suddenly starts getting goal-line work: the starter gets banged up, the backup fills in, the starter heals, and the carries go right back to where they were. I've written that story a dozen times, and it's usually not interesting past the injury report.\n\nDorsey Keane's version doesn't do that. The incumbent was limited in Week 4 \u2014 fine, that explains the first shift. But he was back to full practice by Week 5, and Keane still took five of seven goal-line opportunities across Weeks 5 and 6. The excuse expired and the role didn't revert.\n\nThat's the part that gets my attention, not the raw number. A share going from 24% to 58% is loud. A share that stays at 58% after the reason for it disappears is the part that's actually telling you something. Snap share and red-zone targets moved the same direction over the same window, which is the kind of corroboration that keeps a story like this from being a two-week mirage.\n\nThe market has already started to notice \u2014 Keane's anytime-touchdown price moved from +650 to +400. That's not the market catching up all the way. It's the market starting to ask the same question I am: is this a permanent decision, or an extended tryout that just hasn't ended yet? I don't know. But I know which explanation I'd have needed to see collapse for me to still be asking it, and it collapsed.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "what_changed",
+      "stories": [
+        {
+          "headline": "Osei's red-zone role didn't fully give the snaps back",
+          "body": "When a starter goes down and a backup's role balloons, the honest question isn't whether the backup played well \u2014 it's what happens the week the starter comes back. Palmer Osei's red-zone snap share went from 12% to 34% while Detroit's starting tight end sat out with a hamstring injury. That part is unremarkable. Roles inflate under injury all the time.\n\nWhat I'm actually paying attention to is what happened in Week 9, once the starter returned. Osei's share dropped \u2014 to 26%. Not back to 12%. A partial giveback, not a full one. The offensive coordinator has also been running more two-tight-end red-zone sets since Week 9 than in the first five weeks of the season, which is at least consistent with a coaching staff that liked something enough to keep it around.\n\nI want to be precise about what this is and isn't. It isn't a clean survival story \u2014 more than a third of the gain did revert, and I can't rule out that 26% keeps drifting lower as the sample grows. It's a real, if modest, change that outlasted its original excuse. The anytime-TD price nudged from +1100 to +850, which is about the size of shift you'd expect the market to make for exactly this kind of partial, unresolved answer.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-5"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 44,
+            "evidence_strength": 58,
+            "betting_relevance": 49,
+            "novelty": 47,
+            "story_tension": 61,
+            "audience_relevance": 25,
+            "eps_total": 49.5
+          }
+        }
+      ],
+      "cross_references": [
+        {
+          "text": "Keane's role change, told in full above, is the cleaner version of the same question this section keeps circling: which shifts outlast their excuse.",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+        }
+      ]
+    },
+    {
+      "section_type": "who_it_affects",
+      "stories": [
+        {
+          "headline": "Carolina's slot coverage: soft spot, or just a hard slate",
+          "body": "Two of Carolina's last three games have seen opposing slot receivers produce well above what you'd expect. That's the kind of pattern that invites a confident sentence about a defensive weakness, so I went looking for the sentence that would talk me out of it.\n\nThe test was straightforward: was the one game where Carolina played fine against the slot also the game against the weaker slot receiver? It was. Both of the elevated games came against top-eight slot producers league-wide; the at-expectation game came against a bottom-half one. That result doesn't rule out a real vulnerability \u2014 it's also exactly what you'd see if Carolina's defense is fine and just ran into two good players.\n\nI don't have coverage-scheme data that separates those two explanations, and I'm not going to pretend I do. What I'll say is this: if you're looking at a slot receiver against Carolina this week, ask whether he's actually good at that job before you ask what Carolina's defense has been allowing. The data can't yet tell those two things apart, so neither should you.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ],
+      "cross_references": []
+    }
+  ],
+  "watchlist_populated": false,
+  "notes_for_human_reviewer": "This is a new calibration test of the EPS-consumption behavior added in this version of the prompt (Step 1, Step 2 gate-reading, eps_scores copy-not-compute) \\u2014 it is NOT a re-confirmation of the original two-round voice calibration, since that fixture's content is unrecoverable per the README interrogation-gap note. Treat this as first evidence on the new behavior only.\n\nComposition/gating decisions:\n- FIXTURE-1 (Keane): big_one_eligible=true, highest composite among eligible stories, strongest evidence (WEAKENED alt-explanation via a real persistence test) and highest story_tension. Clear Big One. Also watchlist_eligible=true, but per the \"one Story Object, one stories entry\" rule it stays in Big One only \\u2014 I added a cross_reference from What Changed instead of a duplicate/shorter treatment.\n- FIXTURE-5 (Osei): big_one_eligible=true but composite (49.5) and evidence profile clearly secondary to Keane \\u2014 placed in What Changed. Chose this over FIXTURE-4 for the \"second strongest developed story\" slot because it's a role_changes story with a completed (if partial) WEAKENED result, versus FIXTURE-4's UNRESOLVED status \\u2014 felt like the more settled of the two, tension-wise.\n- FIXTURE-4 (Carolina slot): big_one_eligible=true and watchlist_eligible=true, but I placed it in Who It Affects rather than the Big One (composite far below Keane's, and the underlying interrogation status is UNRESOLVED, not a survived test) and rather than Watchlist (see below). Its natural reader-facing shape is \"here's what this means for slot receivers facing Carolina,\" which is squarely Who It Affects.\n- Watchlist: no story object had watchlist_eligible == true that wasn't already given a full stories entry elsewhere (FIXTURE-1 and FIXTURE-4 were the only two eligible, and both are placed in full sections above). Per the hard rule against duplicate treatment, I did not create shortened Watchlist versions of either. Result: no Watchlist section this week. This is a real test of \"if nothing is eligible for its own slot, there is no section\" \\u2014 worth flagging since both eligible stories existed but were better served elsewhere; a future week where a watchlist-eligible story ISN'T also big-one/what-changed-worthy would be a cleaner test of that section actually populating.\n- FIXTURE-2 (Rhoads) and FIXTURE-6 (Voss): both are honest confirmations of stability / market noise, low significance/novelty/tension, big_one_eligible=true per the gate but clearly the weakest editorial value on the decision table (\"high evidence + low significance = supporting context only\" / arguably not worth publishing at all). I excluded both from the issue rather than forcing either into a section \\u2014 there was no genuine story there beyond \"nothing changed,\" and manufacturing tension where the interrogation explicitly found none would violate the evidence-on-both-sides rule.\n- FIXTURE-3 (Denver red zone): big_one_eligible=false and watchlist_eligible=false, NOT_TESTABLE status, real game-script confound. Excluded, correctly gated out.\n- Market Knows Something: no section included. The only market_intelligence stories (Rhoads, Voss) were both excluded as noise; there was no standalone market story worth this section independent of what's covered above.\n- Tasty Connection: omitted entirely per the fixture note \\u2014 live_picks is empty, so there is nothing legitimate to connect. I did not invent any picks.\n\nFlag for a human: FIXTURE-4's audience_relevance (30) and low overall composite relative to FIXTURE-1 made this an easy call, but I want a second opinion on whether an UNRESOLVED-status story belongs in a reader-facing section at all versus being held for another week once/if the ambiguity resolves \\u2014 the prompt doesn't give me a clean rule for \"genuinely unresolved but still eligible,\" so I used editorial judgment (Step 2's comparative table) to include it as a \"what does this mean for you\" piece rather than a definitive-sounding claim, and tried to keep the uncertainty in the prose itself rather than a disclaimer.\n\nVoice self-check: included one explicit reasoning-reveal per the \"judgment over humor\" calibration in each of the three full stories (the Keane \"excuse expired\" framing, the Osei \"I want to be precise about what this is and isn't,\" and the Carolina \"ask whether he's actually good at that job\" turn) \\u2014 flagging per the open item that this shape shouldn't get overused issue after issue; will need a fresh construction next time. No EPS/dimension language appears anywhere in reader-facing text; eps_scores in the output are verbatim copies of each Story Object's upstream eps.dimensions/composite_score, not recomputed."
+}

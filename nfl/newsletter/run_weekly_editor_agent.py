@@ -81,8 +81,29 @@ WEEKLY_BRIEF_TOOL_SCHEMA = {
                                 "required": ["headline", "body", "intelligence_story_ids", "player_ids", "pick_ids", "eps_scores"],
                             },
                         },
+                        # Run 3 fix, per the prompt's own updated Output
+                        # Format section: a pointer, not a treatment --
+                        # deliberately has NO headline/body/eps_scores,
+                        # so it is structurally incapable of being a
+                        # second full entry for a Story Object already
+                        # covered elsewhere. This is the actual fix for
+                        # what run 2 found (a schema gap, not a phrasing
+                        # gap) -- every section previously only had one
+                        # writable slot shaped like a full treatment.
+                        "cross_references": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "text": {"type": "string"},
+                                    "refers_to_intelligence_story_id": {"type": "string"},
+                                },
+                                "required": ["text", "refers_to_intelligence_story_id"],
+                            },
+                        },
                     },
-                    "required": ["section_type", "stories"],
+                    "required": ["section_type", "stories", "cross_references"],
                 },
             },
             "watchlist_populated": {"type": "boolean"},

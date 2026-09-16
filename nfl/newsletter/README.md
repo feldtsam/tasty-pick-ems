@@ -41,6 +41,12 @@ this file just tracks what's actually landed here vs. what's still open.
   only as a sentence, never a second full entry with its own
   `eps_scores`). Graded primarily against the fixture that clarification
   targeted (Fixture 4) — see gap below for the real, honest result.
+- **`fixture_v2_run3_raw.json`** / **`fixture_v2_run3_results.md`** —
+  run 3, after adding a real `cross_references[]` array to the output
+  schema (a pointer, structurally incapable of being a full treatment —
+  no `headline`/`body`/`eps_scores`) and rewriting Step 2's rule to
+  point at the schema directly. This is the fix that held — see gap
+  below.
 
 ## Real, open gaps — flagged, not silently worked around
 
@@ -115,12 +121,24 @@ output tool schema has no lightweight structural option for "a bare
 cross-reference," only full `stories[]` entries with required
 `eps_scores`), in `fixture_v2_run2_results.md`.
 
-**Do not cite either run as having "recalibrated" the prompt.** Two
-runs in, zero correction passes have actually landed a fix — the
-original two-round calibration had a real fix applied and confirmed
-between rounds; these two rounds still have an open, unresolved
-finding. The natural next step is a decision on how to fix the
-duplicate-entry behavior (prompt wording again, vs. a schema change
-giving the model a real lightweight cross-reference option) before
-attempting a third run — not layering another unprompted iteration on
-top of this one.
+**Run 3 status — the fix held.** Run 2's own hypothesis (schema gap,
+not phrasing gap) was right: with `cross_references[]` giving the model
+a real structural way to point at a story without retelling it,
+Fixture 4 got exactly one `stories` entry (Who It Affects, zero
+duplication — the original failing case, now clean), and Fixture 1 —
+which regressed to three full entries in run 2 — dropped back to
+exactly one `stories` entry (Big One) plus one real `cross_references`
+pointer from What Changed. Zero instances of the failure mode anywhere
+else across all six fixtures. Full detail in `fixture_v2_run3_
+results.md`, including one genuine, non-bug side effect worth knowing:
+a story that's `watchlist_eligible` but already got its one treatment
+elsewhere now correctly can't *also* land in Watchlist, so eligibility
+alone no longer guarantees that section populates — the model flagged
+this itself, correctly, in its own notes.
+
+**Do not cite run 3 as having "recalibrated" the prompt.** It confirms
+one specific behavior (the duplicate-treatment fix) held on one real
+run. The original two-round voice/structure calibration is still
+untouched and unreconfirmed by any of runs 1–3 — that status hasn't
+changed, and shouldn't be conflated with "this one narrow thing now
+works."

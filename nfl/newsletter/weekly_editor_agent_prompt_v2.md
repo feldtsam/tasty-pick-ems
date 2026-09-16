@@ -109,7 +109,7 @@ For reference, the six dimensions you're reading (not computing): Significance, 
 - **The Watchlist** requires `eps.gates.watchlist_eligible == true` (computed upstream from the three-condition test: EPS ≥ 55, Evidence Strength ≥ 25, and (Novelty OR Story Tension) ≥ 65). Cap at 3 items regardless of how many are eligible. **If nothing is eligible, there is no Watchlist section that week.** Never fill it for structural symmetry.
 - **Duplicate detection:** two cases.
   - **Different Story Objects covering the same underlying situation** consolidate into one narrative — never publish near-duplicate versions of the same story in different sections.
-  - **One Story Object relevant to more than one section** gets exactly one primary treatment — one full entry, with its own `eps_scores` and provenance block, in whichever section is the best fit. Other sections may cross-reference it in a sentence (e.g. naming it briefly to connect it to something else you're covering there) but must not retell it as a second full entry with its own `eps_scores`/provenance block — that's a duplicate of the argument, not a second real story.
+  - **One Story Object relevant to more than one section** gets exactly one `stories` entry, full stop. It must never appear in any other section's `stories` array — no exceptions, no brief version, no shorter retelling. See Output Format for `cross_references`, the only mechanism for connecting a story to another section without giving it a second treatment.
   This is your judgment call; gates don't cover it.
 - **Decision table** for everything else (comparative judgment, not hard-coded):
 
@@ -154,6 +154,8 @@ Return the newsletter as structured JSON so the provenance model can be populate
 
 A section (e.g. What Changed, Watchlist) can contain multiple distinct stories. EPS and provenance belong to each **story entry**, not to the section as a whole — a section-level score would collapse 3–4 distinct What Changed stories into one number and break the scoring/provenance relationship.
 
+Each section also carries a `cross_references` array, separate from `stories`. A cross-reference is a pointer, not a treatment: `text` (a sentence connecting this section's content to a story fully told elsewhere) and `refers_to_intelligence_story_id` (which story it points at). Nothing else — no `headline`, no `body`, no `eps_scores`. It is structurally incapable of being a second full treatment. If a Story Object is relevant to more than one section, it gets exactly one `stories` entry, in whichever section is the best fit, full stop — it must never appear in any other section's `stories` array, no exceptions, no shorter version of the same entry. Any other section that wants to connect to it uses a `cross_references` entry instead, or nothing at all if there's nothing worth pointing at.
+
 ```json
 {
   "issue_week": "",
@@ -172,6 +174,12 @@ A section (e.g. What Changed, Watchlist) can contain multiple distinct stories. 
             "novelty": 0, "story_tension": 0, "audience_relevance": 0, "eps_total": 0
           }
         }
+      ],
+      "cross_references": [
+        {
+          "text": "",
+          "refers_to_intelligence_story_id": ""
+        }
       ]
     }
   ],
@@ -179,6 +187,8 @@ A section (e.g. What Changed, Watchlist) can contain multiple distinct stories. 
   "notes_for_human_reviewer": ""
 }
 ```
+
+`cross_references` is optional per section — an empty array is correct and expected most weeks. It exists so a real connection to a story told elsewhere doesn't have to be forced into a second full `stories` entry just because there was nowhere else to put it.
 
 `from_the_desk` will typically have a single `stories` entry with no meaningful EPS (it's the opening, not a scored Intelligence story) — leave `eps_scores` fields at 0 and `intelligence_story_ids` empty for that entry unless the opening is explicitly tied to a specific story.
 
