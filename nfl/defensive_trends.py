@@ -505,6 +505,13 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
         story["signal_direction"] = _signal_direction_for_row(direction)
         story["what_changed"] = _what_changed_for_row(row, direction, td_agrees, thin_completeness, config)
         story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        # Story Interrogation V1 (spec, 2026-09) -- schema slot only, same
+        # "attached after build_story(), not part of its own hard
+        # STORY_FIELDS contract" pattern as the v2 fields above.
+        # Population (LLM-assisted challenge/confirmation/judgment) is a
+        # separate, not-yet-built pass -- None here until that pass runs,
+        # matching the spec's own §12 fallback semantics.
+        story["interrogation"] = None
         stories.append(story)
 
     return stories

@@ -185,6 +185,13 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
         "evidence_classification": story.get("evidence_classification"),
         "signal_type": story.get("signal_type"),
         "evidence_state": story.get("evidence_state"),
+        # Story Interrogation V1 (spec, 2026-09) -- same "optional,
+        # absent/None until a family's writer actually populates it"
+        # shape as every other Universal Card v2 field above. Every
+        # family sets this key explicitly to None as of this change
+        # (schema slot only, no population pass built yet), so this is
+        # never a KeyError-shaped absence, just a real null value.
+        "interrogation": story.get("interrogation"),
     }
 
 

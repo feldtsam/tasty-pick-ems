@@ -915,6 +915,15 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
         story["signal_direction"] = _signal_direction_redzone()
         story["what_changed"] = _what_changed_for_redzone_row(row, direction, agrees, completeness, config)
         story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        # Story Interrogation V1 (spec, 2026-09) -- schema slot only, same
+        # "attached after build_story(), not part of its own hard
+        # STORY_FIELDS contract" pattern as every other Universal Card v2
+        # field above. Population (challenge/confirmation/judgment, LLM-
+        # assisted) is a separate, not-yet-built pass -- every story is
+        # None here until that pass runs, matching the spec's own §12
+        # fallback semantics (interrogation: null is a valid, complete
+        # state, not a placeholder bug).
+        story["interrogation"] = None
         stories.append(story)
 
     return stories
@@ -967,6 +976,9 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
         story["signal_direction"] = _signal_direction_fourth_down(direction)
         story["what_changed"] = _what_changed_for_fourth_down_row(row, direction, agrees, completeness, config)
         story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        # Story Interrogation V1 -- see build_redzone_play_calling_stories'
+        # own comment above for the full reasoning, identical here.
+        story["interrogation"] = None
         stories.append(story)
 
     return stories
@@ -1024,6 +1036,9 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
         story["signal_direction"] = _signal_direction_pace(direction)
         story["what_changed"] = _what_changed_for_pace_row(row, direction, agrees, thin, config)
         story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        # Story Interrogation V1 -- see build_redzone_play_calling_stories'
+        # own comment above for the full reasoning, identical here.
+        story["interrogation"] = None
         stories.append(story)
 
     return stories

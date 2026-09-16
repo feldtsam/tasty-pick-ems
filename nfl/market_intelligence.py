@@ -545,6 +545,18 @@ def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame,
         # explicitly before this module was written, not inferred).
         story["signal_type"] = "deviation"
         story["evidence_state"] = evidence_state
+        # Story Interrogation V1 (spec, 2026-09) -- schema slot only, same
+        # "attached after build_story(), not part of its own hard
+        # STORY_FIELDS contract" pattern as the v2/Market Trends fields
+        # above. Population (LLM-assisted challenge/confirmation/
+        # judgment) is a separate, not-yet-built pass -- None here until
+        # that pass runs, matching the spec's own §12 fallback semantics.
+        # Market Intelligence in particular is expected to lean on
+        # NOT_TESTABLE/empty-array output once population exists (§13
+        # Example B, the n_books=1 LIMITED-evidence quirk) -- not
+        # relevant yet at the schema-slot stage, noted for whoever builds
+        # that pass next.
+        story["interrogation"] = None
         stories.append(story)
 
     return stories, diagnostics

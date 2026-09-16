@@ -550,6 +550,13 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
         story["signal_direction"] = _signal_direction_for_row()
         story["what_changed"] = _what_changed_for_row(row, opportunity_driven, evidence_kind, evidence_detail, thin, config)
         story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        # Story Interrogation V1 (spec, 2026-09) -- schema slot only, same
+        # "attached after build_story(), not part of its own hard
+        # STORY_FIELDS contract" pattern as the v2 fields above.
+        # Population (LLM-assisted challenge/confirmation/judgment) is a
+        # separate, not-yet-built pass -- None here until that pass runs,
+        # matching the spec's own §12 fallback semantics.
+        story["interrogation"] = None
         stories.append(story)
 
     return stories
