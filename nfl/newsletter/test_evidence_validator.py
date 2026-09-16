@@ -19,7 +19,12 @@ from evidence_validator import (
     CONFIDENCE_ESCALATING_LANGUAGE,
     check_claim_traceability,
     check_evidence_confidence_alignment,
+    check_gate_consistency,
+    check_interrogation_traceability,
+    check_one_treatment,
     check_relationship_traceability,
+    check_scoring_language_leak,
+    validate_editorial_contract,
     validate_newsletter_story,
 )
 
@@ -75,6 +80,63 @@ STEVENSON_STORY = {
 }
 
 STORIES_BY_ID = {KUPP_STORY["story_id"]: KUPP_STORY, STEVENSON_STORY["story_id"]: STEVENSON_STORY}
+
+# Real interrogation content — copied verbatim from this session's own
+# real story_interrogation.py run against the real Michael Mayer Role
+# Changes row (Week 1 2026), not invented. Used for check_interrogation_
+# traceability's real success/failure cases below.
+KEANE_STORY = {
+    "story_id": "aaaaaaaa-0000-0000-0000-000000000001",
+    "intelligence_family": "role_changes",
+    "entity": {"type": "player", "player_id": "00-keane", "player_name": "Dorsey Keane", "team": "DAL"},
+    "supporting_evidence": ["Goal-line opportunity share increased from 24% to 58% over 3 games"],
+    "related_players": [],
+    "evidence_classification": "strong",
+    "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "challenge": {
+            "alternate_explanations": [
+                {
+                    "explanation": "Incumbent RB was limited by a minor ankle issue",
+                    "evidence": "Injury report, Week 4",
+                    "test": "Did the shift persist after the incumbent returned to full practice?",
+                    "result": "Incumbent returned Week 5; Keane still received 5 of 7 goal-line opportunities",
+                    "status": "WEAKENED",
+                },
+            ],
+        },
+        "confirmation": {
+            "supporting_signals": "Snap share and red-zone targets also rose",
+            "contradicting_signals": "None identified",
+            "market_reaction": "ATTD price moved from +650 to +400",
+        },
+    },
+}
+
+# Same real shape, but with an empty challenge and a market_reaction
+# that explicitly reports no movement — for the negative/failing cases
+# below (a claim of "survived" or "hasn't caught up" with nothing real
+# to trace to).
+RHOADS_STORY = {
+    "story_id": "aaaaaaaa-0000-0000-0000-000000000002",
+    "intelligence_family": "market_intelligence",
+    "entity": {"type": "player", "player_id": "00-rhoads", "player_name": "Callum Rhoads", "team": "SEA"},
+    "supporting_evidence": ["Cross-book price convergence, low volatility"],
+    "related_players": [],
+    "evidence_classification": "limited",
+    "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "challenge": {"alternate_explanations": []},
+        "confirmation": {
+            "supporting_signals": "Role and target share flat over the same window",
+            "contradicting_signals": "None",
+            "market_reaction": "No meaningful movement — this is the observation itself",
+        },
+    },
+}
+
+STORIES_BY_ID[KEANE_STORY["story_id"]] = KEANE_STORY
+STORIES_BY_ID[RHOADS_STORY["story_id"]] = RHOADS_STORY
 
 
 if __name__ == "__main__":
@@ -205,6 +267,203 @@ if __name__ == "__main__":
         stories_by_id=STORIES_BY_ID,
     )
     r.append(check("a claimed-but-not-found intelligence_story_id fails the story and is reported by id", missing_id_result["passed"] is False and missing_id_result["missing_story_ids"] == ["00000000-0000-0000-0000-000000000000"]))
+
+    # --- A real finding, made explicit: zero intelligence_story_ids ---
+
+    from_the_desk_result = validate_newsletter_story(
+        headline="From the Desk of Mr. Pick Ems",
+        body="Both look like something at first glance. Only one of them survived me asking why twice.",
+        intelligence_story_ids=[],
+        stories_by_id=STORIES_BY_ID,
+    )
+    r.append(check(
+        "REAL FINDING (found via real Fixture V2 output): a from_the_desk-shaped entry with zero intelligence_story_ids passes cleanly despite using 'survived' conversationally — real, pre-existing behavior made explicit, not papered over with a special case for this one word",
+        from_the_desk_result["passed"] is True and from_the_desk_result["interrogation_traceability"] == [] and from_the_desk_result["claim_traceability"] == [],
+    ))
+
+    # --- Check 4: Interrogation traceability (Story Interrogation spec §10) ---
+
+    survival_text_grounded = "Keane's goal-line role survived the incumbent's return, taking 5 of 7 opportunities since."
+    survival_grounded = check_interrogation_traceability(survival_text_grounded, [KEANE_STORY])
+    r.append(check(
+        "a 'survived' claim traced to a real WEAKENED alternate_explanations entry passes",
+        any(x["claim_type"] == "survived_scrutiny" and x["status"] == "pass" for x in survival_grounded),
+    ))
+
+    survival_text_ungrounded = "Rhoads' price stability survived every attempt to explain it away."
+    survival_ungrounded = check_interrogation_traceability(survival_text_ungrounded, [RHOADS_STORY])
+    r.append(check(
+        "a 'survived' claim against a story with an EMPTY alternate_explanations[] fails — traces to nothing real",
+        any(x["claim_type"] == "survived_scrutiny" and x["status"] == "fail" for x in survival_ungrounded),
+    ))
+
+    market_text_grounded = "The market hasn't caught up with Rhoads' actual role yet."
+    market_grounded = check_interrogation_traceability(market_text_grounded, [RHOADS_STORY])
+    r.append(check(
+        "a 'market hasn't caught up' claim traced to a real 'no meaningful movement' market_reaction passes",
+        any(x["claim_type"] == "market_reaction" and x["status"] == "pass" for x in market_grounded),
+    ))
+
+    market_text_ungrounded = "The market hasn't caught up with Keane's real role yet."
+    market_ungrounded = check_interrogation_traceability(market_text_ungrounded, [KEANE_STORY])
+    r.append(check(
+        "a 'market hasn't caught up' claim against a story whose market_reaction describes REAL MOVEMENT fails — movement argues against the claim, not for it",
+        any(x["claim_type"] == "market_reaction" and x["status"] == "fail" for x in market_ungrounded),
+    ))
+
+    escalation_on_survival = "It's confirmed: Keane's role survived the incumbent's return."
+    escalation_results = check_interrogation_traceability(escalation_on_survival, [KEANE_STORY])
+    r.append(check(
+        "confidence-escalating language on an otherwise-grounded survival claim still hard-fails, same word list",
+        any(x["claim_type"] == "confidence_escalation" and x["status"] == "fail" for x in escalation_results),
+    ))
+
+    interrogation_full = validate_newsletter_story(
+        headline="Keane's role held",
+        body="Keane's role survived the incumbent's return.",
+        intelligence_story_ids=[KEANE_STORY["story_id"]],
+        stories_by_id=STORIES_BY_ID,
+    )
+    r.append(check(
+        "validate_newsletter_story's own report carries interrogation_traceability results end to end, and a genuinely clean story (no stray unground-able numbers) passes overall",
+        len(interrogation_full["interrogation_traceability"]) > 0
+        and all(x["status"] == "pass" for x in interrogation_full["interrogation_traceability"])
+        and interrogation_full["passed"] is True,
+    ))
+
+    # --- Editorial Contract Validation: scoring-language leak ---
+
+    r.append(check(
+        "a bare dimension name ('Significance') in reader-facing prose is flagged",
+        any(x["status"] == "fail" for x in check_scoring_language_leak("The Significance of this shift is real.")),
+    ))
+    r.append(check(
+        "'EPS' as a bare token is flagged",
+        any(x["status"] == "fail" for x in check_scoring_language_leak("This story's EPS was high this week.")),
+    ))
+    r.append(check(
+        "'scored 82' (system-narration shape) is flagged",
+        any(x["status"] == "fail" for x in check_scoring_language_leak("This story scored 82, making it the strongest this week.")),
+    ))
+    r.append(check(
+        "ordinary football language ('he scored a touchdown') is NOT flagged — deliberately scoped to 'scored <number>', not bare 'scored'",
+        check_scoring_language_leak("Keane scored a touchdown in the fourth quarter.") == [],
+    ))
+    r.append(check(
+        "clean, ordinary editorial prose with no scoring language produces zero leak findings",
+        check_scoring_language_leak("Keane's goal-line role held after the incumbent returned.") == [],
+    ))
+
+    # --- Editorial Contract Validation: gate consistency ---
+
+    issue_gate_ok = {
+        "sections": [
+            {"section_type": "big_one", "stories": [
+                {"intelligence_story_ids": ["s1"], "eps_scores": {"big_one_eligible": True, "watchlist_eligible": True}},
+            ], "cross_references": []},
+        ],
+    }
+    r.append(check(
+        "a Big One placement with big_one_eligible=true passes",
+        all(x["status"] == "pass" for x in check_gate_consistency(issue_gate_ok)),
+    ))
+
+    issue_gate_violated = {
+        "sections": [
+            {"section_type": "big_one", "stories": [
+                {"intelligence_story_ids": ["s1"], "eps_scores": {"big_one_eligible": False, "watchlist_eligible": False}},
+            ], "cross_references": []},
+        ],
+    }
+    r.append(check(
+        "ACCEPTANCE TEST: a Big One placement with big_one_eligible=false FAILS — the gate was not obeyed",
+        any(x["status"] == "fail" for x in check_gate_consistency(issue_gate_violated)),
+    ))
+
+    issue_gate_missing = {
+        "sections": [
+            {"section_type": "watchlist", "stories": [
+                {"intelligence_story_ids": ["s1"], "eps_scores": {}},
+            ], "cross_references": []},
+        ],
+    }
+    r.append(check(
+        "a story missing watchlist_eligible entirely in its eps_scores snapshot is needs_review, not silently passed or guessed",
+        any(x["status"] == "needs_review" for x in check_gate_consistency(issue_gate_missing)),
+    ))
+    r.append(check(
+        "sections other than big_one/watchlist (e.g. what_changed) are never gate-checked at all",
+        check_gate_consistency({"sections": [{"section_type": "what_changed", "stories": [{"intelligence_story_ids": ["s1"], "eps_scores": {}}], "cross_references": []}]}) == [],
+    ))
+
+    # --- Editorial Contract Validation: one-treatment ---
+
+    issue_one_treatment_ok = {
+        "sections": [
+            {"section_type": "big_one", "stories": [{"intelligence_story_ids": ["s1"], "eps_scores": {}}], "cross_references": []},
+            {"section_type": "what_changed", "stories": [{"intelligence_story_ids": ["s2"], "eps_scores": {}}], "cross_references": [{"text": "As covered above.", "refers_to_intelligence_story_id": "s1"}]},
+        ],
+    }
+    r.append(check(
+        "ACCEPTANCE TEST: a cross_reference to a story already fully treated elsewhere is NOT a violation — the exact Fixture V2 run 3 distinction",
+        all(x["status"] == "pass" for x in check_one_treatment(issue_one_treatment_ok)),
+    ))
+
+    issue_one_treatment_violated = {
+        "sections": [
+            {"section_type": "big_one", "stories": [{"intelligence_story_ids": ["s1"], "eps_scores": {}}], "cross_references": []},
+            {"section_type": "watchlist", "stories": [{"intelligence_story_ids": ["s1"], "eps_scores": {}}], "cross_references": []},
+        ],
+    }
+    r.append(check(
+        "ACCEPTANCE TEST: the same intelligence_story_id as a full stories[] entry in TWO sections FAILS — the exact Fixture 4/1 regression from calibration runs 1-2, now automated",
+        any(x["status"] == "fail" and x["claim_text"] == "s1" for x in check_one_treatment(issue_one_treatment_violated)),
+    ))
+
+    # --- validate_editorial_contract: full entry point ---
+
+    full_issue_clean = {
+        "sections": [
+            {"section_type": "big_one", "stories": [
+                {"headline": "Keane's role held", "body": "The role survived the incumbent's return.", "intelligence_story_ids": ["s1"], "eps_scores": {"big_one_eligible": True, "watchlist_eligible": False}},
+            ], "cross_references": []},
+        ],
+    }
+    contract_clean = validate_editorial_contract(full_issue_clean)
+    r.append(check("a clean, compliant issue passes validate_editorial_contract end to end", contract_clean["passed"] is True))
+
+    full_issue_dirty = {
+        "sections": [
+            {"section_type": "big_one", "stories": [
+                {"headline": "Keane's role held", "body": "This story scored 82 EPS, the week's most Significant.", "intelligence_story_ids": ["s1"], "eps_scores": {"big_one_eligible": False, "watchlist_eligible": False}},
+            ], "cross_references": []},
+            {"section_type": "watchlist", "stories": [
+                {"headline": "Keane, again", "body": "Still worth watching.", "intelligence_story_ids": ["s1"], "eps_scores": {"big_one_eligible": False, "watchlist_eligible": False}},
+            ], "cross_references": []},
+        ],
+    }
+    contract_dirty = validate_editorial_contract(full_issue_dirty)
+    r.append(check(
+        "an issue with a scoring-language leak, a violated gate, AND a one-treatment violation fails on all three simultaneously",
+        contract_dirty["passed"] is False
+        and len(contract_dirty["scoring_language_leak"]) > 0
+        and any(x["status"] == "fail" for x in contract_dirty["gate_consistency"])
+        and any(x["status"] == "fail" for x in contract_dirty["one_treatment"]),
+    ))
+    full_issue_with_reviewer_notes = {
+        "sections": [
+            {"section_type": "big_one", "stories": [
+                {"headline": "Keane's role held", "body": "The role survived the incumbent's return.", "intelligence_story_ids": ["s1"], "eps_scores": {"big_one_eligible": True, "watchlist_eligible": False}},
+            ], "cross_references": []},
+        ],
+        # Legitimately mentions eps_total/Significance by name — reviewer-only, never reader-facing.
+        "notes_for_human_reviewer": "Chose this over the alternate because its Significance and eps_total were both higher.",
+    }
+    contract_with_notes = validate_editorial_contract(full_issue_with_reviewer_notes)
+    r.append(check(
+        "notes_for_human_reviewer is never scanned for scoring-language leaks — that field is legitimately reviewer-only, real scoring/gate discussion there is expected, not a leak",
+        contract_with_notes["passed"] is True and contract_with_notes["scoring_language_leak"] == [],
+    ))
 
     print()
     p = sum(r)

@@ -1,23 +1,60 @@
 """
-NFL Weekly Brief — Evidence Validator (data-layer task, Part 2 of 2).
+NFL Weekly Brief — Evidence Validator.
 
-Standalone, deterministic checker: takes a drafted newsletter story entry
-(headline + body + the `intelligence_story_ids` it claims to draw from)
-and checks it against the REAL underlying nfl_intelligence_stories rows
-before a human reviewer ever sees it. NOT the Weekly Editor Agent, not
-wired into any automated job, not a second LLM call — a pure function
-over data, same "deterministic where the logic can be made explicit"
-preference this whole project already applies (nfl_tension.py's own
-module docstring makes the identical case for the same reason).
+Standalone, deterministic checker over drafted newsletter content — not
+the Weekly Editor Agent, not wired into any automated job, not a second
+LLM call. A pure function over data, same "deterministic where the logic
+can be made explicit" preference this whole project already applies
+(nfl_tension.py's own module docstring makes the identical case for the
+same reason).
 
-THREE CHECKS, per the task's own spec:
-  1. Claim traceability — every factual claim in `body` must trace to a
-     real value in the referenced story objects.
-  2. Relationship traceability — a claimed relationship between two
-     signals ("the market hasn't caught up with the role") needs BOTH
-     halves grounded, not one real half plus a plausible-sounding one.
-  3. Evidence-classification alignment — a claim can't sound more
-     confident than a "limited"-classified source story supports.
+THREE SEPARATED RESPONSIBILITIES, stated explicitly so the boundary
+stays legible to whoever reads this next — each is a real, distinct
+question, not three phrasings of the same check:
+
+  CLAIM VALIDATION (validate_newsletter_story, one story at a time)
+    — are factual/narrative claims supported?
+      1. Claim traceability — every factual claim in `body` traces to a
+         real value in the referenced story objects.
+      2. Relationship traceability — a claimed relationship between two
+         signals needs BOTH halves grounded, not one real half plus a
+         plausible-sounding one.
+      3. Evidence-classification alignment — a claim can't sound more
+         confident than a "limited"-classified source story supports.
+
+  INTERROGATION VALIDATION (folded into validate_newsletter_story, same
+  data shape) — does the prose accurately represent what survived
+  scrutiny? Per the Story Interrogation spec's §10:
+      4. A "survived scrutiny" claim must trace to a real
+         challenge.alternate_explanations[] entry with status WEAKENED
+         or UNRESOLVED — not to interrogation's mere existence.
+      5. A "market hasn't caught up" claim must trace to
+         confirmation.market_reaction actually saying that.
+      6. Confidence-escalating language on either kind of claim hard-
+         fails, same word list as check 3 above.
+
+  EDITORIAL CONTRACT VALIDATION (validate_editorial_contract, one whole
+  issue at a time — genuinely different granularity from the two above,
+  which operate on one story) — did EPS leak into prose, and did the
+  Editor obey what EPS is authorized to constrain? EPS is not a source
+  of reader-facing claims (scoring language is banned outright), so
+  this is NOT a traceability question — there is nothing to trace, only
+  compliance to check:
+      7. Scoring-language leak — dimension names, "EPS," "scored <N>,"
+         or equivalent, anywhere in reader-facing prose. Hard-fail.
+      8. Gate consistency — a story placed as the Big One or Watchlist
+         must have had the corresponding gate true AT DRAFT TIME, read
+         from the issue's own frozen eps_scores snapshot (never
+         recomputed from raw dimension values — that would have the
+         Validator doing exactly what the Editor is forbidden from
+         doing, and never re-fetched live either, which would defeat
+         the point of a receipts-freeze snapshot).
+      9. One-treatment — no intelligence_story_id may appear in more
+         than one section's stories[] array in the same issue. This
+         automates the exact regression calibration runs 1 and 2 caught
+         by hand (see nfl/newsletter/fixture_v2_run{1,2}_results.md) —
+         a permanent, mechanical rule instead of relying on an LLM to
+         remember the policy correctly every week.
 
 HONEST ABOUT WHAT'S ACTUALLY AUTOMATABLE HERE, not oversold — this is the
 same posture generate_nfl_shelf_card_content.validate_no_field_narration
@@ -27,23 +64,37 @@ different confidence levels.
   - NUMERIC claims (odds prices, percentages, scores, counts) are
     checked with real precision — a number either grounds against the
     real value pool within tolerance or it doesn't. These CAN fail hard.
-  - NAMED-ENTITY claims (a capitalized-phrase heuristic, not real NER)
-    and PURELY QUALITATIVE claims (no extractable number or detected
-    name at all) are surfaced as `needs_review`, never a hard fail — a
-    heuristic name detector has real false-positive/false-negative risk,
-    and a claim with nothing extractable at all genuinely can't be
-    mechanically confirmed or denied without an LLM read. The validator
-    tells a human reviewer WHERE to look; it doesn't pretend to replace
-    their judgment on prose that has no checkable number or name in it.
+  - NAMED-ENTITY claims (a capitalized-phrase heuristic, not real NER),
+    PURELY QUALITATIVE claims (no extractable number or detected name at
+    all), and the SURVIVAL/MARKET-REACTION claim detectors below (a
+    fixed phrase list, not real language understanding) are surfaced
+    with the same honest limits — a false miss just means a claim
+    doesn't get this extra scrutiny (still checked as plain claim
+    traceability); a detected claim that fails its trace IS a real hard
+    fail, since the trace itself (does a real WEAKENED/UNRESOLVED entry
+    exist, does market_reaction actually say this) is fully mechanical
+    once the claim is detected at all.
+  - The scoring-language-leak check (#7) is deliberately narrower than
+    a bare word match for "scored" — this is an NFL newsletter, and
+    "he scored a touchdown" is completely ordinary prose. Only "scored"
+    followed by a number ("scored 82") is flagged; a real, considered
+    scoping decision, not an oversight. Bare dimension-name words
+    ("significance," "novelty") ARE flagged as literal phrase matches
+    per instruction, with the same honest caveat: ordinary English uses
+    of those words in non-scoring contexts would also trip this check.
+    Flagged here, not silently narrowed past what was actually asked
+    for.
 
-DOES NOT CALL ANY LLM. DOES NOT WRITE TO THE DATABASE. Pure function:
-(headline, body, intelligence_story_ids, stories_by_id) -> a structured
-report. The CALLER is responsible for fetching the real story objects
-(e.g. get_published_nfl_intelligence_stories for the by-week fields, LEFT
+DOES NOT CALL ANY LLM. DOES NOT WRITE TO THE DATABASE. Pure functions.
+The CALLER is responsible for fetching the real story objects (e.g.
+get_published_nfl_intelligence_stories for the by-week fields, LEFT
 JOINed with get_published_nfl_intelligence_latest for evidence_
-classification — the exact two-RPC join this task's own prior
-investigation already confirmed is necessary, since the by-week RPC does
-not expose evidence_classification at all).
+classification AND interrogation — the exact RPC join this task's own
+prior investigation already confirmed is necessary, since the by-week
+RPC does not expose either field) and for assembling the issue dict
+validate_editorial_contract expects (the Weekly Editor Agent's own real
+output shape — see nfl/newsletter/weekly_editor_agent_prompt_v2.md's
+Output Format section).
 """
 from __future__ import annotations
 
@@ -121,12 +172,32 @@ def _real_number_pool(stories: list[dict]) -> set[float]:
     """
     Every real numeric value reachable from the referenced story objects:
     the top-level scored fields (primary_signal.value, trend_strength,
-    completeness, confidence, sample_size) plus every number embedded in
+    completeness, confidence, sample_size), every number embedded in
     each story's own supporting_evidence strings and related_players[].note
     strings (both are real, human-readable facts in this schema -- see
     intelligence_schema.py's own field docs -- and both regularly carry
     the exact numbers a newsletter claim would cite, e.g. "Market value
-    score 95/100 -105 (51.2% implied)").
+    score 95/100 -105 (51.2% implied)"), PLUS every number embedded in
+    the story's own interrogation record (change.magnitude, context.
+    prior_baseline, confirmation.market_reaction, and each challenge.
+    alternate_explanations[].result).
+
+    REAL BUG FOUND AND FIXED HERE, not assumed clean: before this
+    interrogation half existed, real newsletter prose citing a genuine,
+    interrogation-sourced number (e.g. "the price moved from +650 to
+    +400," straight out of a real confirmation.market_reaction) failed
+    claim_traceability as "looks invented" -- confirmed directly by
+    running this check against three real Weekly Editor Agent outputs
+    (Calibration Fixture V2 runs 1-3) before writing this fix: every
+    single Big One/What Changed story failed on its own real, honestly-
+    cited price and percentage numbers. The root cause: market_data
+    (fed into story_interrogation.interrogate_story() as a SEPARATE
+    input, not part of the Story Object's own supporting_evidence) can
+    introduce real numbers that never existed anywhere in the Story
+    Object's own pre-interrogation fields at all -- not a test-fixture
+    artifact, a structural gap that would have made this check
+    systematically false-fail real, honest interrogation-informed prose
+    in production.
     """
     pool: set[float] = set()
     for story in stories:
@@ -145,6 +216,28 @@ def _real_number_pool(stories: list[dict]) -> set[float]:
             if note:
                 for _, value, _ in _extract_numbers(str(note)):
                     pool.add(value)
+
+        interrogation = story.get("interrogation") or {}
+        change = interrogation.get("change") or {}
+        for text in (change.get("magnitude"), change.get("what_changed")):
+            if text:
+                for _, value, _ in _extract_numbers(str(text)):
+                    pool.add(value)
+        context = interrogation.get("context") or {}
+        if context.get("prior_baseline"):
+            for _, value, _ in _extract_numbers(str(context["prior_baseline"])):
+                pool.add(value)
+        confirmation = interrogation.get("confirmation") or {}
+        for text in (confirmation.get("market_reaction"), confirmation.get("supporting_signals"), confirmation.get("contradicting_signals")):
+            if text:
+                for _, value, _ in _extract_numbers(str(text)):
+                    pool.add(value)
+        challenge = interrogation.get("challenge") or {}
+        for alt in challenge.get("alternate_explanations", []):
+            for text in (alt.get("result"), alt.get("evidence")):
+                if text:
+                    for _, value, _ in _extract_numbers(str(text)):
+                        pool.add(value)
     return pool
 
 
@@ -320,6 +413,25 @@ def check_relationship_traceability(text: str, stories: list[dict]) -> list[dict
     relationship itself may be real and evidenced in prose-only terms
     this check can't mechanically confirm, which is a real limit to
     surface, not paper over.
+
+    REAL, PRE-EXISTING LIMITATION FOUND WHILE TESTING AGAINST REAL DATA
+    (not introduced today, just newly visible once the numeric-pool gap
+    above was fixed — before that fix, everything failed for a
+    different reason and masked this one): "while" is ambiguous.
+    "Osei's snap share rose while the starter sat out" is a plain
+    temporal/causal clause, not a claimed relationship between two
+    quantified signals — the injury is a real supporting fact that
+    never needed its own number, not an ungrounded second claim. This
+    check currently flags it as one-grounded/one-not anyway, the same
+    as it would a genuine two-signal divergence claim. Confirmed
+    directly against real Weekly Editor Agent output (Calibration
+    Fixture V2 runs 1/2/3, the Osei story, every run) — not fixed here:
+    disambiguating "while" used temporally vs. "while" used to claim a
+    real divergence between two signals is genuinely hard to do well
+    with a fixed connective list, and doing it badly risks losing real
+    detection value on the connective this check most needs. Flagged
+    as a known, real limitation rather than silently accepted as
+    correct or quietly patched around.
     """
     results: list[dict] = []
     number_pool = _real_number_pool(stories)
@@ -441,6 +553,141 @@ def check_evidence_confidence_alignment(text: str, stories: list[dict]) -> list[
 
 
 # ---------------------------------------------------------------------------
+# Check 4: Interrogation traceability (Story Interrogation spec §10)
+# ---------------------------------------------------------------------------
+
+# A fixed, reviewable phrase list, same "false miss just means no extra
+# scrutiny, not a wrong result" posture as _RELATIONSHIP_CONNECTIVES
+# above — not a generic "did this sentence claim survival" classifier.
+_SURVIVAL_CLAIM_PHRASES = (
+    "survived", "held up", "didn't revert", "did not revert",
+    "outlasted", "weathered the challenge",
+)
+
+# Same posture — the spec's own example phrasing ("the market hasn't
+# caught up with the role") plus real variants, several already shared
+# with _RELATIONSHIP_CONNECTIVES (that check asks "are both halves of
+# THIS sentence grounded"; this one asks the narrower, additional
+# question "does confirmation.market_reaction specifically support a
+# no-catch-up reading" — genuinely different, not a duplicate check).
+_MARKET_NOT_CAUGHT_UP_PHRASES = (
+    "hasn't caught up", "has not caught up", "market hasn't moved",
+    "market has not moved", "market hasn't reacted", "market has not reacted",
+    "market's interpretation hasn't", "market's interpretation has not",
+)
+
+# A story's own confirmation.market_reaction text genuinely supporting
+# "the market hasn't caught up" — real observed phrasing from this
+# session's own live interrogation runs (story_interrogation.py's
+# worked output), not guessed. A market_reaction that instead describes
+# real movement ("moved from +650 to +400") does NOT match this list —
+# movement having happened is a fact against a not-caught-up claim, not
+# for it, and this check treats it as ungrounded rather than assuming
+# any mention of the market counts.
+_NO_CATCHUP_SUPPORT_PHRASES = (
+    "no meaningful movement", "no meaningful line movement", "not applicable",
+    "no price movement", "not provided", "no movement",
+)
+
+
+def check_interrogation_traceability(text: str, stories: list[dict]) -> list[dict]:
+    """
+    Per the Story Interrogation spec's §10: narrated claims about
+    surviving scrutiny or the market not having caught up must trace to
+    real content in the referenced stories' OWN interrogation record —
+    not to interrogation's mere existence, and not to a plausible-
+    sounding absence of contradicting evidence. Confidence-escalating
+    language in the same sentence as either kind of claim hard-fails,
+    same word list as check_evidence_confidence_alignment.
+
+    Sentence-scoped (like check_relationship_traceability), not text-
+    wide — a survival claim in one sentence and escalating language in
+    an unrelated sentence elsewhere in the same story are two separate
+    concerns, not conflated into one flag.
+    """
+    results: list[dict] = []
+    alt_statuses = [
+        alt.get("status")
+        for story in stories
+        for alt in ((story.get("interrogation") or {}).get("challenge") or {}).get("alternate_explanations", [])
+    ]
+    has_weakened_or_unresolved = any(s in ("WEAKENED", "UNRESOLVED") for s in alt_statuses)
+
+    market_reactions = [
+        ((story.get("interrogation") or {}).get("confirmation") or {}).get("market_reaction")
+        for story in stories
+    ]
+    has_no_catchup_support = any(
+        mr and any(phrase in mr.lower() for phrase in _NO_CATCHUP_SUPPORT_PHRASES)
+        for mr in market_reactions
+    )
+
+    for sentence in _SENTENCE_SPLIT.split(text.strip()):
+        lowered = sentence.lower()
+
+        survival_phrase = next((p for p in _SURVIVAL_CLAIM_PHRASES if p in lowered), None)
+        if survival_phrase:
+            status = "pass" if has_weakened_or_unresolved else "fail"
+            results.append({
+                "check": "interrogation_traceability",
+                "claim_type": "survived_scrutiny",
+                "claim_text": sentence.strip(),
+                "status": status,
+                "detail": (
+                    f"A real challenge.alternate_explanations[] entry with status WEAKENED or "
+                    f"UNRESOLVED grounds this claim (matched phrase: {survival_phrase!r})."
+                    if status == "pass" else
+                    f"Claims a signal {survival_phrase!r} scrutiny, but no referenced story's "
+                    f"interrogation record has an alternate_explanations[] entry with status "
+                    f"WEAKENED or UNRESOLVED — traces to interrogation's mere existence, not a "
+                    f"real tested-and-held result."
+                ),
+            })
+            for phrase, pattern in _ESCALATING_PATTERNS.items():
+                if pattern.search(sentence):
+                    results.append({
+                        "check": "interrogation_traceability",
+                        "claim_type": "confidence_escalation",
+                        "claim_text": phrase,
+                        "status": "fail",
+                        "detail": (
+                            f"{phrase!r} applied to a survived-scrutiny claim implies more than a "
+                            f"WEAKENED/UNRESOLVED status supports — a challenge that didn't hold up "
+                            f"means the signal survived THAT test, not that it's proven true."
+                        ),
+                    })
+
+        market_phrase = next((p for p in _MARKET_NOT_CAUGHT_UP_PHRASES if p in lowered), None)
+        if market_phrase:
+            results.append({
+                "check": "interrogation_traceability",
+                "claim_type": "market_reaction",
+                "claim_text": sentence.strip(),
+                "status": "pass" if has_no_catchup_support else "fail",
+                "detail": (
+                    f"A referenced story's confirmation.market_reaction supports a no-catch-up "
+                    f"reading (matched phrase: {market_phrase!r})."
+                    if has_no_catchup_support else
+                    f"Claims the market {market_phrase!r}, but no referenced story's confirmation."
+                    f"market_reaction supports that reading — traced to nothing, or to a "
+                    f"market_reaction that instead describes real movement, which argues against "
+                    f"this claim rather than for it."
+                ),
+            })
+            for phrase, pattern in _ESCALATING_PATTERNS.items():
+                if pattern.search(sentence):
+                    results.append({
+                        "check": "interrogation_traceability",
+                        "claim_type": "confidence_escalation",
+                        "claim_text": phrase,
+                        "status": "fail",
+                        "detail": f"{phrase!r} applied to a market-reaction claim overstates what confirmation.market_reaction actually establishes.",
+                    })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -465,9 +712,42 @@ def validate_newsletter_story(
         "claim_traceability": [...],
         "relationship_traceability": [...],
         "evidence_confidence_alignment": [...],
+        "interrogation_traceability": [...],
         "summary": str,
       }
+
+    A genuinely empty `intelligence_story_ids` (not a claimed-but-
+    missing id — that's the separate missing_story_ids case below) is
+    treated as "not a story-evidence entry at all" and skips every
+    claim-shaped check, returning a clean pass — REAL, PRE-EXISTING
+    BEHAVIOR THIS MAKES EXPLICIT, not new to interrogation traceability.
+    Confirmed directly against real Weekly Editor Agent output before
+    adding this guard: `from_the_desk` entries legitimately carry
+    intelligence_story_ids=[] per the prompt's own Output Format
+    convention, and their prose is genuinely conversational, editorial
+    framing about the issue as a whole — not a specific traceable claim
+    about any one Story Object's evidence. Without this guard, every
+    check here would run against an empty real-value pool and fail
+    everything it found (a real number, a capitalized name, a word like
+    "survived" used colloquially) — not because the prose is dishonest,
+    but because there is structurally nothing to trace it to. Confirmed
+    this was a real, live issue by running the actual checks against
+    real Fixture V2 output: a from_the_desk passage using "survived"
+    conversationally ("only one of them survived me asking why twice")
+    hard-failed interrogation_traceability in every one of three real
+    calibration runs before this guard existed.
     """
+    if not intelligence_story_ids:
+        return {
+            "passed": True,
+            "missing_story_ids": [],
+            "claim_traceability": [],
+            "relationship_traceability": [],
+            "evidence_confidence_alignment": [],
+            "interrogation_traceability": [],
+            "summary": "No intelligence_story_ids claimed — not a story-evidence entry (e.g. from_the_desk); no claim-shaped checks apply.",
+        }
+
     referenced = [stories_by_id[sid] for sid in intelligence_story_ids if sid in stories_by_id]
     missing_ids = [sid for sid in intelligence_story_ids if sid not in stories_by_id]
 
@@ -475,8 +755,9 @@ def validate_newsletter_story(
     claim_results = check_claim_traceability(combined_text, referenced)
     relationship_results = check_relationship_traceability(body, referenced)
     confidence_results = check_evidence_confidence_alignment(combined_text, referenced)
+    interrogation_results = check_interrogation_traceability(combined_text, referenced)
 
-    all_results = claim_results + relationship_results + confidence_results
+    all_results = claim_results + relationship_results + confidence_results + interrogation_results
     hard_fails = [r for r in all_results if r["status"] == "fail"]
     needs_review = [r for r in all_results if r["status"] == "needs_review"]
 
@@ -486,9 +767,220 @@ def validate_newsletter_story(
         "claim_traceability": claim_results,
         "relationship_traceability": relationship_results,
         "evidence_confidence_alignment": confidence_results,
+        "interrogation_traceability": interrogation_results,
         "summary": (
             f"{len(hard_fails)} hard fail(s), {len(needs_review)} flagged for human review, "
             f"{len(all_results) - len(hard_fails) - len(needs_review)} passed clean"
             + (f", {len(missing_ids)} referenced story id(s) not found" if missing_ids else "")
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Editorial Contract Validation — operates on one whole ISSUE, not one
+# story. A genuinely different granularity and question from everything
+# above: EPS is not a source of reader-facing claims (scoring language
+# is banned outright, per the Weekly Editor Agent prompt's own Step 1),
+# so this is never a traceability question — there's nothing to trace,
+# only compliance to check. See module docstring for the full three-
+# responsibility breakdown.
+# ---------------------------------------------------------------------------
+
+# Bare dimension-name words, flagged literally per instruction — see
+# module docstring's honest note on the accepted false-positive risk
+# against ordinary English uses of "significance"/"novelty"/etc.
+_EPS_DIMENSION_NAME_PATTERNS = {
+    name: re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE)
+    for name in (
+        "significance", "evidence strength", "betting relevance",
+        "novelty", "story tension", "audience relevance",
+    )
+}
+
+# "scored" is deliberately scoped to "scored <number>", not a bare word
+# match — see module docstring for why (this is an NFL newsletter;
+# "he scored a touchdown" is completely ordinary prose that would
+# otherwise drown out every real leak).
+_EPS_JARGON_PATTERNS = {
+    "EPS": re.compile(r"\beps\b", re.IGNORECASE),
+    "eps_total": re.compile(r"eps_total", re.IGNORECASE),
+    "scored <number>": re.compile(r"\bscored\s+(?:an?\s+)?\d", re.IGNORECASE),
+    "composite score": re.compile(r"\bcomposite score\b", re.IGNORECASE),
+    "dimension score": re.compile(r"\bdimension score\b", re.IGNORECASE),
+    "big_one_eligible": re.compile(r"big_one_eligible", re.IGNORECASE),
+    "watchlist_eligible": re.compile(r"watchlist_eligible", re.IGNORECASE),
+}
+
+
+def check_scoring_language_leak(text: str) -> list[dict]:
+    """
+    Hard-fail scan for EPS/scoring-system language in reader-facing
+    prose. Not a traceability check — EPS is system state, not a claim
+    a reader is ever shown, so there is nothing to substantiate, only
+    a leak to catch.
+    """
+    results: list[dict] = []
+    for name, pattern in _EPS_DIMENSION_NAME_PATTERNS.items():
+        if pattern.search(text):
+            results.append({
+                "check": "scoring_language_leak",
+                "claim_type": "dimension_name",
+                "claim_text": name,
+                "status": "fail",
+                "detail": f"{name!r} (an EPS dimension name) appears in reader-facing prose — EPS is system state, never reader-facing.",
+            })
+    for label, pattern in _EPS_JARGON_PATTERNS.items():
+        if pattern.search(text):
+            results.append({
+                "check": "scoring_language_leak",
+                "claim_type": "jargon",
+                "claim_text": label,
+                "status": "fail",
+                "detail": f"{label!r}-shaped language appears in reader-facing prose — scoring/gate mechanics must never surface to readers.",
+            })
+    return results
+
+
+def check_gate_consistency(issue: dict) -> list[dict]:
+    """
+    A story placed in the Big One or Watchlist must have had the
+    corresponding upstream gate true AT DRAFT TIME. Reads `eps_scores.
+    big_one_eligible`/`watchlist_eligible` directly off each story entry
+    in `issue` — the caller's own responsibility to have populated these
+    from the real upstream `eps.gates` at draft time (or from an
+    already-persisted `newsletter_story.eps_scores` row carrying them —
+    see the schema migration this check depends on, tastypickems
+    20260916160000). NEVER recomputed from the frozen dimension scores
+    here — that would have the Validator doing exactly what the Editor
+    is forbidden from doing (Step 1's own "read, don't recompute" rule)
+    — and never re-fetched from live `nfl_intelligence_stories.eps.
+    gates` either, which would defeat the entire point of checking
+    against what was true at draft time, not what's true now.
+    """
+    results: list[dict] = []
+    for section in issue.get("sections", []):
+        section_type = section.get("section_type")
+        if section_type not in ("big_one", "watchlist"):
+            continue
+        gate_key = "big_one_eligible" if section_type == "big_one" else "watchlist_eligible"
+        for story in section.get("stories", []):
+            eps_scores = story.get("eps_scores") or {}
+            gate_value = eps_scores.get(gate_key)
+            story_ids = story.get("intelligence_story_ids", [])
+            if gate_value is None:
+                results.append({
+                    "check": "gate_consistency",
+                    "claim_type": section_type,
+                    "claim_text": story_ids,
+                    "status": "needs_review",
+                    "detail": (
+                        f"{gate_key!r} is not present in this story's eps_scores snapshot — cannot "
+                        f"confirm gate consistency without it (see the schema prerequisite this "
+                        f"check depends on)."
+                    ),
+                })
+            elif gate_value is True:
+                results.append({
+                    "check": "gate_consistency",
+                    "claim_type": section_type,
+                    "claim_text": story_ids,
+                    "status": "pass",
+                    "detail": f"{gate_key!r} was true at draft time for this {section_type} placement.",
+                })
+            else:
+                results.append({
+                    "check": "gate_consistency",
+                    "claim_type": section_type,
+                    "claim_text": story_ids,
+                    "status": "fail",
+                    "detail": f"Placed as {section_type}, but {gate_key!r} was false at draft time — the gate was not obeyed.",
+                })
+    return results
+
+
+def check_one_treatment(issue: dict) -> list[dict]:
+    """
+    No `intelligence_story_id` may appear in more than one section's
+    `stories[]` array in the same issue. `cross_references` entries are
+    exempt by design — a cross-reference is structurally incapable of
+    being a second treatment (no headline/body/eps_scores), the exact
+    distinction Calibration Fixture V2 run 3 confirmed the model can
+    act on once the schema offers it (see fixture_v2_run3_results.md).
+    This automates that same distinction as a permanent, mechanical
+    rule rather than relying on an LLM to remember the policy correctly
+    every week — the exact regression calibration runs 1 and 2 caught
+    by hand.
+    """
+    results: list[dict] = []
+    appearances: dict[str, list[str]] = {}
+    for section in issue.get("sections", []):
+        section_type = section.get("section_type")
+        for story in section.get("stories", []):
+            for sid in story.get("intelligence_story_ids", []):
+                appearances.setdefault(sid, []).append(section_type)
+
+    for sid, sections in appearances.items():
+        if len(sections) > 1:
+            results.append({
+                "check": "one_treatment",
+                "claim_type": "duplicate_full_entry",
+                "claim_text": sid,
+                "status": "fail",
+                "detail": (
+                    f"{sid!r} appears as a full stories[] entry in {len(sections)} sections "
+                    f"({', '.join(sections)}) — exactly one primary treatment is allowed; any "
+                    f"other section wanting to point at it must use cross_references instead."
+                ),
+            })
+        else:
+            results.append({
+                "check": "one_treatment",
+                "claim_type": "single_entry",
+                "claim_text": sid,
+                "status": "pass",
+                "detail": f"{sid!r} appears in exactly one section's stories[] array ({sections[0]}).",
+            })
+    return results
+
+
+def validate_editorial_contract(issue: dict) -> dict:
+    """
+    The real entry point for Editorial Contract Validation — one whole
+    issue (the Weekly Editor Agent's own real output shape, see
+    weekly_editor_agent_prompt_v2.md's Output Format section), not one
+    story. Scans every section's every story's headline+body, and every
+    `cross_references[]` entry's `text`, for scoring-language leakage
+    (deliberately NOT `notes_for_human_reviewer` — that field is
+    explicitly reviewer-only, never reader-facing, and legitimately
+    discusses EPS/gates by name); checks gate consistency for every Big
+    One/Watchlist placement; checks one-treatment across the whole
+    issue.
+
+    Returns {"passed": bool, "scoring_language_leak": [...],
+    "gate_consistency": [...], "one_treatment": [...], "summary": str}.
+    """
+    leak_results: list[dict] = []
+    for section in issue.get("sections", []):
+        for story in section.get("stories", []):
+            combined = f"{story.get('headline', '')} {story.get('body', '')}"
+            leak_results.extend(check_scoring_language_leak(combined))
+        for xref in section.get("cross_references", []):
+            leak_results.extend(check_scoring_language_leak(xref.get("text", "")))
+
+    gate_results = check_gate_consistency(issue)
+    treatment_results = check_one_treatment(issue)
+
+    all_results = leak_results + gate_results + treatment_results
+    hard_fails = [r for r in all_results if r["status"] == "fail"]
+    needs_review = [r for r in all_results if r["status"] == "needs_review"]
+
+    return {
+        "passed": not hard_fails,
+        "scoring_language_leak": leak_results,
+        "gate_consistency": gate_results,
+        "one_treatment": treatment_results,
+        "summary": (
+            f"{len(hard_fails)} hard fail(s), {len(needs_review)} flagged for human review, "
+            f"{len(all_results) - len(hard_fails) - len(needs_review)} passed clean"
         ),
     }
