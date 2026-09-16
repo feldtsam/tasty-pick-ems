@@ -557,6 +557,10 @@ def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame,
         # relevant yet at the schema-slot stage, noted for whoever builds
         # that pass next.
         story["interrogation"] = None
+        # Editorial Priority Score V1 -- schema slot only, same precedent
+        # as interrogation directly above (see defensive_trends.py's own
+        # comment for the full reasoning, identical here).
+        story["eps"] = None
         stories.append(story)
 
     return stories, diagnostics

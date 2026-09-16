@@ -557,6 +557,10 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
         # separate, not-yet-built pass -- None here until that pass runs,
         # matching the spec's own §12 fallback semantics.
         story["interrogation"] = None
+        # Editorial Priority Score V1 -- schema slot only, same precedent
+        # as interrogation directly above (see defensive_trends.py's own
+        # comment for the full reasoning, identical here).
+        story["eps"] = None
         stories.append(story)
 
     return stories

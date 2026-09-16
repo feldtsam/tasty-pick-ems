@@ -192,6 +192,13 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
         # (schema slot only, no population pass built yet), so this is
         # never a KeyError-shaped absence, just a real null value.
         "interrogation": story.get("interrogation"),
+        # Editorial Priority Score V1 -- same "optional, absent/None
+        # until a separate pass populates it" shape as interrogation
+        # directly above. EPS runs AFTER interrogation (it consumes
+        # interrogation as an input), so it's never set inside a
+        # family's own builder loop -- always None at write time today,
+        # same real null-not-fabricated posture as interrogation.
+        "eps": story.get("eps"),
     }
 
 

@@ -512,6 +512,16 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
         # separate, not-yet-built pass -- None here until that pass runs,
         # matching the spec's own §12 fallback semantics.
         story["interrogation"] = None
+        # Editorial Priority Score V1 (spec, 2026-09) -- schema slot
+        # only, same precedent as interrogation directly above: attached
+        # after build_story(), not in STORY_FIELDS, .get()-safe default.
+        # EPS runs AFTER interrogation (it takes interrogation as an
+        # input, per the spec's own architecture), so it's never
+        # computed inside this loop -- a separate, standalone pass
+        # (eps.compute_eps) runs once interrogation has already been
+        # populated for a story, same relationship interrogation itself
+        # has to story generation.
+        story["eps"] = None
         stories.append(story)
 
     return stories

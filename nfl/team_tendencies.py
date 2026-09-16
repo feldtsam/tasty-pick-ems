@@ -924,6 +924,10 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
         # fallback semantics (interrogation: null is a valid, complete
         # state, not a placeholder bug).
         story["interrogation"] = None
+        # Editorial Priority Score V1 -- same schema-slot-only pattern,
+        # one step further downstream (EPS takes interrogation as an
+        # input, so it's never computed here either -- see eps.py).
+        story["eps"] = None
         stories.append(story)
 
     return stories
@@ -979,6 +983,9 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
         # Story Interrogation V1 -- see build_redzone_play_calling_stories'
         # own comment above for the full reasoning, identical here.
         story["interrogation"] = None
+        # Editorial Priority Score V1 -- see build_redzone_play_calling_
+        # stories' own comment above for the full reasoning, identical here.
+        story["eps"] = None
         stories.append(story)
 
     return stories
@@ -1039,6 +1046,9 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
         # Story Interrogation V1 -- see build_redzone_play_calling_stories'
         # own comment above for the full reasoning, identical here.
         story["interrogation"] = None
+        # Editorial Priority Score V1 -- see build_redzone_play_calling_
+        # stories' own comment above for the full reasoning, identical here.
+        story["eps"] = None
         stories.append(story)
 
     return stories
