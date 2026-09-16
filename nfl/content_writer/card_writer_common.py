@@ -820,7 +820,9 @@ MAX_TOKENS = 1024
 REQUEST_TIMEOUT_SECONDS = 60
 
 
-def call_claude_with_tool(api_key: str, system_prompt: str, user_prompt: str, tool_schema: dict) -> dict:
+def call_claude_with_tool(
+    api_key: str, system_prompt: str, user_prompt: str, tool_schema: dict, max_tokens: int = MAX_TOKENS,
+) -> dict:
     """
     One real Claude API call, forced tool-use against the given
     tool_schema — structured output enforced by the API itself, never
@@ -830,6 +832,19 @@ def call_claude_with_tool(api_key: str, system_prompt: str, user_prompt: str, to
     a real bug found and fixed 2026-08-04). Raises ValueError if the model
     response somehow has no tool_use block for the requested tool —
     shouldn't happen with tool_choice forced, but not assumed.
+
+    max_tokens defaults to this module's own MAX_TOKENS (1024, tuned for
+    this module's own card-writing prompts) — real callers with a
+    larger structured shape can override it. Added, not assumed safe by
+    default, after a real truncation bug: Story Interrogation's fuller
+    three-section response (nfl/story_interrogation.py) hit
+    stop_reason="max_tokens" at the default cap, silently dropping the
+    response's own `judgment` key rather than erroring — confirmed
+    directly against a real API call before adding this parameter, not
+    guessed. Raises ValueError below if a response is STILL truncated
+    even with a real max_tokens passed, rather than silently returning
+    a partial tool_use input the caller would only discover was
+    incomplete by hitting a KeyError later, further from the real cause.
     """
     response = requests.post(
         ANTHROPIC_API_URL,
@@ -840,7 +855,7 @@ def call_claude_with_tool(api_key: str, system_prompt: str, user_prompt: str, to
         },
         json={
             "model": MODEL_NAME,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": max_tokens,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}],
             "tools": [tool_schema],
@@ -851,6 +866,13 @@ def call_claude_with_tool(api_key: str, system_prompt: str, user_prompt: str, to
     if response.status_code >= 400:
         raise ValueError(f"Claude API returned {response.status_code}: {response.text}")
     data = response.json()
+
+    if data.get("stop_reason") == "max_tokens":
+        raise ValueError(
+            f"Claude response was truncated at max_tokens={max_tokens} (stop_reason=max_tokens) -- "
+            f"the tool_use input is real but incomplete, not a usable response. Pass a larger "
+            f"max_tokens for this prompt shape rather than treating a partial result as valid."
+        )
 
     for block in data.get("content", []):
         if block.get("type") == "tool_use" and block.get("name") == tool_schema["name"]:
