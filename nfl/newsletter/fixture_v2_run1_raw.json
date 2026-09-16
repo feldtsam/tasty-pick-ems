@@ -1,0 +1,154 @@
+{
+  "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+  "sections": [
+    {
+      "section_type": "from_the_desk",
+      "stories": [
+        {
+          "headline": "From the Desk of Mr. Pick Ems",
+          "body": "Teams don't announce decisions. They just make them, quietly, in the fourth quarter, and wait to see if anyone's paying attention.\n\nThis week gave me two versions of that. One back took over a job that used to belong to someone else, and kept it even after the excuse for the change went away. Another team's coverage looked shaky for two weeks running, except the players doing the damage happen to be very good at their jobs regardless of who's covering them.\n\nBoth look like something at first glance. Only one of them survived me asking why twice.\n\nI'll take you through what held up, what I'm still not sure about, and one thing I'm watching without drawing a conclusion from it yet.",
+          "intelligence_story_ids": [],
+          "player_ids": [],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "big_one",
+      "stories": [
+        {
+          "headline": "Keane didn't just get the job \u2014 he kept it",
+          "body": "Here's a distinction worth sitting with: a role change caused by an injury, and a role change that merely started with one. Dorsey Keane's goal-line share tripled over three games, from 24% to 58%, while the incumbent back watched from the same sideline he'd occupied all year. The easy read is that the incumbent's ankle opened a door. The interesting read is what happened once the door was theoretically closed again.\n\nThe incumbent came back to full practice in Week 5. Keane kept getting the goal-line work anyway \u2014 five of seven opportunities in the two weeks since. If this were purely an injury story, that number goes back to something closer to 24%. It didn't.\n\nSnaps rose with it. Red-zone targets rose with it. The number I'd have expected to move if this were real \u2014 the market's price on Keane finding the end zone \u2014 moved too, from +650 to +400. None of that tells me Keane scores this week. It tells me the player priced at +650 a month ago isn't quite the player being priced now, and the shift already survived the one obvious explanation that could have undone it.\n\nWhat I don't know yet is whether this is a permanent handoff or an extended tryout that ends the moment the incumbent has one good week. I'm not going to pretend I know which. I just know the evidence currently favors 'durable' over 'temporary,' and that wasn't true a month ago.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "what_changed",
+      "stories": [
+        {
+          "headline": "Osei kept some of what the injury gave him \u2014 not all of it",
+          "body": "Palmer Osei's red-zone snaps climbed from 12% to 34% while Denver's \u2014 sorry, while the starting tight end sat out with a hamstring injury. That much is unremarkable; backups play more when starters don't. The part worth a second look is what happened after the starter returned in Week 9: Osei's share dropped, but only to 26%, not back to 12%.\n\nThat's not a clean survival story like Keane's. It's messier, and I think the mess is the honest part. The offensive coordinator has leaned on two-tight-end red-zone sets more since Week 9 than in the season's first five weeks combined \u2014 that's a real, if modest, structural reason for some of the gain to stick. The price agrees, barely: Osei's touchdown number moved from +1100 to +850, which is a real shift, not a rounding error, but not a dramatic one either.\n\nSo: some of this was the injury. Some of it wasn't. I'd rather tell you that plainly than pretend the number has fully settled, because it might not have.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-5"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 44,
+            "evidence_strength": 58,
+            "betting_relevance": 49,
+            "novelty": 47,
+            "story_tension": 61,
+            "audience_relevance": 25,
+            "eps_total": 49.5
+          }
+        },
+        {
+          "headline": "Carolina's slot coverage: soft spot, or just tough opponents?",
+          "body": "Two of Carolina's last three games featured slot receivers producing well above what you'd expect against an average defense. The obvious next question is whether that's about Carolina or about who they were covering \u2014 and here it actually gets interesting, because both of those receivers rank in the league's top eight at the position this season.\n\nThat's the kind of detail that should resolve the question. It didn't. The one game where Carolina's slot defense looked ordinary came against a bottom-half slot receiver \u2014 which is exactly what you'd expect whether the real explanation is 'weak coverage' or 'tough matchups.' Both stories predict the same three data points. I don't have a way to separate them yet, and I'd rather say that than pick the more exciting explanation because it makes for a better paragraph.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "who_it_affects",
+      "stories": [
+        {
+          "headline": "Two backfields, two different kinds of role change",
+          "body": "Keane's situation and Osei's are both, technically, 'backup gets opportunity, opportunity partially or fully sticks around' stories. But they're not the same story, and I think the difference matters more than the similarity. Keane's number never went back down. Osei's went back down partway. If you're deciding how much to trust a role change, whether it fully survives the return of the guy who used to have the job is about as clean a test as this data gets \u2014 and one of these two passed it more convincingly than the other.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1",
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1",
+            "SYNTHETIC-PLAYER-5"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      ]
+    },
+    {
+      "section_type": "tasty_connection",
+      "stories": []
+    },
+    {
+      "section_type": "watchlist",
+      "stories": [
+        {
+          "headline": "Carolina's slot defense, still unresolved",
+          "body": "I'm leaving this one open rather than closed. The evidence doesn't currently distinguish 'real vulnerability' from 'faced two good receivers,' and I'd rather watch a fourth data point than force a read out of three.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ]
+    }
+  ],
+  "watchlist_populated": true,
+  "notes_for_human_reviewer": "This is Fixture V2 \u2014 a new calibration test of the EPS-consumption behavior (Step 1, gate-reading in Step 2, eps_scores copy-not-compute contract), not a reproduction or re-confirmation of the original two-round voice/structure calibration. Flagging for your review:\n\n1. **Gate-driven exclusions, not judgment calls.** Fixture 2 (Rhoads, market stability) and Fixture 6 (Voss, national-broadcast noise) were excluded despite both being big_one_eligible, because their dimension profiles (low significance/novelty/tension, explicitly 'confirmation not change' or 'normal variance') carried no real story \u2014 this was comparative editorial judgment reading the dimensions, not a gate failure. Fixture 3 (Denver red-zone) was excluded on a genuine gate: big_one_eligible false, watchlist_eligible false, and the NOT_TESTABLE game-script confound meant there wasn't a supportable story anywhere. None of these three appear anywhere in the issue.\n\n2. **Big One selection.** Fixture 1 (Keane) was the only story with high evidence + high EPS + a WEAKENED (not just untested) alternate explanation, so it's the clear Big One. I read composite_score/dimensions but did not use eps_total as a sort key in isolation \u2014 Fixture 5 (Osei, eps_total 49.5) actually scores higher than Fixture 4 (Carolina, 48.15), but I placed Carolina second in What Changed and gave it Watchlist treatment instead because its story shape (genuinely unresolved tension) fit Watchlist better than Osei's (partially-resolved, more settled) \u2014 that's the \"dimensions over total\" instruction from Step 1 in practice, flagging in case you read it differently.\n\n3. **Watchlist.** Only Fixture 4 is watchlist_eligible == true among all six candidates. Populated with exactly that one; did not pad to 3.\n\n4. **Who It Affects.** Built as a cross-story comparison (Keane vs. Osei) rather than a single-story player writeup, since Intelligence didn't surface a story that was purely about affected players independent of the two role-change pieces already covered. Let me know if that's a misuse of the section \u2014 the original calibration examples for this section aren't in my context, so I made a judgment call on shape.\n\n5. **Tasty Connection left empty**, per the fixture note \u2014 no live_picks data exists. Did not invent picks to fill it.\n\n6. **eps_scores fields**: every included story entry carries the exact upstream dimension scores and composite_score (as eps_total) verbatim from the Story Object \u2014 none were recomputed. from_the_desk and who_it_affects entries are unscored (all zeros) since they're not single Intelligence stories with their own eps object \u2014 who_it_affects synthesizes two already-scored stories rather than being its own scored object; flagging in case you'd rather I duplicate one of the two source scores there instead of zeroing it.\n\n7. Checked for scoring-language leakage into reader prose \u2014 none present; no dimension names, no 'scored X,' no EPS mentions.\n\n8. Per your instruction, not treating this run as re-confirming the original two-round calibration \u2014 recording it explicitly as a new, narrower test of the EPS-consumption contract only."
+}

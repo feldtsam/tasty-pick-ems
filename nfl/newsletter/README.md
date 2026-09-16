@@ -18,9 +18,21 @@ this file just tracks what's actually landed here vs. what's still open.
   drafted). Step 1, part of Step 2, one Hard Rules line, and the
   `eps_scores` output-field instructions are a **second, later patch** —
   genuinely new prompt text implementing the EPS-consumption contract
-  (EPS spec §11), landed in this repo but **not yet voice-calibrated**
-  (see gap below). No calling code wired to either layer yet (see gap
-  below).
+  (EPS spec §11), landed in this repo and now run once against Fixture
+  V2 (see gap below for the real, honest status of that run).
+- **`fixture_v2.json`** — six synthetic stress cases built to test
+  discrimination (not just recognition) once real interrogation/EPS
+  content exists — see the fixture spec for the full design. Real
+  `interrogation`/`eps` field shapes, confirmed matching `story_
+  interrogation.py`/`eps.py`'s own actual output before this was run.
+- **`run_weekly_editor_agent.py`** — minimal caller built specifically
+  to run Fixture V2 against the prompt. Not production calling code —
+  no Flask endpoint, no Make.com wiring, no retry/language-scan
+  infrastructure the way `story_interrogation.py`/`eps.py` have.
+- **`fixture_v2_run1_raw.json`** / **`fixture_v2_run1_results.md`** —
+  the real first run's output and its grading against the fixture
+  spec's own checklist. See gap below for what this run does and
+  doesn't establish.
 
 ## Real, open gaps — flagged, not silently worked around
 
@@ -41,10 +53,11 @@ something related, not the same thing. If the original fixture turns up
 later (a different session-search pass, a file Sam finds separately),
 swap it in before trusting any "re-run" language.
 
-**No calling code exists yet.** This prompt has no `call_claude_with_tool()`
-wrapper, no Flask endpoint, no Make.com wiring — it is prompt text only.
-Building that caller is separate, larger work, not implied by committing
-this file.
+**No production calling code exists yet.** `run_weekly_editor_agent.py`
+is real, but it's a minimal, single-purpose script built to run Fixture
+V2 — no Flask endpoint, no Make.com wiring, no retry/language-scan
+infrastructure. Building the real Thursday caller is separate, larger
+work, not implied by this script existing.
 
 **The EPS-consumption edit has landed (Step 1, part of Step 2, one Hard
 Rules line, the `eps_scores` output-field instructions — per Editorial
@@ -64,12 +77,24 @@ visibility eroding now that there's a number to lean on, uncertainty
 handling drifting, general voice drift) — use that list when the time
 comes rather than re-deriving it.
 
-**That calibration run cannot happen yet — there is no fixture.** The
-original two-round calibration ran against a synthetic 6-Story-Object
-fixture whose actual content was never recovered (see above); the run
-this EPS-consumption patch needs is "Fixture V2" — a new fixture,
-covering EPS-consumption behavior specifically, not yet designed. When
-Fixture V2 exists and gets run, that is a new calibration test, full
-stop — not a reproduction of the original, and not something that
-retroactively validates this patch by association with the original's
-passing result.
+**Fixture V2 now exists and has been run once.** `fixture_v2.json` (six
+synthetic stress cases, each with real `interrogation`/`eps` content
+matching `story_interrogation.py`/`eps.py`'s actual output shapes) and
+`run_weekly_editor_agent.py` (minimal caller, built specifically for
+this run — not production calling code) are both committed. Results:
+`fixture_v2_run1_raw.json` (the real model output) and `fixture_v2_
+run1_results.md` (graded against the fixture spec's own six checks
+plus the prompt's own "Calibration scope for this edit" watch-list).
+
+**Status: Calibration Fixture V2, first run — 5 of 6 stress cases
+passed cleanly, 1 (Fixture 4) passed the reasoning test but produced a
+placement worth a second look (appeared in both What Changed and
+Watchlist), and 1 unrelated prose-generation defect surfaced (an
+aborted mid-sentence entity mix-up, not an EPS-consumption issue).**
+This is one run with no correction pass behind it — the original
+calibration was two rounds with a real fix applied in between. Do not
+cite this as having "recalibrated" the prompt; cite it as a first,
+mostly-passing run of a new test, per `fixture_v2_run1_results.md`'s
+own explicit framing. A second run (and, if Fixture 4's double-
+placement or the prose defect recur, a prompt fix) is the natural next
+step before this status upgrades to "calibrated."
