@@ -47,6 +47,21 @@ this file just tracks what's actually landed here vs. what's still open.
   no `headline`/`body`/`eps_scores`) and rewriting Step 2's rule to
   point at the schema directly. This is the fix that held — see gap
   below.
+- **`persist_weekly_brief.py`** — the production invocation boundary:
+  qualified Story Objects → `run_weekly_editor_agent()` (unchanged) →
+  shape + freeze the gates into `newsletter_issue`/`newsletter_story`
+  row shape → hand the persisted rows to the Evidence Validator.
+  `shape_newsletter_rows()`/`freeze_eps_scores()` are pure functions —
+  no I/O; only `persist_weekly_brief()`/`run_and_persist()` make the
+  real signed write, via `newsletter-write.ts` (tastypickems `main`).
+- **`run_wrapper_acceptance_test.py`** / **`wrapper_acceptance_run1_*`**
+  — the acceptance test EPS spec §12 #7 was blocked on, finally run
+  against real persisted (shaped/frozen) rows rather than transient
+  Editor output. See `wrapper_acceptance_run1_results.md` for the real
+  result: `check_gate_consistency` is a clean, real `pass`; a separate,
+  reproducible `one_treatment` regression in the Editor Agent's own
+  output was also found and is documented there, out of scope for this
+  wrapper to fix.
 
 ## Real, open gaps — flagged, not silently worked around
 
