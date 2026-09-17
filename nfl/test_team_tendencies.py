@@ -262,22 +262,49 @@ if __name__ == "__main__":
     # detector-specific real relationships, each still verifiable by
     # cross-checking real weekly data (team/rank fields were dropped
     # from the v2 shape itself, per the locked schema).
+    #
+    # REAL BUG FOUND AND FIXED (dynamic-window change): this used to
+    # pick "the first story with related_players" out of the FLATTENED
+    # all-weeks list, then cross-check against wk2025 = the WHOLE
+    # season's rows collapsed to one dict per player_id (dict(zip(...))
+    # silently keeps whichever row iterates last, not the row for the
+    # story's own actual week). That only ever worked by accident,
+    # because before the dynamic-window change no story could exist
+    # before week 5, so "the first story" always happened to land late
+    # enough in the season that its related_players ranking still
+    # matched the season's LAST week's snap_share/td_opportunity
+    # closely enough. Once real week 3-4 "thin" stories exist, the
+    # first story is now often an early one, and a player's real snap_
+    # share/td_opportunity in week 3 is a genuinely different number
+    # than in whatever week happened to sort last in the dict -- a real
+    # week mismatch, not a production bug (_related_players_team_wide
+    # itself already correctly filters its own pool by the exact
+    # (season, week) it was called with). Fixed by checking a single
+    # FIXED reference week (15, matching this file's own existing
+    # "combined" check a few lines above) instead of scanning a
+    # flattened multi-week list, and scoping the weekly lookup to that
+    # exact same week.
     # ============================================================
-    wk2025 = weekly[weekly["season"] == 2025]
-    rz_run_heavy = next((s for s in all_stories["rz"] if s["trend_direction"] == "growing-run-heavy" and s["related_players"]), None)
-    rz_pass_heavy = next((s for s in all_stories["rz"] if s["trend_direction"] == "growing-pass-heavy" and s["related_players"]), None)
+    ref_week = 15
+    wk_ref = weekly[(weekly["season"] == 2025) & (weekly["week"] == ref_week)]
+    rz_ref_stories = build_redzone_play_calling_stories(pbp2025, weekly, 2025, ref_week)
+    fd_ref_stories = build_fourth_down_aggressiveness_stories(pbp2025, weekly, 2025, ref_week)
+    pace_ref_stories = build_pace_stories(pbp2025, weekly, 2025, ref_week)
+
+    rz_run_heavy = next((s for s in rz_ref_stories if s["trend_direction"] == "growing-run-heavy" and s["related_players"]), None)
+    rz_pass_heavy = next((s for s in rz_ref_stories if s["trend_direction"] == "growing-pass-heavy" and s["related_players"]), None)
     results.append(check(
         "red-zone related_players is DIRECTIONAL: every entry is a real player entity with direction_indicator='up' (the beneficiary-group reasoning — see _signal_direction_redzone)",
         rz_run_heavy is not None and all(r["entity_type"] == "player" and r["direction_indicator"] == "up" for r in rz_run_heavy["related_players"]),
     ))
     if rz_run_heavy:
-        rb_check_pool = wk2025[wk2025["player_id"].isin([r["player_id"] for r in rz_run_heavy["related_players"]])]
+        rb_check_pool = wk_ref[wk_ref["player_id"].isin([r["player_id"] for r in rz_run_heavy["related_players"]])]
         results.append(check("growing-run-heavy red-zone related_players are genuinely RBs", set(rb_check_pool["position_group"].unique()) <= {"RB"}))
     if rz_pass_heavy:
-        wrte_check_pool = wk2025[wk2025["player_id"].isin([r["player_id"] for r in rz_pass_heavy["related_players"]])]
+        wrte_check_pool = wk_ref[wk_ref["player_id"].isin([r["player_id"] for r in rz_pass_heavy["related_players"]])]
         results.append(check("growing-pass-heavy red-zone related_players are genuinely WR/TE", set(wrte_check_pool["position_group"].unique()) <= {"WR", "TE"}))
 
-    fd_with_related = next((s for s in all_stories["fd"] if s["related_players"]), None)
+    fd_with_related = next((s for s in fd_ref_stories if s["related_players"]), None)
     results.append(check(
         "fourth-down related_players is TEAM-WIDE, real player entities, note cites 'Benefits from sustained drives', direction_indicator matches the real story direction (growing-aggressive -> up)",
         fd_with_related is not None and all(
@@ -287,11 +314,11 @@ if __name__ == "__main__":
         ),
     ))
     if fd_with_related:
-        td_by_player = dict(zip(wk2025["player_id"], wk2025["td_opportunity"]))
+        td_by_player = dict(zip(wk_ref["player_id"], wk_ref["td_opportunity"]))
         tds = [td_by_player.get(r["player_id"]) for r in fd_with_related["related_players"]]
         results.append(check("fourth-down related_players ranked by real td_opportunity, highest first (cross-checked against real weekly data)", tds == sorted(tds, reverse=True)))
 
-    pace_with_related = next((s for s in all_stories["pace"] if s["related_players"]), None)
+    pace_with_related = next((s for s in pace_ref_stories if s["related_players"]), None)
     results.append(check(
         "pace related_players is TEAM-WIDE, real player entities, note cites 'Benefits from play volume', direction_indicator matches the real story direction (growing-faster -> up) -- a genuinely different real mechanism than fourth-down's td_opportunity ranking",
         pace_with_related is not None and all(
@@ -301,7 +328,7 @@ if __name__ == "__main__":
         ),
     ))
     if pace_with_related:
-        snap_by_player = dict(zip(wk2025["player_id"], wk2025["snap_share"]))
+        snap_by_player = dict(zip(wk_ref["player_id"], wk_ref["snap_share"]))
         snaps = [snap_by_player.get(r["player_id"]) for r in pace_with_related["related_players"]]
         results.append(check("pace related_players ranked by real snap_share, highest first (cross-checked against real weekly data)", snaps == sorted(snaps, reverse=True)))
 

@@ -87,25 +87,36 @@ if __name__ == "__main__":
         all(st["trend_strength"] >= CONFIG["trend_threshold"] for st in wk15),
     ))
     results.append(check(
-        "every real story's sample_size exceeds the trend window -- a thin defense structurally CANNOT produce a story "
-        "(not just softened language), since a masked trend delta is never material enough to clear the threshold",
-        all(st["sample_size"] > CONFIG["trend_window"] for st in wk15),
+        "every real story's sample_size exceeds ITS OWN methodology.trend_window_games -- a thin defense "
+        "structurally CANNOT produce a story below its dynamic window (not just softened language), since a "
+        "masked trend delta is never material enough to clear the threshold. Updated for the dynamic-window "
+        "change: the window a story actually used is no longer always CONFIG['trend_window'] (a window=1 "
+        "'thin'-maturity story is real and expected now, with sample_size as low as 3) -- so this checks each "
+        "story against its OWN recorded window, not the fixed config constant.",
+        all(st["sample_size"] > st["methodology"]["trend_window_games"] for st in wk15),
     ))
 
     # Broader check across every real week in the data.
     all_weeks_ok = True
     all_position_groups = set()
     min_sample_size = 999
+    maturity_counts = {"thin": 0, "developing": 0, "confirmed": 0}
     for (season, week), _ in weekly.groupby(["season", "week"]):
         wk_stories = build_defensive_trends_stories(weekly, season, week)
         for st in wk_stories:
             all_position_groups.add(st["entity"]["position_group"])
             min_sample_size = min(min_sample_size, st["sample_size"])
-            if st["trend_strength"] < CONFIG["trend_threshold"] or st["sample_size"] <= CONFIG["trend_window"]:
+            maturity_counts[st["methodology_maturity"]] += 1
+            if st["trend_strength"] < CONFIG["trend_threshold"] or st["sample_size"] <= st["methodology"]["trend_window_games"]:
                 all_weeks_ok = False
-    results.append(check("threshold + structural sample-size guarantee holds across every real season/week in the backfill", all_weeks_ok))
+    results.append(check("threshold + structural sample-size guarantee (against each story's OWN window) holds across every real season/week in the backfill", all_weeks_ok))
     results.append(check("no QB entity ever appears (defensive_matchup_vulnerability's own position scope is RB/WR/TE)", "QB" not in all_position_groups))
-    results.append(check(f"minimum real sample_size observed across the whole backfill is > trend_window (got {min_sample_size})", min_sample_size > CONFIG["trend_window"]))
+    results.append(check(
+        f"minimum real sample_size observed across the whole backfill is now as low as 3 (a real window=1 'thin' "
+        f"story, games_played=2) -- confirms the dynamic window actually produces early output, not just a config "
+        f"change with no real effect (got {min_sample_size}, maturity distribution {maturity_counts})",
+        min_sample_size == 3 and maturity_counts["thin"] > 0,
+    ))
 
     # ============================================================
     # related_players — REVERSED direction vs. the first two families

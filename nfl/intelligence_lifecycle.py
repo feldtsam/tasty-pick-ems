@@ -160,7 +160,7 @@ def entity_key_for(entity: dict) -> str:
 
 def _compute_lifecycle_state(
     current_value: float, recent_values: list, prior_state, prior_pending_direction, prior_streak_count: int,
-    prior_appearance_count: int, threshold: float,
+    prior_appearance_count: int, threshold: float, force_no_direction: bool = False,
 ) -> dict:
     """
     Pure state-transition function for an identity that DID appear in
@@ -220,6 +220,25 @@ def _compute_lifecycle_state(
     the caller's (apply_lifecycle's) job, since this function doesn't
     own that list.
 
+    METHODOLOGY RE-BASELINE (force_no_direction, dynamic-window
+    methodology_maturity, 2026-09): SAME MECHANISM as the NaN case
+    directly above, reused rather than duplicated — when the caller
+    knows this observation was computed under a DIFFERENT methodology_
+    maturity than the identity's own prior persisted one (e.g. a
+    "thin"->"developing" transition), it passes force_no_direction=True
+    to suppress a Strengthening/Weakening claim built by comparing a
+    trend_strength computed one way against a recent_values baseline
+    built from trend_strength readings computed a DIFFERENT way — not
+    a real apples-to-apples move, even if the raw numbers happen to
+    cross `threshold`. Exactly like the NaN branch, this still counts
+    as a real appearance (appearance_count increments, state still
+    falls through to the normal Active/Detected fallback below) — it
+    just can't support a directional claim THIS one time. No new
+    lifecycle_state value is introduced for this — deliberately reuses
+    the existing Active/Detected fallback rather than inventing a
+    "Rebaselined" state, approved as the intended behavior, not a
+    shortcut.
+
     Returns {"lifecycle_state": str, "pending_direction": str|None,
     "streak_count": int, "appearance_count": int, "miss_count": 0} —
     miss_count always resets to 0 here; this function is only ever
@@ -230,7 +249,7 @@ def _compute_lifecycle_state(
 
     appearance_count = prior_appearance_count + 1
 
-    if not math.isfinite(current_value):
+    if force_no_direction or not math.isfinite(current_value):
         direction = None
     else:
         baseline = sum(recent_values) / len(recent_values)
@@ -311,11 +330,16 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
 
     history: {(family, entity_key, signal_name): {"lifecycle_state":...,
     "pending_direction":..., "streak_count":..., "appearance_count":...,
-    "miss_count":..., "recent_values": [...]}} — pending_direction is a
-    hidden field, separate from the visible lifecycle_state, tracking
-    which direction (if any) is currently accumulating toward a 2-
-    consecutive-week confirmation (see _compute_lifecycle_state's own
-    docstring for why this has to be separate). The real persisted
+    "miss_count":..., "recent_values": [...], "methodology_maturity":
+    ...}} — pending_direction is a hidden field, separate from the
+    visible lifecycle_state, tracking which direction (if any) is
+    currently accumulating toward a 2-consecutive-week confirmation
+    (see _compute_lifecycle_state's own docstring for why this has to
+    be separate). methodology_maturity (dynamic-window families only —
+    defensive_trends/coaching_trends — absent/None for role_changes)
+    is the identity's own most recent PERSISTED maturity tier, used
+    only to detect a re-baseline transition below; it is never itself
+    part of the Strengthening/Weakening comparison. The real persisted
     state as of the END of
     the PRIOR real run this family actually executed (already walked
     back through any real gap by the caller, same bounded-lookback
@@ -324,6 +348,27 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
     unchanged in PRINCIPLE, though this task validates the state machine
     itself locally/in-memory across real sequential historical weeks,
     not against a live read endpoint that doesn't exist yet).
+
+    METHODOLOGY RE-BASELINE GUARD (dynamic-window families, 2026-09):
+    when this story's own methodology_maturity differs from the
+    identity's most recent PERSISTED methodology_maturity, this
+    observation's trend_strength was computed under a genuinely
+    different measurement (a different trend_window_games) than what
+    recent_values holds — comparing them would produce a false
+    Strengthening/Weakening claim from a methodology change, not a real
+    signal move. Handled narrowly: _compute_lifecycle_state is called
+    with force_no_direction=True (same mechanism the NaN-reading case
+    already uses — see that function's own docstring), so this
+    observation still counts as a real appearance and still falls
+    through to the normal Active/Detected fallback, just without a
+    directional claim. recent_values is reseeded to just this one
+    observation (discarding the old, methodology-mismatched baseline)
+    — UNLESS current_value is itself non-finite, in which case
+    recent_values is left unchanged (same as the ordinary NaN case
+    below), so a bad reading never seeds a bad new baseline either;
+    the next valid observation reseeds normally. Once methodology_
+    maturity stops changing week to week, normal comparison resumes
+    on its own — nothing here is sticky beyond this one transition.
 
     Returns {"history_rows": [...], "updated_history": {...}}.
     history_rows is exactly what WOULD be written to nfl_intelligence_
@@ -351,12 +396,25 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
         except (TypeError, ValueError):
             current_value = float("nan")  # same "unusable, not absent" treatment as a real NaN below
 
+        # Methodology re-baseline guard (dynamic-window families only —
+        # see this function's own docstring). Absent/None methodology_
+        # maturity (role_changes, market_intelligence, or a family whose
+        # prior history predates this field) never counts as a
+        # transition — both sides have to be real, different values.
+        story_maturity = story.get("methodology_maturity")
+        prior_maturity = prior.get("methodology_maturity") if prior else None
+        is_maturity_transition = (
+            prior is not None and prior_maturity is not None
+            and story_maturity is not None and story_maturity != prior_maturity
+        )
+
         if prior is None:
             result = _compute_lifecycle_state(current_value, [], None, None, 0, 0, threshold)
         else:
             result = _compute_lifecycle_state(
                 current_value, prior["recent_values"], prior["lifecycle_state"], prior["pending_direction"],
                 prior["streak_count"], prior["appearance_count"], threshold,
+                force_no_direction=is_maturity_transition,
             )
 
         # A sanity-failed (NaN/inf) current_value is deliberately NOT
@@ -368,13 +426,29 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
         # week's baseline/delta either. recent_values simply carries
         # forward unchanged this week — mechanically identical to "no
         # new information," not a fabricated substitute value.
+        #
+        # A methodology re-baseline gets the SAME "don't poison the
+        # baseline with a bad value" protection, applied the other
+        # direction: recent_values is reseeded to just this one real
+        # (finite) observation, discarding the old, methodology-
+        # mismatched values entirely — a real re-baseline is a REAL new
+        # starting point, not a value to average against a differently-
+        # computed history. If this transition row is ALSO non-finite
+        # (a rare, real combination), it's treated exactly like an
+        # ordinary NaN reading instead: recent_values carries forward
+        # unchanged, and the next valid observation reseeds normally —
+        # never reseed a baseline with a bad value just because a
+        # transition also happened to occur this week.
         prior_recent_values = prior["recent_values"] if prior else []
         if math.isfinite(current_value):
-            recent_values = (prior_recent_values + [current_value])[-BASELINE_WINDOW:]
+            if is_maturity_transition:
+                recent_values = [current_value]
+            else:
+                recent_values = (prior_recent_values + [current_value])[-BASELINE_WINDOW:]
         else:
             recent_values = prior_recent_values
 
-        updated_history[identity] = {**result, "recent_values": recent_values}
+        updated_history[identity] = {**result, "recent_values": recent_values, "methodology_maturity": story_maturity}
         history_rows.append({
             "intelligence_family": family,
             "entity_key": identity[1],
@@ -384,6 +458,7 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
             "trend_strength": current_value,
             "primary_signal_value": _safe_float(story["primary_signal"].get("value")),
             "lifecycle_state": result["lifecycle_state"],
+            "methodology_maturity": story_maturity,
             # pending_direction/appearance_count -- CONFIRMED FIX, not new
             # scope: these were missing from history_rows entirely before
             # (and from nfl_intelligence_story_history's own real schema,
@@ -413,7 +488,11 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
         )
         if result is None:
             continue  # already Archived in a prior run -- no new row, per the approved bounded exception
-        updated_history[identity] = {**result, "recent_values": prior["recent_values"]}
+        # A miss is "nothing new observed" -- methodology_maturity carries
+        # forward unchanged from the prior real row, same as lifecycle_
+        # state/pending_direction/etc. above. There's no new story to
+        # have a maturity at all this week.
+        updated_history[identity] = {**result, "recent_values": prior["recent_values"], "methodology_maturity": prior.get("methodology_maturity")}
         history_rows.append({
             "intelligence_family": family,
             "entity_key": identity[1],
@@ -423,6 +502,7 @@ def apply_lifecycle(stories: list, history: dict, family: str, season: int, week
             "trend_strength": None,
             "primary_signal_value": None,
             "lifecycle_state": result["lifecycle_state"],
+            "methodology_maturity": prior.get("methodology_maturity"),
             "pending_direction": result["pending_direction"],
             "appearance_count": result["appearance_count"],
             "streak_count": result["streak_count"],
@@ -536,6 +616,15 @@ def _reduce_to_prior_history(rows: list, family: str, before_week: int) -> dict:
             "appearance_count": latest.get("appearance_count") or 0,
             "miss_count": latest.get("miss_count") or 0,
             "recent_values": recent_values,
+            # Dynamic-window methodology re-baseline guard (2026-09) --
+            # absent/None for role_changes/market_intelligence rows (no
+            # such column populated for those families) and for any
+            # real historical row written before this field existed --
+            # both cases correctly read back as None here, which
+            # apply_lifecycle's own is_maturity_transition check already
+            # treats as "never a transition" (both sides have to be
+            # real, different values).
+            "methodology_maturity": latest.get("methodology_maturity"),
         }
     return history
 

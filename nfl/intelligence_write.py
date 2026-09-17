@@ -151,6 +151,12 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
     alongside evidence_classification above, never a replacement for it —
     absent/None for every family except market_intelligence's own
     build_deviation_stories() output, which sets both.
+
+    Dynamic trend-window methodology fields (methodology/methodology_
+    maturity, 2026-09): additive, same optional/absent-until-populated
+    shape — set only by defensive_trends.py and team_tendencies.py's
+    own build_*_stories() functions, absent/None for role_changes and
+    market_intelligence (neither has a dynamic-window trend concept).
     """
     entity_key, entity_key_issue = _entity_key_for_row(story.get("entity"))
     issues = list(sanity_issues) + ([entity_key_issue] if entity_key_issue else [])
@@ -199,6 +205,14 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
         # family's own builder loop -- always None at write time today,
         # same real null-not-fabricated posture as interrogation.
         "eps": story.get("eps"),
+        # Dynamic trend-window methodology metadata (defensive_trends.py
+        # / team_tendencies.py, 2026-09) -- same "optional, absent/None
+        # until a family's writer actually populates it" shape as every
+        # Universal Card v2 / interrogation / eps field above. Absent/
+        # None for role_changes and market_intelligence, which have no
+        # dynamic-window concept at all.
+        "methodology": story.get("methodology"),
+        "methodology_maturity": story.get("methodology_maturity"),
     }
 
 

@@ -90,6 +90,7 @@ that were actually played), ranked by td_opportunity — the players
 genuinely positioned to exploit (or be limited by) the identified
 trend, not a generic team roster dump.
 """
+import numpy as np
 import pandas as pd
 
 from intelligence_schema import build_story
@@ -105,9 +106,27 @@ CONFIG = {
     # selective, same "starting hypothesis, tunable" treatment every
     # other threshold in this codebase gets.
     "trend_threshold": 20.0,
-    # Trend window — matches _trend_delta's precedent (3), not a fresh
-    # number. Also the games_played boundary the trend mask uses.
+    # Trend window for the "developing"/"confirmed" methodology tiers —
+    # matches _trend_delta's original precedent (3). "thin" uses
+    # thin_trend_window (1) instead — see _methodology_for_games_played.
     "trend_window": 3,
+    "thin_trend_window": 1,
+    # Dynamic-window / methodology_maturity schedule (games_played is
+    # the same 0-indexed cumcount() value _trend_delta already computes,
+    # never NFL week number -- byes break the week<->games_played
+    # equivalence, so every boundary below is keyed on real games played,
+    # not the calendar). Real-data-derived (see the investigation this
+    # schedule came out of): at games_played<=1 there's no real trend to
+    # report at all; games_played 2-3 gets a real but genuinely thin
+    # window=1 comparison; games_played 4-8 gets the standard window=3
+    # comparison, still "developing" since real backfill data shows the
+    # window=3 delta still moving materially in this range; games_played
+    # >8 is where the same window=3 delta's expanding-mean baseline has
+    # empirically stopped moving significantly game to game (confirmed
+    # against real 2022/2024/2025 defensive rz-TDs-allowed data).
+    "thin_games_played_min": 2,
+    "developing_games_played_min": 4,
+    "confirmed_games_played_min": 9,
     # Below this defensive_matchup_completeness, headline language
     # hedges even though the trend mask already passed (a defense can
     # clear the games_played gate while still resting on a thin
@@ -185,21 +204,106 @@ def _defense_weekly(weekly: pd.DataFrame) -> pd.DataFrame:
     return dw
 
 
-def _trend_delta(defense_weekly: pd.DataFrame, window: int) -> pd.Series:
+def _methodology_for_games_played(games_played: pd.Series, config: dict) -> pd.DataFrame:
+    """
+    Dynamic trend_window + methodology_maturity schedule, keyed strictly
+    on games_played (the same 0-indexed cumcount() value _trend_delta
+    already computes) — never on NFL week number, since a bye breaks the
+    week<->games_played equivalence and this schedule has to stay
+    correct regardless of a defense's bye-week position.
+
+    games_played 0-1: no window at all (None/NaN) -- no real trend to
+      report yet, same as today's pre-existing behavior for these rows.
+    games_played 2-3: window=1, "thin" -- a real but genuinely thin
+      single-game comparison.
+    games_played 4-8: window=3, "developing" -- the same window=3
+      comparison this family always used, but real backfill data shows
+      its expanding-mean baseline is still moving materially in this
+      range (checked directly, not assumed).
+    games_played  >8: window=3, "confirmed" -- same window, but the
+      baseline has empirically stopped moving significantly game to
+      game by this point (confirmed against real 2022/2024/2025 data).
+
+    IMPORTANT, confirmed directly: only window values 1 and 3 are ever
+    selected here, on purpose -- add_rolling_windows only ever computes
+    _last1/_last3/_last5 columns, never _last2/_last4; this schedule is
+    deliberately built to never ask for a column that doesn't exist.
+
+    Returns a DataFrame with columns "_trend_window" (float, NaN where
+    no trend applies -- float so it can hold NaN) and
+    "_methodology_maturity" (object, None where no trend applies),
+    same index as games_played.
+    """
+    window = pd.Series(np.nan, index=games_played.index, dtype=float)
+    maturity = pd.Series(None, index=games_played.index, dtype=object)
+
+    thin_mask = (games_played >= config["thin_games_played_min"]) & (games_played < config["developing_games_played_min"])
+    developing_mask = (games_played >= config["developing_games_played_min"]) & (games_played < config["confirmed_games_played_min"])
+    confirmed_mask = games_played >= config["confirmed_games_played_min"]
+
+    window[thin_mask] = config["thin_trend_window"]
+    maturity[thin_mask] = "thin"
+    window[developing_mask] = config["trend_window"]
+    maturity[developing_mask] = "developing"
+    window[confirmed_mask] = config["trend_window"]
+    maturity[confirmed_mask] = "confirmed"
+
+    return pd.DataFrame({"_trend_window": window, "_methodology_maturity": maturity})
+
+
+def _trend_delta(defense_weekly: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
     Same shape as scoring._trend_delta, reimplemented locally rather
     than imported (matches shelves.py/role_changes.py precedent of not
     reaching into another module's private helpers) — recent-window
-    mean of the SCORE itself minus its own season-to-date average,
-    masked to NaN whenever games_played <= window so a defense with too
-    little history can't produce a forced/redundant-echo trend.
+    mean of the SCORE itself minus its own season-to-date average.
+
+    UPDATED for the dynamic-window schedule (see _methodology_for_
+    games_played): the recent window is now chosen PER ROW from
+    games_played rather than a single fixed config["trend_window"], so
+    this now selects between the _last1/_last3 columns row by row
+    instead of picking one column for the whole frame.
+
+    Still masked to NaN whenever games_played <= the row's own selected
+    window — kept as an explicit defensive check even though the
+    schedule above is constructed so this can never trip in practice
+    (thin: games_played 2-3 > window 1; developing/confirmed:
+    games_played >=4 > window 3) — the exact same games_played-vs-
+    window invariant this function has always enforced, now checked
+    per row instead of once for the whole frame.
+
+    Returns a DataFrame with "_delta", "_trend_window" (the actual
+    window used for this row), and "_methodology_maturity" — the
+    latter two needed downstream both for the methodology metadata
+    attached to the story and for the narrative text that used to
+    hardcode "last {trend_window} games".
     """
     games_played = defense_weekly.groupby(["defteam", "position_group", "season"]).cumcount()
-    delta = (
-        defense_weekly[f"defensive_matchup_vulnerability_last{window}"]
-        - defense_weekly["defensive_matchup_vulnerability_season_avg"]
-    )
-    return delta.where(games_played > window)
+    schedule = _methodology_for_games_played(games_played, config)
+
+    last1 = defense_weekly["defensive_matchup_vulnerability_last1"]
+    last3 = defense_weekly["defensive_matchup_vulnerability_last3"]
+    season_avg = defense_weekly["defensive_matchup_vulnerability_season_avg"]
+    recent = pd.Series(np.nan, index=defense_weekly.index, dtype=float)
+    recent[schedule["_trend_window"] == 1] = last1[schedule["_trend_window"] == 1]
+    recent[schedule["_trend_window"] == 3] = last3[schedule["_trend_window"] == 3]
+
+    delta = (recent - season_avg).where(games_played > schedule["_trend_window"])
+    return pd.DataFrame({
+        "_delta": delta,
+        "_trend_window": schedule["_trend_window"],
+        "_methodology_maturity": schedule["_methodology_maturity"],
+        # The exact 0-indexed games_played value the schedule above was
+        # evaluated against -- returned (not recomputed by the caller)
+        # so the persisted methodology.games_played field is guaranteed
+        # to use the SAME number the maturity tier was actually decided
+        # from, never the pre-existing +1 "games played so far" display
+        # convention _games_played uses elsewhere in this module (that
+        # field answers a different, human-display question -- "how
+        # many games has this defense played" -- not "what value did
+        # the maturity schedule key off").
+        "_games_played_0indexed": games_played,
+    })
 
 
 def _related_players(weekly: pd.DataFrame, season, week, defteam, position_group, direction: str, config: dict) -> list:
@@ -404,7 +508,7 @@ def _what_changed_for_row(row: pd.Series, direction: str, td_agrees: bool, thin_
     verb = "climbing" if direction == "growing-vulnerability" else "tightening"
     items = [{
         "label": f"Red-zone defense {verb}",
-        "observation": f"This defense's real red-zone vulnerability score has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+        "observation": f"This defense's real red-zone vulnerability score has moved {row['_delta']:+.0f} points over its last {_games_phrase(row['_trend_window'])}.",
     }]
     if td_agrees:
         last3, season_avg = float(row["allowed_rz_tds_last3"]), float(row["allowed_rz_tds_season_avg"])
@@ -418,6 +522,15 @@ def _what_changed_for_row(row: pd.Series, direction: str, td_agrees: bool, thin_
         "observation": f"Based on {int(row['_games_played'])} real games this season" + (" — still a developing read." if thin_completeness else ", an established, well-populated read."),
     })
     return items[:3]
+
+
+def _games_phrase(n) -> str:
+    """'1 game' vs '3 games' -- the dynamic window can now be 1, so the
+    plural literally used to be wrong every time a window=1 story is
+    ever generated. Small enough to not warrant its own module, but
+    real enough (customer-facing prose) not to skip."""
+    n = int(n)
+    return f"{n} game" if n == 1 else f"{n} games"
 
 
 def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
@@ -447,7 +560,11 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
     """
     dw = _defense_weekly(weekly)
     dw["_games_played"] = dw.groupby(["defteam", "position_group", "season"]).cumcount() + 1
-    dw["_delta"] = _trend_delta(dw, config["trend_window"])
+    trend = _trend_delta(dw, config)
+    dw["_delta"] = trend["_delta"]
+    dw["_trend_window"] = trend["_trend_window"]
+    dw["_methodology_maturity"] = trend["_methodology_maturity"]
+    dw["_games_played_0indexed"] = trend["_games_played_0indexed"]
 
     pool = dw[
         (dw["season"] == season) & (dw["week"] == week) & dw["_delta"].notna()
@@ -462,7 +579,7 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
 
         evidence = [
             f"defensive_matchup_vulnerability {row['defensive_matchup_vulnerability']:.0f}/100, "
-            f"moved {row['_delta']:+.1f} points over the last {config['trend_window']} games vs. season-to-date",
+            f"moved {row['_delta']:+.1f} points over the last {_games_phrase(row['_trend_window'])} vs. season-to-date",
             f"{int(row['_games_played'])} game(s) of data this season "
             f"({'a thin, still-developing sample' if thin_completeness else 'an established, well-populated read'})",
         ]
@@ -495,7 +612,7 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
             sample_size=int(row["_games_played"]),
             completeness=float(row["defensive_matchup_completeness"]),
             confidence=float(row["defensive_matchup_completeness"]),
-            time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
+            time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
             related_players=_related_players(weekly, season, week, row["defteam"], row["position_group"], direction, config),
         )
         # Universal Card v2 fields -- attached after build_story(), not
@@ -522,6 +639,20 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
         # populated for a story, same relationship interrogation itself
         # has to story generation.
         story["eps"] = None
+        # Dynamic trend-window methodology metadata -- attached after
+        # build_story(), same "additive, not part of STORY_FIELDS" shape
+        # as every field above. Frozen at generation time: exactly which
+        # window this row's own _delta actually used, and the maturity
+        # tier that window/games_played combination maps to, so a reader
+        # (or the lifecycle layer) can tell a window=1 "thin" story apart
+        # from a window=3 "confirmed" one without inferring it from prose.
+        story["methodology"] = {
+            "trend_window_games": int(row["_trend_window"]),
+            "baseline_type": "expanding_season_mean",
+            "games_played": int(row["_games_played_0indexed"]),
+            "methodology_version": "defensive_trends_v1",
+        }
+        story["methodology_maturity"] = row["_methodology_maturity"]
         stories.append(story)
 
     return stories

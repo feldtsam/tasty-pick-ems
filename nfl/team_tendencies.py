@@ -118,6 +118,7 @@ comparison. Verified with a full-backfill honesty scan, same standard
 Defensive Trends' "0/126 mismatches" reporting set — see test_team_
 tendencies.py for the real result.
 """
+import numpy as np
 import pandas as pd
 
 from intelligence_schema import build_story
@@ -137,7 +138,27 @@ CONFIG = {
     # qualify by roughly midseason without accepting a 1-2-play "rate".
     "min_rz_plays_qualified": 20,
     "min_fourth_down_decisions_qualified": 25,
+    # Trend window for the "developing"/"confirmed" methodology tiers —
+    # same precedent-matching value as defensive_trends.py's own
+    # trend_window (3). "thin" uses thin_trend_window (1) instead — see
+    # _methodology_for_games_played. This file keeps its own copy
+    # rather than importing defensive_trends.py's, per this codebase's
+    # established "duplicate rather than cross-import" convention.
     "trend_window": 3,
+    "thin_trend_window": 1,
+    # Dynamic-window / methodology_maturity schedule — same real-data-
+    # derived reasoning as defensive_trends.py's own copy of this
+    # schedule (see that file's CONFIG comment for the full backfill
+    # investigation this came out of): games_played is the same
+    # 0-indexed cumcount() value _trend_delta already computes, never
+    # NFL week number. NOTE this schedule applies to all three
+    # detectors uniformly (redzone/fourth-down/pace); it does NOT
+    # replace or interact with min_rz_plays_qualified/min_fourth_down_
+    # decisions_qualified above -- those cumulative-volume gates stay
+    # exactly as they are, layered on top, unchanged.
+    "thin_games_played_min": 2,
+    "developing_games_played_min": 4,
+    "confirmed_games_played_min": 9,
     # Materiality thresholds on the rolled SCORE's delta (0-100 scale,
     # same shape as defensive_trends.py's trend_threshold=20.0) —
     # starting hypotheses, checked against real backfill distributions
@@ -239,7 +260,44 @@ def _weekly_percentile(team_week: pd.DataFrame, value_col: str, qualified_col: s
     return fill_neutral(raw)
 
 
-def _trend_delta(team_week: pd.DataFrame, score_col: str, window: int) -> pd.Series:
+def _methodology_for_games_played(games_played: pd.Series, config: dict) -> pd.DataFrame:
+    """
+    Same dynamic trend_window + methodology_maturity schedule as
+    defensive_trends.py's own copy of this function (this file keeps
+    its own duplicate, per this codebase's established "duplicate
+    rather than cross-import" convention — see that file for the full
+    real-data investigation this schedule came out of). Shared
+    uniformly across all three Coaching Trends detectors (redzone/
+    fourth-down/pace) — confirmed intentional, not per-detector tuning.
+
+    games_played 0-1: no window (None/NaN). games_played 2-3: window=1,
+    "thin". games_played 4-8: window=3, "developing". games_played >8:
+    window=3, "confirmed". Only ever selects window 1 or 3 — add_
+    rolling_windows never computes _last2/_last4, so this schedule is
+    deliberately built to never ask for a column that doesn't exist.
+
+    Returns a DataFrame with "_trend_window" (float, NaN where no trend
+    applies) and "_methodology_maturity" (object, None where no trend
+    applies), same index as games_played.
+    """
+    window = pd.Series(np.nan, index=games_played.index, dtype=float)
+    maturity = pd.Series(None, index=games_played.index, dtype=object)
+
+    thin_mask = (games_played >= config["thin_games_played_min"]) & (games_played < config["developing_games_played_min"])
+    developing_mask = (games_played >= config["developing_games_played_min"]) & (games_played < config["confirmed_games_played_min"])
+    confirmed_mask = games_played >= config["confirmed_games_played_min"]
+
+    window[thin_mask] = config["thin_trend_window"]
+    maturity[thin_mask] = "thin"
+    window[developing_mask] = config["trend_window"]
+    maturity[developing_mask] = "developing"
+    window[confirmed_mask] = config["trend_window"]
+    maturity[confirmed_mask] = "confirmed"
+
+    return pd.DataFrame({"_trend_window": window, "_methodology_maturity": maturity})
+
+
+def _trend_delta(team_week: pd.DataFrame, score_col: str, config: dict) -> pd.DataFrame:
     """
     Recent-window mean of the SCORE minus its own season-to-date average
     — same shape as defensive_trends._trend_delta, including the SAME
@@ -252,10 +310,40 @@ def _trend_delta(team_week: pd.DataFrame, score_col: str, window: int) -> pd.Ser
     echo signature) — masked here rather than left in, matching
     precedent exactly rather than assuming the structural volume gate on
     the other two detectors would happen to catch every case.
+
+    UPDATED for the dynamic-window schedule (see _methodology_for_
+    games_played): `window` is no longer a caller-supplied scalar — the
+    recent window is chosen PER ROW from games_played, selecting between
+    the _last1/_last3 columns row by row. The games_played > window
+    invariant above is kept as an explicit defensive check even though
+    the schedule is constructed so it can never trip in practice (thin:
+    games_played 2-3 > window 1; developing/confirmed: games_played >=4
+    > window 3).
+
+    Returns a DataFrame with "_delta", "_trend_window" (the actual
+    window used for this row), "_methodology_maturity", and
+    "_games_played_0indexed" (the exact value the schedule was
+    evaluated against, returned rather than left for the caller to
+    recompute, so persisted methodology.games_played can never drift
+    from what actually decided the maturity tier).
     """
     games_played = team_week.groupby(["team", "season"]).cumcount()
-    delta = team_week[f"{score_col}_last{window}"] - team_week[f"{score_col}_season_avg"]
-    return delta.where(games_played > window)
+    schedule = _methodology_for_games_played(games_played, config)
+
+    last1 = team_week[f"{score_col}_last1"]
+    last3 = team_week[f"{score_col}_last3"]
+    season_avg = team_week[f"{score_col}_season_avg"]
+    recent = pd.Series(np.nan, index=team_week.index, dtype=float)
+    recent[schedule["_trend_window"] == 1] = last1[schedule["_trend_window"] == 1]
+    recent[schedule["_trend_window"] == 3] = last3[schedule["_trend_window"] == 3]
+
+    delta = (recent - season_avg).where(games_played > schedule["_trend_window"])
+    return pd.DataFrame({
+        "_delta": delta,
+        "_trend_window": schedule["_trend_window"],
+        "_methodology_maturity": schedule["_methodology_maturity"],
+        "_games_played_0indexed": games_played,
+    })
 
 
 # ============================================================
@@ -310,7 +398,11 @@ def _score_redzone_play_calling(team_week: pd.DataFrame, config: dict) -> pd.Dat
     tw = add_rolling_windows(
         tw, metrics=["redzone_run_tendency", "rz_rush_attempts", "rz_plays"], group_cols=["team", "season"]
     )
-    tw["_delta"] = _trend_delta(tw, "redzone_run_tendency", config["trend_window"])
+    trend = _trend_delta(tw, "redzone_run_tendency", config)
+    tw["_delta"] = trend["_delta"]
+    tw["_trend_window"] = trend["_trend_window"]
+    tw["_methodology_maturity"] = trend["_methodology_maturity"]
+    tw["_games_played_0indexed"] = trend["_games_played_0indexed"]
     return tw
 
 
@@ -355,7 +447,11 @@ def _score_fourth_down_aggressiveness(team_week: pd.DataFrame, config: dict) -> 
     tw = add_rolling_windows(
         tw, metrics=["fourth_down_aggressiveness", "go_attempts", "fourth_down_decisions"], group_cols=["team", "season"]
     )
-    tw["_delta"] = _trend_delta(tw, "fourth_down_aggressiveness", config["trend_window"])
+    trend = _trend_delta(tw, "fourth_down_aggressiveness", config)
+    tw["_delta"] = trend["_delta"]
+    tw["_trend_window"] = trend["_trend_window"]
+    tw["_methodology_maturity"] = trend["_methodology_maturity"]
+    tw["_games_played_0indexed"] = trend["_games_played_0indexed"]
     return tw
 
 
@@ -420,7 +516,11 @@ def _score_pace(team_week: pd.DataFrame, config: dict) -> pd.DataFrame:
     tw["pace_score"] = (100.0 - raw_pct).round(1)
 
     tw = add_rolling_windows(tw, metrics=["pace_score", "seconds_per_play"], group_cols=["team", "season"])
-    tw["_delta"] = _trend_delta(tw, "pace_score", config["trend_window"])
+    trend = _trend_delta(tw, "pace_score", config)
+    tw["_delta"] = trend["_delta"]
+    tw["_trend_window"] = trend["_trend_window"]
+    tw["_methodology_maturity"] = trend["_methodology_maturity"]
+    tw["_games_played_0indexed"] = trend["_games_played_0indexed"]
     return tw
 
 
@@ -815,6 +915,15 @@ def _hero_metric_for_pace_row(row: pd.Series, agrees: bool) -> dict | None:
     }
 
 
+def _games_phrase(n) -> str:
+    """'1 game' vs '3 games' -- same helper as defensive_trends.py's own
+    copy (this file keeps its own, per the "duplicate rather than
+    cross-import" convention): the dynamic window can now be 1, so the
+    plural was wrong every time a window=1 story is generated."""
+    n = int(n)
+    return f"{n} game" if n == 1 else f"{n} games"
+
+
 def _what_changed_for_redzone_row(row: pd.Series, direction: str, agrees: bool, completeness: float, config: dict) -> list:
     """
     Real NEW editorial content — the primary evidence line here cites a
@@ -828,7 +937,7 @@ def _what_changed_for_redzone_row(row: pd.Series, direction: str, agrees: bool, 
     verb = "leaning more run-heavy" if direction == "growing-run-heavy" else "leaning more pass-heavy"
     items = [{
         "label": f"Red-zone play-calling {verb}",
-        "observation": f"This team's real red-zone run/pass tendency has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+        "observation": f"This team's real red-zone run/pass tendency has moved {row['_delta']:+.0f} points over its last {_games_phrase(row['_trend_window'])}.",
     }]
     if agrees:
         recent_rate = row["rz_rush_attempts_last3"] / row["rz_plays_last3"] * 100
@@ -849,7 +958,7 @@ def _what_changed_for_fourth_down_row(row: pd.Series, direction: str, agrees: bo
     verb = "getting more aggressive" if direction == "growing-aggressive" else "getting more conservative"
     items = [{
         "label": f"4th-down approach {verb}",
-        "observation": f"This team's real 4th-down aggressiveness has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+        "observation": f"This team's real 4th-down aggressiveness has moved {row['_delta']:+.0f} points over its last {_games_phrase(row['_trend_window'])}.",
     }]
     if agrees:
         recent_rate = row["go_attempts_last3"] / row["fourth_down_decisions_last3"] * 100
@@ -870,7 +979,7 @@ def _what_changed_for_pace_row(row: pd.Series, direction: str, agrees: bool, thi
     verb = "speeding up" if direction == "growing-faster" else "slowing down"
     items = [{
         "label": f"Tempo {verb}",
-        "observation": f"This team's real pace score has moved {row['_delta']:+.0f} points over its last {config['trend_window']} games.",
+        "observation": f"This team's real pace score has moved {row['_delta']:+.0f} points over its last {_games_phrase(row['_trend_window'])}.",
     }]
     if agrees:
         items.append({
@@ -910,7 +1019,7 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
 
         evidence = [
             f"redzone_run_tendency {row['redzone_run_tendency']:.0f}/100, moved {row['_delta']:+.1f} points "
-            f"over the last {config['trend_window']} games vs. season-to-date",
+            f"over the last {_games_phrase(row['_trend_window'])} vs. season-to-date",
             f"{int(row['_cum_rz_plays'])} red-zone play(s) of cumulative sample this season "
             f"({'a thin, still-developing sample' if completeness < 100 else 'a well-established read'})",
         ]
@@ -931,7 +1040,7 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
             sample_size=int(row["_cum_rz_plays"]),
             completeness=completeness,
             confidence=completeness,
-            time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
+            time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
             related_players=_related_players_redzone(weekly, season, week, row["team"], direction, config),
         )
         # Universal Card v2 fields -- attached after build_story(), not
@@ -953,6 +1062,20 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
         # one step further downstream (EPS takes interrogation as an
         # input, so it's never computed here either -- see eps.py).
         story["eps"] = None
+        # Dynamic trend-window methodology metadata -- see defensive_
+        # trends.py's own identical field for the full reasoning. Note
+        # sample_size above is cumulative red-zone PLAYS, not games --
+        # a genuinely different count from methodology.games_played
+        # (which is the games_played value the maturity schedule itself
+        # was evaluated against), same real distinction this family's
+        # own sample_size already had before this change.
+        story["methodology"] = {
+            "trend_window_games": int(row["_trend_window"]),
+            "baseline_type": "expanding_season_mean",
+            "games_played": int(row["_games_played_0indexed"]),
+            "methodology_version": "team_tendencies_v1",
+        }
+        story["methodology_maturity"] = row["_methodology_maturity"]
         stories.append(story)
 
     return stories
@@ -974,7 +1097,7 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
 
         evidence = [
             f"fourth_down_aggressiveness {row['fourth_down_aggressiveness']:.0f}/100, moved {row['_delta']:+.1f} "
-            f"points over the last {config['trend_window']} games vs. season-to-date",
+            f"points over the last {_games_phrase(row['_trend_window'])} vs. season-to-date",
             f"{int(row['_cum_decisions'])} realistic 4th-down decision(s) of cumulative sample this season "
             f"({'a thin, still-developing sample' if completeness < 100 else 'a well-established read'})",
         ]
@@ -995,7 +1118,7 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
             sample_size=int(row["_cum_decisions"]),
             completeness=completeness,
             confidence=completeness,
-            time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
+            time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
             related_players=_related_players_team_wide(
                 weekly, season, week, row["team"], "td_opportunity", "Benefits from sustained drives", "TD opportunity",
                 False, "growing-aggressive", direction, config,
@@ -1011,6 +1134,17 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
         # Editorial Priority Score V1 -- see build_redzone_play_calling_
         # stories' own comment above for the full reasoning, identical here.
         story["eps"] = None
+        # Dynamic trend-window methodology metadata -- see
+        # build_redzone_play_calling_stories' own identical field for
+        # the full reasoning (sample_size here is cumulative 4th-down
+        # decisions, a different count from methodology.games_played).
+        story["methodology"] = {
+            "trend_window_games": int(row["_trend_window"]),
+            "baseline_type": "expanding_season_mean",
+            "games_played": int(row["_games_played_0indexed"]),
+            "methodology_version": "team_tendencies_v1",
+        }
+        story["methodology_maturity"] = row["_methodology_maturity"]
         stories.append(story)
 
     return stories
@@ -1039,7 +1173,7 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
 
         evidence = [
             f"pace_score {row['pace_score']:.0f}/100, moved {row['_delta']:+.1f} points over the last "
-            f"{config['trend_window']} games vs. season-to-date",
+            f"{_games_phrase(row['_trend_window'])} vs. season-to-date",
             f"{int(row['_games_played'])} game(s) of data this season "
             f"({'a thin, still-developing sample' if thin else 'an established, well-populated read'})",
         ]
@@ -1058,7 +1192,7 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
             sample_size=int(row["_games_played"]),
             completeness=completeness,
             confidence=completeness,
-            time_window=f"Season {season}, last {config['trend_window']} games through Week {week} vs. season-to-date",
+            time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
             related_players=_related_players_team_wide(
                 weekly, season, week, row["team"], "snap_share", "Benefits from play volume", "Snap share",
                 True, "growing-faster", direction, config,
@@ -1074,6 +1208,22 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
         # Editorial Priority Score V1 -- see build_redzone_play_calling_
         # stories' own comment above for the full reasoning, identical here.
         story["eps"] = None
+        # Dynamic trend-window methodology metadata -- see build_redzone_
+        # play_calling_stories' own identical field for the full
+        # reasoning. NOTE: methodology.games_played uses
+        # _games_played_0indexed (the exact value the maturity schedule
+        # was evaluated against), deliberately NOT this function's own
+        # pre-existing _games_played (+1-indexed, used for completeness/
+        # thin-hedging above -- untouched, out of scope for this change)
+        # -- the two answer different questions and shouldn't be
+        # conflated even though they're numerically one apart.
+        story["methodology"] = {
+            "trend_window_games": int(row["_trend_window"]),
+            "baseline_type": "expanding_season_mean",
+            "games_played": int(row["_games_played_0indexed"]),
+            "methodology_version": "team_tendencies_v1",
+        }
+        story["methodology_maturity"] = row["_methodology_maturity"]
         stories.append(story)
 
     return stories
