@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 
-from defensive_trends import CONFIG, build_defensive_trends_stories
+from defensive_trends import CONFIG, _methodology_for_games_played, build_defensive_trends_stories
 from intelligence_schema import STORY_FIELDS
 
 WEEKLY_PATH = Path(__file__).resolve().parent / "scripts" / "player_redzone_weekly.csv"
@@ -101,8 +101,10 @@ if __name__ == "__main__":
     all_position_groups = set()
     min_sample_size = 999
     maturity_counts = {"thin": 0, "developing": 0, "confirmed": 0}
+    all_backfill_stories = []
     for (season, week), _ in weekly.groupby(["season", "week"]):
         wk_stories = build_defensive_trends_stories(weekly, season, week)
+        all_backfill_stories.extend(wk_stories)
         for st in wk_stories:
             all_position_groups.add(st["entity"]["position_group"])
             min_sample_size = min(min_sample_size, st["sample_size"])
@@ -116,6 +118,81 @@ if __name__ == "__main__":
         f"story, games_played=2) -- confirms the dynamic window actually produces early output, not just a config "
         f"change with no real effect (got {min_sample_size}, maturity distribution {maturity_counts})",
         min_sample_size == 3 and maturity_counts["thin"] > 0,
+    ))
+
+    # ============================================================
+    # Dynamic trend-window schedule -- unit-level boundary check
+    # (_methodology_for_games_played directly, every boundary named in
+    # the approved schedule) plus real-data confirmation that each
+    # tier actually produces correctly-shaped output.
+    # ============================================================
+    boundary_cases = pd.Series([0, 1, 2, 3, 4, 8, 9, 20])
+    schedule = _methodology_for_games_played(boundary_cases, CONFIG)
+    expected = [
+        (float("nan"), None), (float("nan"), None),  # games_played 0, 1: no trend at all
+        (1.0, "thin"), (1.0, "thin"),                  # games_played 2, 3: thin
+        (3.0, "developing"), (3.0, "developing"),      # games_played 4, 8: developing
+        (3.0, "confirmed"), (3.0, "confirmed"),        # games_played 9, 20: confirmed
+    ]
+    schedule_ok = all(
+        (pd.isna(w) and pd.isna(ew)) or (w == ew and m == em)
+        for (w, m), (ew, em) in zip(zip(schedule["_trend_window"], schedule["_methodology_maturity"]), expected)
+    )
+    results.append(check(
+        f"_methodology_for_games_played matches the approved schedule at every named boundary "
+        f"(games_played=[0,1,2,3,4,8,9,20] -> window/maturity={list(zip(schedule['_trend_window'].tolist(), schedule['_methodology_maturity'].tolist()))})",
+        schedule_ok,
+    ))
+
+    real_thin = [s for s in all_backfill_stories if s["methodology_maturity"] == "thin"]
+    real_developing = [s for s in all_backfill_stories if s["methodology_maturity"] == "developing"]
+    real_confirmed = [s for s in all_backfill_stories if s["methodology_maturity"] == "confirmed"]
+    results.append(check(
+        f"real 'thin' stories exist (games_played 2-3, window=1) and every one is correctly shaped "
+        f"(got {len(real_thin)})",
+        len(real_thin) > 0 and all(
+            s["methodology"]["trend_window_games"] == 1 and s["methodology"]["games_played"] in (2, 3)
+            and s["methodology"]["baseline_type"] == "expanding_season_mean"
+            for s in real_thin
+        ),
+    ))
+    results.append(check(
+        f"real 'developing' stories exist (games_played 4-8, window=3) and every one is correctly shaped "
+        f"(got {len(real_developing)})",
+        len(real_developing) > 0 and all(
+            s["methodology"]["trend_window_games"] == 3 and 4 <= s["methodology"]["games_played"] <= 8
+            for s in real_developing
+        ),
+    ))
+    results.append(check(
+        f"real 'confirmed' stories exist (games_played >8, window=3) and every one is correctly shaped "
+        f"(got {len(real_confirmed)})",
+        len(real_confirmed) > 0 and all(
+            s["methodology"]["trend_window_games"] == 3 and s["methodology"]["games_played"] > 8
+            for s in real_confirmed
+        ),
+    ))
+    results.append(check(
+        "no real story anywhere in the backfill has games_played 0 or 1 (structurally impossible by the schedule's "
+        "own design, not just a convention)",
+        all(s["methodology"]["games_played"] >= 2 for s in all_backfill_stories),
+    ))
+    thin_example = real_thin[0]
+    results.append(check(
+        f"a real 'thin' story's narrative text says '1 game' (singular), never '1 games' or a hardcoded '3 games' "
+        f"(got what_changed[0]={thin_example['what_changed'][0]['observation']!r})",
+        "1 game" in thin_example["what_changed"][0]["observation"] and "1 games" not in thin_example["what_changed"][0]["observation"],
+    ))
+    results.append(check(
+        f"that same 'thin' story's time_window field also reflects the real window used, not a hardcoded 3 "
+        f"(got {thin_example['time_window']!r})",
+        "last 1 game " in thin_example["time_window"],
+    ))
+    confirmed_example = real_confirmed[0]
+    results.append(check(
+        f"a real 'confirmed' story's narrative text correctly says '3 games' (plural) (got "
+        f"what_changed[0]={confirmed_example['what_changed'][0]['observation']!r})",
+        "3 games" in confirmed_example["what_changed"][0]["observation"],
     ))
 
     # ============================================================

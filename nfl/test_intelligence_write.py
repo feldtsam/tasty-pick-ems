@@ -103,6 +103,48 @@ if __name__ == "__main__":
     results.append(check(f"a clean real story's first-ever appearance gets lifecycle_state=Detected (got {row['lifecycle_state']})", row["lifecycle_state"] == "Detected"))
     results.append(check("a lifecycle-eligible family with a real story produces exactly 1 history row", len(result["history_rows"]) == 1))
 
+    # ============================================================
+    # methodology / methodology_maturity round-tripping (dynamic trend-
+    # window change, 2026-09) -- attached after build_story(), same
+    # "optional, absent/None until a family's writer populates it"
+    # shape as interrogation/eps, so this tests the SAME two things
+    # those fields' own round-trip needs: present-and-correct when a
+    # family sets it, and cleanly None (never a KeyError) when a
+    # family doesn't.
+    # ============================================================
+    with_methodology = _real_story()
+    with_methodology["methodology"] = {
+        "trend_window_games": 1,
+        "baseline_type": "expanding_season_mean",
+        "games_played": 2,
+        "methodology_version": "defensive_trends_v1",
+    }
+    with_methodology["methodology_maturity"] = "thin"
+    result_meth = process_family("defensive_trends", [with_methodology], {}, 2099, 1, lifecycle_eligible=True)
+    row_meth = result_meth["story_rows"][0]
+    results.append(check(
+        f"a story WITH methodology set: the full dict round-trips through shape_story_row() unchanged "
+        f"(got {row_meth['methodology']})",
+        row_meth["methodology"] == {
+            "trend_window_games": 1, "baseline_type": "expanding_season_mean",
+            "games_played": 2, "methodology_version": "defensive_trends_v1",
+        },
+    ))
+    results.append(check(
+        f"a story WITH methodology set: methodology_maturity round-trips unchanged (got {row_meth['methodology_maturity']!r})",
+        row_meth["methodology_maturity"] == "thin",
+    ))
+
+    without_methodology = _real_story()  # role_changes/market_intelligence shape -- never sets these two keys at all
+    result_no_meth = process_family("defensive_trends", [without_methodology], {}, 2099, 1, lifecycle_eligible=True)
+    row_no_meth = result_no_meth["story_rows"][0]
+    results.append(check(
+        f"a story that never sets methodology at all (role_changes/market_intelligence's own real shape): "
+        f"shape_story_row() returns None for both fields, never a KeyError (got methodology={row_no_meth['methodology']!r}, "
+        f"methodology_maturity={row_no_meth['methodology_maturity']!r})",
+        row_no_meth["methodology"] is None and row_no_meth["methodology_maturity"] is None,
+    ))
+
     result_bad = process_family("defensive_trends", [nan_trend], {}, 2099, 1, lifecycle_eligible=True)
     row_bad = result_bad["story_rows"][0]
     results.append(check(

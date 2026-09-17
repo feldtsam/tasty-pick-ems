@@ -122,6 +122,108 @@ if __name__ == "__main__":
     ))
 
     # ============================================================
+    # Methodology re-baseline guard (dynamic trend-window change,
+    # 2026-09) — synthetic, real threshold, constructed values chosen
+    # to prove the guard fires exactly on a maturity transition and
+    # stands down again the moment maturity stops changing.
+    # ============================================================
+    rb_history = {}
+    rb_family = "defensive_trends"
+
+    def _run_rb(value, week, maturity):
+        global rb_history
+        story = {
+            "entity": {"type": "defense", "team": "RBT", "position_group": "RB"},
+            "primary_signal": {"name": "defensive_matchup_vulnerability", "value": value},
+            "trend_strength": value,
+            "methodology_maturity": maturity,
+        }
+        result = apply_lifecycle([story], rb_history, rb_family, 2098, week)
+        rb_history = result["updated_history"]
+        return result["history_rows"][0]
+
+    rb1 = _run_rb(40.0, 1, "thin")
+    results.append(check(f"re-baseline week 1: first appearance -> Detected, methodology_maturity persisted (got {rb1['lifecycle_state']}, maturity={rb1['methodology_maturity']})", rb1["lifecycle_state"] == "Detected" and rb1["methodology_maturity"] == "thin"))
+
+    rb2 = _run_rb(42.0, 2, "thin")
+    results.append(check(f"re-baseline week 2: SAME maturity ('thin'), small move -- ordinary comparison, still Detected (got {rb2['lifecycle_state']})", rb2["lifecycle_state"] == "Detected"))
+
+    # Week 3: maturity transitions thin->developing. Without the guard,
+    # delta = 90.0 - avg(40,42)=41.0 -> 49.0, well past threshold(21.7)
+    # -- would read as a real qualifying Strengthening move. The guard
+    # must suppress that: no direction, no Strengthening/Weakening,
+    # this appearance still counts (appearance_count=3 -> ACTIVE_
+    # APPEARANCE_COUNT reached -> falls to Active, not Detected, not a
+    # directional state), and recent_values reseeds to JUST this value.
+    rb3 = _run_rb(90.0, 3, "developing")
+    results.append(check(
+        f"re-baseline week 3 (thin->developing transition): NOT Strengthening/Weakening despite a delta (49.0) "
+        f"that would have qualified against the old baseline -- the methodology changed, not (provably) the "
+        f"signal (got lifecycle_state={rb3['lifecycle_state']}, pending_direction={rb3['pending_direction']}, streak={rb3['streak_count']})",
+        rb3["lifecycle_state"] not in ("Strengthening", "Weakening") and rb3["pending_direction"] is None and rb3["streak_count"] == 0,
+    ))
+    results.append(check(
+        f"re-baseline week 3: still a REAL counted appearance (reuses the existing Active/Detected fallback, "
+        f"no new lifecycle_state invented -- approved decision) (got {rb3['lifecycle_state']}, appearance_count={rb3['appearance_count']})",
+        rb3["lifecycle_state"] == "Active" and rb3["appearance_count"] == 3,
+    ))
+    results.append(check(
+        "re-baseline week 3: recent_values reseeded to JUST this observation ([90.0]), discarding the old "
+        "thin-methodology baseline ([40.0, 42.0]) entirely",
+        rb_history[(rb_family, "RBT:RB", "defensive_matchup_vulnerability")]["recent_values"] == [90.0],
+    ))
+
+    # Week 4: SAME maturity as week 3 ("developing") -- normal
+    # comparison resumes on its own, no special handling needed. First
+    # qualifying move off the REAL reseeded baseline (90.0).
+    rb4 = _run_rb(115.0, 4, "developing")
+    results.append(check(
+        f"re-baseline week 4 (maturity unchanged): normal comparison resumed -- a real qualifying move off the "
+        f"reseeded baseline (delta=25.0>=21.7), first confirmation, not yet Strengthening (got {rb4['lifecycle_state']}, pending={rb4['pending_direction']}, streak={rb4['streak_count']})",
+        rb4["pending_direction"] == "Strengthening" and rb4["streak_count"] == 1 and rb4["lifecycle_state"] != "Strengthening",
+    ))
+
+    # Week 5: second consecutive real Strengthening confirmation off the
+    # new baseline -- proves the guard didn't leave comparison
+    # permanently disabled, only suppressed it for the one transition
+    # week.
+    rb5 = _run_rb(140.0, 5, "developing")
+    results.append(check(
+        f"re-baseline week 5: SAME direction confirmed a 2nd consecutive time off the reseeded baseline -> "
+        f"Strengthening fires normally, proving the guard was a one-week suppression, not a lasting change "
+        f"(got {rb5['lifecycle_state']}, streak={rb5['streak_count']})",
+        rb5["lifecycle_state"] == "Strengthening" and rb5["streak_count"] == 2,
+    ))
+
+    # Week 6: a SECOND transition (developing->confirmed) that ALSO
+    # happens to be a sanity-failed (NaN) reading -- the specific edge
+    # case combination flagged during planning. recent_values must be
+    # left UNCHANGED here (same as an ordinary NaN week), never
+    # reseeded with a NaN/garbage value.
+    rb6 = _run_rb(float("nan"), 6, "confirmed")
+    results.append(check(
+        f"re-baseline week 6 (developing->confirmed transition, ALSO a NaN reading): no directional claim, "
+        f"still a real counted appearance (got {rb6['lifecycle_state']}, pending={rb6['pending_direction']})",
+        rb6["pending_direction"] is None and rb6["lifecycle_state"] not in ("Strengthening", "Weakening"),
+    ))
+    results.append(check(
+        "re-baseline week 6: recent_values left UNCHANGED ([90.0, 115.0, 140.0]) -- a NaN reading never reseeds "
+        "the baseline, transition or not, matching the ordinary NaN-handling precedent exactly",
+        rb_history[(rb_family, "RBT:RB", "defensive_matchup_vulnerability")]["recent_values"] == [90.0, 115.0, 140.0],
+    ))
+
+    # Week 7: maturity unchanged from week 6 ("confirmed") -- normal
+    # comparison resumes again, against the REAL (never-corrupted)
+    # baseline the NaN week correctly left intact.
+    rb7 = _run_rb(150.0, 7, "confirmed")
+    results.append(check(
+        f"re-baseline week 7 (maturity unchanged, post-NaN): comparison resumes against the real, uncorrupted "
+        f"baseline (avg(90,115,140)=115.0, delta=35.0>=threshold) -- a genuinely new qualifying move, not yet "
+        f"confirmed since week 6 carried no pending direction to match (got {rb7['lifecycle_state']}, pending={rb7['pending_direction']}, streak={rb7['streak_count']})",
+        rb7["pending_direction"] == "Strengthening" and rb7["streak_count"] == 1,
+    ))
+
+    # ============================================================
     # REAL DATA: NYJ RB, Defensive Trends, real 2025 season (the known
     # climbing case referenced in test_defensive_trends.py).
     # ============================================================
