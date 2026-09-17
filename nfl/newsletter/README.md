@@ -62,6 +62,13 @@ this file just tracks what's actually landed here vs. what's still open.
   reproducible `one_treatment` regression in the Editor Agent's own
   output was also found and is documented there, out of scope for this
   wrapper to fix.
+- **`run_double_gate_fix_test.py`** / **`fixture_v2_run{4,5,6}_raw.json`**
+  / **`double_gate_fix_test_results.md`** — a real, attempted fix for the
+  `one_treatment` regression above (Step 2 of `weekly_editor_agent_
+  prompt_v2.md`, "Gate eligibility and one-treatment are independent
+  constraints"), tested against Fixture 1 (the real double-gate case)
+  three real times. **Result: 2/3 clean — a real improvement, not a
+  fix.** See gap below.
 
 ## Real, open gaps — flagged, not silently worked around
 
@@ -157,3 +164,26 @@ run. The original two-round voice/structure calibration is still
 untouched and unreconfirmed by any of runs 1–3 — that status hasn't
 changed, and shouldn't be conflated with "this one narrow thing now
 works."
+
+**Run 3's "the fix held" did not generalize to the double-gate case,
+confirmed by directly re-running it.** Fixture 1 (Keane) is the same
+fixture that regressed in run 2 (three full entries: Big One, Who It
+Affects, Watchlist) and read clean in run 3 (one entry, Big One, plus a
+real cross-reference). It is also the ONLY fixture with both
+`big_one_eligible` and `watchlist_eligible` true at once. When this was
+later exercised for real in the Weekly Brief wrapper's own acceptance
+runs (`wrapper_acceptance_run1_results.md`), it broke again on both
+runs. A Step 2 prompt fix was written specifically for this case
+("gate eligibility and one-treatment are independent constraints" —
+build the Watchlist candidate list after the Big One is chosen, from
+whatever remains) and tested three real times
+(`double_gate_fix_test_results.md`): **2 of 3 runs placed Fixture 1
+cleanly; 1 of 3 duplicated it again (Big One + Who It Affects this
+time, not Big One + Watchlist).** `check_one_treatment` correctly
+caught the failure on all 3/3 runs, including the one the prompt
+missed. Conclusion, stated plainly rather than rounded up: the prompt
+fix is a real, meaningful improvement over the pre-fix state, but is
+not sufficient on its own to guarantee correctness — production
+correctness for this specific failure mode rests on the Evidence
+Validator's `check_one_treatment` catching it before publish, not on
+the Editor never producing it. Do not report this as "fixed."

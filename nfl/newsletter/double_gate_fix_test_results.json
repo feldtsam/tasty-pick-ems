@@ -1,0 +1,68 @@
+{
+  "n_runs": 3,
+  "clean_count": 2,
+  "pass_rate": "2/3",
+  "validator_pass_count": 2,
+  "sections_field_anomaly_count": 2,
+  "results": [
+    {
+      "run_number": 4,
+      "grade": {
+        "sections_with_full_entry": [
+          "big_one",
+          "who_it_affects"
+        ],
+        "cross_reference_sections": [
+          "what_changed"
+        ],
+        "clean": false
+      },
+      "validator_check_one_treatment": {
+        "check": "one_treatment",
+        "claim_type": "duplicate_full_entry",
+        "claim_text": "SYNTHETIC-FIXTURE-1",
+        "status": "fail",
+        "detail": "'SYNTHETIC-FIXTURE-1' appears as a full stories[] entry in 2 sections (big_one, who_it_affects) \u2014 exactly one primary treatment is allowed; any other section wanting to point at it must use cross_references instead."
+      },
+      "sections_field_anomaly": true
+    },
+    {
+      "run_number": 5,
+      "grade": {
+        "sections_with_full_entry": [
+          "big_one"
+        ],
+        "cross_reference_sections": [
+          "what_changed"
+        ],
+        "clean": true
+      },
+      "validator_check_one_treatment": {
+        "check": "one_treatment",
+        "claim_type": "single_entry",
+        "claim_text": "SYNTHETIC-FIXTURE-1",
+        "status": "pass",
+        "detail": "'SYNTHETIC-FIXTURE-1' appears in exactly one section's stories[] array (big_one)."
+      },
+      "sections_field_anomaly": false
+    },
+    {
+      "run_number": 6,
+      "grade": {
+        "sections_with_full_entry": [
+          "big_one"
+        ],
+        "cross_reference_sections": [],
+        "clean": true
+      },
+      "validator_check_one_treatment": {
+        "check": "one_treatment",
+        "claim_type": "single_entry",
+        "claim_text": "SYNTHETIC-FIXTURE-1",
+        "status": "pass",
+        "detail": "'SYNTHETIC-FIXTURE-1' appears in exactly one section's stories[] array (big_one)."
+      },
+      "sections_field_anomaly": true
+    }
+  ]
+}

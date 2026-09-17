@@ -1,0 +1,147 @@
+{
+  "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+  "sections": [
+    {
+      "section_type": "from_the_desk",
+      "stories": [
+        {
+          "headline": "From the Desk of Mr. Pick Ems",
+          "body": "Teams don't announce decisions. They just make them quietly, in ten-minute increments of playing time, and wait to see if anyone's counting.\n\nThis week, somebody was counting. A backfield that looked settled in September doesn't look settled anymore, and the shift didn't happen in one dramatic Sunday \u2014 it happened in the two weeks after everyone stopped paying attention, when the obvious excuse for it had already gone away.\n\nI also want to be honest about something else this week: not everything that moves is a story. A price that drifts twenty-five points ahead of a nationally televised game and a role that hasn't changed at all is not a signal. It's just Tuesday. Knowing which is which is most of the job.",
+          "intelligence_story_ids": [],
+          "player_ids": [],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "big_one",
+      "stories": [
+        {
+          "headline": "Keane didn't win the goal-line job. He kept it.",
+          "body": "Here's the sequence that got my attention. In Week 4, Dorsey Keane's goal-line share jumps from a quarter of the work to well over half. Easy explanation available: the incumbent was banged up, questionable on the injury report, limited in practice. Roles snap back when the starter comes back. That's usually where this kind of story ends \u2014 a footnote, not a headline.\n\nExcept the incumbent came back. Full practice participation, Week 5. And Keane kept getting the ball at the goal line anyway \u2014 five of seven opportunities across the next two weeks. The excuse that was supposed to explain this went away, and the pattern didn't.\n\nSnap share and red-zone targets moved with it, not just the raw touch count, which is the part that makes me take this seriously rather than call it noise. The market's already leaning that direction too \u2014 the price on him finding the end zone has come in from long-shot territory to something much closer to respected.\n\nWhat I don't know yet is whether this is a permanent depth-chart call or an extended audition that ends the moment the incumbent has one good week. Two games of held role after the obvious excuse disappeared is real evidence. It is not three months of evidence. I'm treating it as the former until something tells me otherwise \u2014 and watching closely for the something.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "what_changed",
+      "stories": [
+        {
+          "headline": "Osei kept some of what the injury gave him \u2014 not all of it",
+          "body": "This one interests me precisely because it isn't clean. When the starting tight end went down in Week 6, Palmer Osei's red-zone snap share nearly tripled, from 12% to 34%. That part is unremarkable \u2014 backups play more when starters don't play. The interesting part happened in Week 9, when the starter came back and Osei's share dropped to 26% instead of back to 12%.\n\nA full reversion would have told a simple story: injury in, injury out, nothing learned. A partial one tells a messier, more honest story \u2014 some of that role appears to have been earned rather than borrowed. The coordinator has leaned on two-tight-end red-zone sets more since Week 9 than in the first five weeks of the season, which at least points toward a real personnel decision rather than pure accident. The market has nudged in the same direction, modestly.\n\nI want to be careful not to oversell this. A drop from 34 to 26 means the injury explanation isn't dead \u2014 it's just no longer the whole story. Whether 26% is where this settles or still sliding is exactly what the next few weeks should tell me.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-5"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 44,
+            "evidence_strength": 58,
+            "betting_relevance": 49,
+            "novelty": 47,
+            "story_tension": 61,
+            "audience_relevance": 25,
+            "eps_total": 49.5
+          }
+        },
+        {
+          "headline": "Carolina's slot defense: vulnerability, or just a rough two weeks of opponents?",
+          "body": "Opposing slot receivers have beaten expectation against Carolina in two of the last three games, after sitting right at expectation for the season's first month. My first instinct with a defensive trend like this is to ask who did the damage \u2014 and it turns out both of the elevated performances came from receivers ranked in the league's top eight at the position this season. That's a real, legitimate alternate explanation: maybe this isn't a scheme problem, it's just that Carolina ran into two very good slot receivers back to back.\n\nSo I looked for the cleanest test available: was the third game, the one that came in at expectation, against a weaker slot option? It was. Which doesn't resolve anything \u2014 it's exactly what you'd expect whether the real story is a defensive soft spot or simply opponent quality. The data available can't tell those two explanations apart yet.\n\nI'm not ready to call this a weakness teams should target. I'm also not ready to dismiss it as coincidence. That's an uncomfortable place to leave a story, but it's the honest one.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ],
+      "cross_references": [
+        {
+          "text": "Keane's held role above is this week's clearest example of a signal that survived its own best counter-argument \u2014 worth keeping in mind as a comparison while reading the two stories below.",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+        }
+      ]
+    },
+    {
+      "section_type": "market_knows_something",
+      "stories": [],
+      "cross_references": [
+        {
+          "text": "The two market-intelligence items this week \u2014 a stable, well-agreed price on Callum Rhoads and a small pregame drift on Anderson Voss \u2014 both read as the market functioning normally rather than reacting to anything. Neither earns a spot here; see reviewer notes.",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-2"
+        }
+      ]
+    },
+    {
+      "section_type": "who_it_affects",
+      "stories": [
+        {
+          "headline": "Two backs, two roles, one direction",
+          "body": "The clearest read on Keane isn't just about Keane \u2014 it's about what his role costs the incumbent, who has gone from clear goal-line control to a clear second option in the same window. If you're pricing either back this week, you're really pricing one relationship, not two separate players.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "tasty_connection",
+      "stories": [],
+      "cross_references": []
+    }
+  ],
+  "watchlist_populated": false,
+  "notes_for_human_reviewer": "This is Fixture V2, a new calibration test of the EPS-consumption behavior added in this prompt revision (Step 1, gate-reading in Step 2, eps_scores copy-not-compute contract). It is NOT a re-confirmation of the original two-round voice/structure calibration -- that fixture's content is unrecoverable per the README interrogation gap, so this run stands on its own.\n\nPlacement / gate reasoning:\n- Big One: SYNTHETIC-FIXTURE-1 (Keane) -- big_one_eligible=true, and by far the strongest dimension profile (high evidence, high tension, high betting relevance). Also watchlist_eligible=true, but per Step 2 it received its primary treatment here and was excluded from Watchlist candidacy after being chosen -- not double-placed. Its connection is instead surfaced via a cross-reference in What Changed and a full second-angle treatment in Who It Affects (same story, different angle -- see note below on that choice).\n- What Changed: SYNTHETIC-FIXTURE-5 (Osei) and SYNTHETIC-FIXTURE-4 (Carolina slot) -- both big_one_eligible=true but clearly a tier below Keane on significance/tension; both are honest, evidence-grounded, moderate stories, which is exactly what this section is for. FIXTURE-4 is watchlist_eligible=true, but since it already got a full stories[] entry here, per the \"one Story Object, one primary treatment\" rule it does not also appear on the Watchlist.\n- Market Knows Something: left empty deliberately. FIXTURE-2 (Rhoads) and FIXTURE-6 (Voss) both scored low on significance/novelty/tension by design -- they represent the market functioning normally, not reacting to anything. Publishing either as a real story would manufacture significance the evidence doesn't support, which the hard rules explicitly forbid. Used a cross-reference instead of a stories[] entry to acknowledge they were considered rather than silently dropped.\n- Watchlist: NOT populated. Checking watchlist_eligible against the remaining pool after Big One and What Changed placements are removed: FIXTURE-1 and FIXTURE-4 were both watchlist_eligible but both already received primary treatment elsewhere, so per Step 2 they are excluded from Watchlist candidacy. No other Story Object in this fixture has watchlist_eligible=true (FIXTURE-2, 3, 5, 6 are all false). So there is nothing left to populate the Watchlist with -- correctly leaving it empty rather than forcing symmetry.\n- FIXTURE-3 (Denver red-zone) was excluded entirely: big_one_eligible=false and watchlist_eligible=false, and the underlying evidence is NOT_TESTABLE / confounded by game script per its own interrogation. Not published anywhere, including as a cross-reference, since there's no confirmed relationship worth pointing at.\n- Tasty Connection: left empty per the fixture note -- no real TPE Picks data exists for this synthetic run, so I did not invent any.\n\nOne close call worth flagging: I gave FIXTURE-1 (Keane) both the Big One treatment AND a Who It Affects stories[] entry. On reflection I want to flag this explicitly for review rather than assume it's correct -- the Who It Affects entry is framed around the incumbent RB's role loss rather than re-narrating Keane's own story, and the incumbent doesn't have his own Story Object in this fixture, so there was no other Story Object to attach that angle to. But this is close to the line the prompt draws against a Story Object appearing in more than one section's stories[] array, and I'd rather a human confirm that framing a second player's fate (not covered by its own Story Object) counts as a distinct entry versus recharacterize it as a cross-reference instead.\n\neps_scores on every included story entry were copied verbatim from the upstream eps.dimensions/composite_score fields, not recomputed -- flagging for confirmation since this is the first run testing that contract."
+}

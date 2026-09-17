@@ -48,7 +48,7 @@
       "composite_score": 76.75,
       "gates": { "big_one_eligible": true, "watchlist_eligible": true }
     },
-    "expected_stress_target": "Confirms a genuinely strong, well-grounded story is recognized and eligible for the Big One — the baseline case every other fixture is contrasted against."
+    "expected_stress_target": "Confirms a genuinely strong, well-grounded story is recognized and eligible for the Big One — the baseline case every other fixture is contrasted against. Note: this fixture's gates are big_one_eligible: true AND watchlist_eligible: true simultaneously — it is also the double-gate stress case. Correct behavior is exactly one stories[] entry (Big One), with no second entry in Watchlist even though it independently clears that gate too. A cross_references[] pointer from Watchlist back to it is acceptable; a second full entry is not."
   },
   {
     "fixture_id": "fixture_2",
