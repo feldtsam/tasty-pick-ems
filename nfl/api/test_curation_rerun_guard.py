@@ -268,6 +268,8 @@ if __name__ == "__main__":
             # since this fake is about the rerun-guard's own control flow,
             # not Around the League content itself.
             "around_the_league_rows": [],
+            "generated_titles": [],
+            "generated_opening_phrases": [],
         }
 
     def fake_write(rows, secret, write_url=None):
@@ -401,6 +403,8 @@ if __name__ == "__main__":
                 }],
                 "shelf_signal_history_rows": [],
                 "around_the_league_rows": [],
+                "generated_titles": [],
+                "generated_opening_phrases": [],
             }
         idx.curate_nfl_shelves = fake_curate_with_shelf
 

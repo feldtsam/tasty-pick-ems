@@ -498,8 +498,8 @@ if __name__ == "__main__":
         pass_play(wr_week10_game, 10, wr_team, "DECOY3"),
     ])
 
-    without_pbp = shape_content_draft_rows(capped, tasty_six, 2025, 10, weekly=sub)
-    with_pbp = shape_content_draft_rows(capped, tasty_six, 2025, 10, weekly=sub, pbp=synthetic_pbp)
+    without_pbp = shape_content_draft_rows(capped, tasty_six, 2025, 10, weekly=sub)["rows"]
+    with_pbp = shape_content_draft_rows(capped, tasty_six, 2025, 10, weekly=sub, pbp=synthetic_pbp)["rows"]
 
     wr_row_without = next((r for r in without_pbp if r["player_id"] == wr_pid), None)
     wr_row_with = next((r for r in with_pbp if r["player_id"] == wr_pid), None)
@@ -590,7 +590,7 @@ if __name__ == "__main__":
     try:
         cutoff_draft_rows = shape_content_draft_rows(
             llm_capped, {}, 2026, 1, weekly=llm_cutoff_rows, anthropic_api_key="fake-key", config=CONFIG,
-        )
+        )["rows"]
     finally:
         chs.generate_nfl_shelf_card_draft = orig_generate
 

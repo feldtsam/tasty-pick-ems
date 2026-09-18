@@ -92,6 +92,8 @@ if __name__ == "__main__":
                  "qualifying_signals": {"attd_300_499": 40.0}, "pending_shelf": None, "pending_run_count": 0},
             ],
             "around_the_league_rows": [],
+            "generated_titles": [],
+            "generated_opening_phrases": [],
         }
 
     def fake_prior(season, week, player_ids, secret):
