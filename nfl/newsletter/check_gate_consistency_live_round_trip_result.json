@@ -1,0 +1,52 @@
+{
+  "gate_consistency": [
+    {
+      "check": "gate_consistency",
+      "claim_type": "big_one",
+      "claim_text": [
+        "cb69fb62-a569-4659-87ac-bac9e53726ff"
+      ],
+      "status": "pass",
+      "detail": "'big_one_eligible' was true at draft time for this big_one placement."
+    }
+  ],
+  "editorial_contract": {
+    "passed": true,
+    "scoring_language_leak": [],
+    "gate_consistency": [
+      {
+        "check": "gate_consistency",
+        "claim_type": "big_one",
+        "claim_text": [
+          "cb69fb62-a569-4659-87ac-bac9e53726ff"
+        ],
+        "status": "pass",
+        "detail": "'big_one_eligible' was true at draft time for this big_one placement."
+      }
+    ],
+    "one_treatment": [
+      {
+        "check": "one_treatment",
+        "claim_type": "single_entry",
+        "claim_text": "cb69fb62-a569-4659-87ac-bac9e53726ff",
+        "status": "pass",
+        "detail": "'cb69fb62-a569-4659-87ac-bac9e53726ff' appears in exactly one section's stories[] array (big_one)."
+      },
+      {
+        "check": "one_treatment",
+        "claim_type": "single_entry",
+        "claim_text": "ef86bfc1-d7dd-49b2-86b2-1935112fa7b0",
+        "status": "pass",
+        "detail": "'ef86bfc1-d7dd-49b2-86b2-1935112fa7b0' appears in exactly one section's stories[] array (what_changed)."
+      },
+      {
+        "check": "one_treatment",
+        "claim_type": "single_entry",
+        "claim_text": "80736c96-490c-4d2d-99af-13dd35f22afa",
+        "status": "pass",
+        "detail": "'80736c96-490c-4d2d-99af-13dd35f22afa' appears in exactly one section's stories[] array (what_changed)."
+      }
+    ],
+    "summary": "0 hard fail(s), 0 flagged for human review, 4 passed clean"
+  }
+}

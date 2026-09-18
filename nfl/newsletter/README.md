@@ -55,13 +55,17 @@ this file just tracks what's actually landed here vs. what's still open.
   no I/O; only `persist_weekly_brief()`/`run_and_persist()` make the
   real signed write, via `newsletter-write.ts` (tastypickems `main`).
 - **`run_wrapper_acceptance_test.py`** / **`wrapper_acceptance_run1_*`**
-  — the acceptance test EPS spec §12 #7 was blocked on, finally run
-  against real persisted (shaped/frozen) rows rather than transient
-  Editor output. See `wrapper_acceptance_run1_results.md` for the real
-  result: `check_gate_consistency` is a clean, real `pass`; a separate,
-  reproducible `one_treatment` regression in the Editor Agent's own
-  output was also found and is documented there, out of scope for this
-  wrapper to fix.
+  — the first pass at EPS spec §12 #7, run against real *shaped/frozen*
+  rows rather than transient Editor output — but explicitly NOT a live
+  write at the time: `NFL_PIPELINE_WEBHOOK_SECRET` was inaccessible from
+  that environment, so `check_gate_consistency`'s clean pass there was
+  against correctly-shaped data, not data confirmed present in the live
+  table (see that file's own honest caveat). Superseded by the real live
+  round trip below — kept as the first, still-real confirmation that the
+  shaping/freezing logic itself was correct before the live write was
+  ever possible. A separate, reproducible `one_treatment` regression in
+  the Editor Agent's own output was also found here, out of scope for
+  this wrapper to fix.
 - **`run_double_gate_fix_test.py`** / **`fixture_v2_run{4,5,6}_raw.json`**
   / **`double_gate_fix_test_results.md`** — a real, attempted fix for the
   `one_treatment` regression above (Step 2 of `weekly_editor_agent_
@@ -69,6 +73,16 @@ this file just tracks what's actually landed here vs. what's still open.
   constraints"), tested against Fixture 1 (the real double-gate case)
   three real times. **Result: 2/3 clean — a real improvement, not a
   fix.** See gap below.
+- **`write_newsletter_round_trip_results.md`** — the real live round
+  trip: `/api/write-newsletter` (tasty-pick-ems `main`) → real signed
+  write → real `newsletter_issue`/`newsletter_story` rows, confirmed
+  persisted by reading them back directly in the Supabase table editor
+  (not the API response echo). **EPS spec §12 #7 is genuinely closed as
+  of this round trip** — see that file and the gap note below for the
+  real Validator output this closure rests on, plus the one real, non-
+  infra finding it surfaced (`intelligence_story_ids` is `uuid[]`;
+  Fixture V2's synthetic tags aren't valid UUIDs and were remapped to
+  real ones, with the mapping kept for traceability).
 
 ## Real, open gaps — flagged, not silently worked around
 
@@ -187,3 +201,31 @@ not sufficient on its own to guarantee correctness — production
 correctness for this specific failure mode rests on the Evidence
 Validator's `check_one_treatment` catching it before publish, not on
 the Editor never producing it. Do not report this as "fixed."
+
+**EPS spec §12 #7 (receipts-freeze reconciliation) — CLOSED, via a real
+live round trip, not the wrapper's mere existence.** `/api/write-
+newsletter` (tasty-pick-ems `main`) made a real signed write to
+`newsletter-write.ts`; the resulting `newsletter_issue`/`newsletter_
+story` rows were confirmed persisted by reading them back directly in
+the Supabase table editor — not the write endpoint's own response echo
+— with every value, including the load-bearing `eps_scores.big_one_
+eligible`/`watchlist_eligible` booleans, matching exactly what the
+Editor Agent produced. `check_gate_consistency` was then run against
+the exact persisted-row values (reconstructed via `shape_newsletter_
+rows()`, the same deterministic pure function that produced what was
+actually sent — not a fresh invention) and returned a real, clean
+`pass` on the one placement this run produced (`big_one`), with zero
+`needs_review`. Full `validate_editorial_contract` also passed clean:
+0 hard fails, `one_treatment` clean across all 3 real stories,
+`scoring_language_leak` clean. See `write_newsletter_round_trip_
+results.md` for the full writeup, including the one real, non-infra
+finding this round trip surfaced: `newsletter_story.intelligence_
+story_ids` is `uuid[]` in the live schema, and Fixture V2's synthetic
+tags (`SYNTHETIC-FIXTURE-1`, etc.) aren't valid UUID literals — the
+first attempt was correctly rejected by Postgres, not a wrapper bug;
+the retry remapped them to real UUIDs (mapping kept in that file for
+traceability) while leaving `player_ids` (genuinely `text[]`, confirmed
+directly) as human-readable synthetic tags. The orphaned issue row from
+the first attempt, and the successful second attempt's row, were both
+cleanly deleted afterward (cascade-checked) — nothing real or synthetic
+was left behind in either table.

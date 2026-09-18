@@ -1,0 +1,614 @@
+{
+  "editor_output": {
+    "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+    "sections": [
+      {
+        "section_type": "from_the_desk",
+        "stories": [
+          {
+            "headline": "From the Desk of Mr. Pick Ems",
+            "body": "Nobody announces a depth chart change. There's no press release when a backup starts eating into a starter's goal-line work, no chyron when a tight end quietly keeps a third of his emergency promotion after the starter comes back healthy. Teams just keep sending the same personnel out onto the field until the pattern is too obvious to call a coincidence.\n\nThis week gave me two of those. One is loud enough that I'm comfortable calling it early. The other is still arguing with itself \u2014 the kind of situation where the evidence tugs in two directions and I'd rather admit that than pretend it doesn't. I also had a couple of stories that looked, on the surface, like something was happening, and turned out on closer inspection to be exactly nothing. Those are worth mentioning too. Knowing what isn't a signal is half the job.",
+            "intelligence_story_ids": [],
+            "player_ids": [],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 0,
+              "evidence_strength": 0,
+              "betting_relevance": 0,
+              "novelty": 0,
+              "story_tension": 0,
+              "audience_relevance": 0,
+              "eps_total": 0
+            }
+          }
+        ],
+        "cross_references": []
+      },
+      {
+        "section_type": "big_one",
+        "stories": [
+          {
+            "headline": "Keane's goal-line role has quietly taken over",
+            "body": "The easy explanation was sitting right there: the incumbent back was banged up, so of course the backup picked up some goal-line work. Convenient, tidy, and it would have let me move on to something else.\n\nThen the incumbent came back. Full practice, no restrictions, and the goal-line touches stayed where they'd gone \u2014 five of seven in the two games since. That's the detail that changes what this is. An injury explains a temporary shift. It doesn't explain a shift that outlives the injury.\n\nWhat convinces me further is that this isn't happening in isolation. Snap share and red-zone targets moved with it, not just the raw touch count in one specific situation. When multiple signals move together and the shift survives the most obvious alternate explanation, I start treating it less like noise and more like a decision the team has already made and just hasn't said out loud.\n\nThe market has noticed something \u2014 the anytime-touchdown price has come in from +650 to +400 \u2014 but I'd stop short of calling this fully priced. Three games is real information. It isn't yet a settled depth chart, and I'm not going to pretend it is just because the story is a good one.",
+            "intelligence_story_ids": [
+              "cb69fb62-a569-4659-87ac-bac9e53726ff"
+            ],
+            "player_ids": [
+              "SYNTHETIC-PLAYER-1"
+            ],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 78,
+              "evidence_strength": 74,
+              "betting_relevance": 81,
+              "novelty": 66,
+              "story_tension": 83,
+              "audience_relevance": 55,
+              "eps_total": 76.75
+            }
+          }
+        ],
+        "cross_references": []
+      },
+      {
+        "section_type": "what_changed",
+        "stories": [
+          {
+            "headline": "Osei's red-zone role held even after the starter's return",
+            "body": "Here's a role change that's honest about its own limits, and I'd rather show you that than round it up into something cleaner.\n\nWith the starting tight end out, Osei's red-zone snap share nearly tripled. That much is unsurprising \u2014 backups play more when starters don't. What's more interesting is what happened when the starter came back: the share didn't fully revert. It dropped, but only partway, settling around double the original baseline.\n\nThat's a partial result, and I want to be clear it's a partial result. Some of this looks like it belongs to the injury and left when the injury did. Some of it looks like it's staying. The offensive coordinator has genuinely used more two-tight-end red-zone sets since the starter returned than he did in the season's first five weeks, which is the kind of supporting detail that makes me lean toward 'partly real' rather than 'entirely temporary.' The price moved modestly \u2014 not dramatically \u2014 which is about the right amount of market reaction for a signal that's itself only partly resolved.",
+            "intelligence_story_ids": [
+              "ef86bfc1-d7dd-49b2-86b2-1935112fa7b0"
+            ],
+            "player_ids": [
+              "SYNTHETIC-PLAYER-5"
+            ],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 44,
+              "evidence_strength": 58,
+              "betting_relevance": 49,
+              "novelty": 47,
+              "story_tension": 61,
+              "audience_relevance": 25,
+              "eps_total": 49.5
+            }
+          },
+          {
+            "headline": "Carolina's slot coverage: soft spot, or just tough opponents?",
+            "body": "Two of Carolina's last three games have seen opposing slot receivers produce well above what you'd expect from their season-long numbers. That's a real pattern. What it means is a genuinely open question, and I think it's worth saying so plainly rather than picking a side to make a better paragraph.\n\nThe two elevated games both came against receivers ranked in the league's top eight at the position this season. The one game that came back at expectation came against a receiver ranked in the bottom half. That's consistent with a real coverage weakness \u2014 but it's just as consistent with Carolina simply having faced better players twice and a lesser one once. The data available doesn't separate those two stories from each other, and I don't think I should pretend it does.\n\nI'm not ready to call this a defensive vulnerability. I'm also not ready to dismiss it. That's an uncomfortable place to leave a story, but it's the honest one.",
+            "intelligence_story_ids": [
+              "80736c96-490c-4d2d-99af-13dd35f22afa"
+            ],
+            "player_ids": [
+              "SYNTHETIC-TEAM-CAR"
+            ],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 48,
+              "evidence_strength": 44,
+              "betting_relevance": 51,
+              "novelty": 55,
+              "story_tension": 57,
+              "audience_relevance": 30,
+              "eps_total": 48.15
+            }
+          }
+        ],
+        "cross_references": [
+          {
+            "text": "Keane's role shift, told in full above, is the cleaner version of the same question this section keeps returning to: how much evidence does it take before a pattern stops being a coincidence?",
+            "refers_to_intelligence_story_id": "cb69fb62-a569-4659-87ac-bac9e53726ff"
+          }
+        ]
+      },
+      {
+        "section_type": "market_knows_something",
+        "stories": [],
+        "cross_references": [
+          {
+            "text": "The week's most useful market read is really Keane's, covered above \u2014 a price that moved but likely hasn't finished moving.",
+            "refers_to_intelligence_story_id": "cb69fb62-a569-4659-87ac-bac9e53726ff"
+          }
+        ]
+      },
+      {
+        "section_type": "who_it_affects",
+        "stories": [],
+        "cross_references": [
+          {
+            "text": "The player most directly affected this week is Keane himself \u2014 see the Big One above.",
+            "refers_to_intelligence_story_id": "cb69fb62-a569-4659-87ac-bac9e53726ff"
+          }
+        ]
+      },
+      {
+        "section_type": "tasty_connection",
+        "stories": [],
+        "cross_references": []
+      }
+    ],
+    "watchlist_populated": false,
+    "notes_for_human_reviewer": "This is Fixture V2 -- a new calibration test of the EPS-consumption behavior (Step 1, gate-reading, eps_scores copy-not-compute), not a reproduction or re-confirmation of the original two-round voice/structure calibration. That original fixture's content is unrecoverable per nfl/newsletter/README.md.\n\nGate/placement reasoning:\n- Big One: FIXTURE-1 (Keane) was the only story with clear, high evidence + high composite value, and big_one_eligible=true. It also independently cleared watchlist_eligible=true, but per Step 2 it received its Big One treatment only -- I did not also place it in Watchlist, and pointed to it via cross_references from What Changed, Market Knows Something, and Who It Affects instead of writing any second full-body treatment for it. I was careful that none of those cross-reference sentences drifted into making the story's case at length -- each is a single pointer sentence.\n- Watchlist: No section included. After removing FIXTURE-1 (already used as Big One), the only other watchlist_eligible=true story was FIXTURE-4 (Carolina slot defense), but I judged What Changed to be the better fit for it since it's a fully-formed, evidence-grounded (if unresolved) story rather than a thin/early one -- and per the \"one Story Object, one primary treatment\" rule it couldn't appear in both. With FIXTURE-4 placed in What Changed, no eligible candidates remained for Watchlist, so per the hard rule against structural symmetry I left it empty rather than force something in.\n- Excluded entirely: FIXTURE-2 (Rhoads market stability) and FIXTURE-6 (Voss national-broadcast noise) both scored as confirmations of non-events -- low significance, low novelty, low tension, despite technically clearing big_one_eligible on evidence strength alone. Per the decision table (\"low editorial value -> don't publish\") and the instruction that a gate is necessary but not sufficient, I did not include either as stories. FIXTURE-3 (Denver red-zone) failed both gates and was excluded outright.\n- Market Knows Something and Who It Affects: no independent story existed for either beyond what's already told in the Big One, so both sections carry only a cross-reference and no stories entry, per \"no forced symmetry.\"\n- Tasty Connection: left fully empty per the fixture's explicit note that no real TPE Picks data exists for this run -- I did not invent picks to fill it.\n- eps_scores throughout are copied verbatim from each Story Object's upstream eps.dimensions and composite_score (mapped to eps_total) -- none were recomputed or adjusted by me.\n- Flagging for review per the calibration scope: please specifically check the Carolina and Osei entries for whether the \"genuinely unresolved / partial result\" framing reads as revealed reasoning (intended) versus a hedge-heavy disclaimer (the anti-pattern called out in the voice section) -- these were the hardest calls to voice correctly under the new EPS-consumption constraints."
+  },
+  "fixtures": [
+    {
+      "fixture_id": "fixture_1",
+      "intelligence_story_id": "cb69fb62-a569-4659-87ac-bac9e53726ff",
+      "player_id": "SYNTHETIC-PLAYER-1",
+      "intelligence_family": "role_changes",
+      "entity": "RB Dorsey Keane",
+      "headline": "Keane's goal-line role has quietly taken over",
+      "story": "Keane's goal-line opportunity share has risen from 24% to 58% over three games, overtaking the incumbent back.",
+      "time_window": "3 games",
+      "sample_size": 11,
+      "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "change": {
+          "what_changed": "Goal-line opportunity share increased",
+          "magnitude": "24% -> 58%",
+          "window": "3 games"
+        },
+        "context": {
+          "prior_baseline": "Incumbent RB controlled 68% prior to Week 4",
+          "sample_size": "11 team opportunities",
+          "historical_normal": null
+        },
+        "challenge": {
+          "alternate_explanations": [
+            {
+              "explanation": "Incumbent RB was limited by a minor ankle issue in Week 4",
+              "evidence": "Injury report, Week 4, questionable/limited practice",
+              "test": "Did the shift persist after the incumbent returned to full practice participation?",
+              "result": "Incumbent returned to full practice Week 5; Keane still received 5 of 7 goal-line opportunities in Weeks 5-6",
+              "status": "WEAKENED"
+            }
+          ]
+        },
+        "confirmation": {
+          "supporting_signals": "Snap share and red-zone target share both rose for Keane over the same window",
+          "contradicting_signals": "None identified in current data",
+          "market_reaction": "ATTD price moved from +650 to +400"
+        },
+        "judgment": {
+          "what_we_know": "The goal-line role shift persisted after the incumbent's injury-related absence resolved",
+          "what_we_dont_know": "Whether this reflects a permanent depth-chart decision or an extended trial",
+          "evidence_significance": "The shift persisted after the most obvious alternate cause resolved, strengthening the case that this represents a genuine, durable role change"
+        }
+      },
+      "eps": {
+        "eps_version": "v1",
+        "dimensions": {
+          "significance": {
+            "score": 78,
+            "rationale": "Major role reallocation on a core scoring situation, sustained across 3 games"
+          },
+          "evidence_strength": {
+            "score": 74,
+            "rationale": "Full completeness, WEAKENED alternate explanation, 11-opportunity sample",
+            "computation": "deterministic"
+          },
+          "betting_relevance": {
+            "score": 81,
+            "rationale": "Directly reprices ATTD interpretation; market has already moved meaningfully"
+          },
+          "novelty": {
+            "score": 66,
+            "rationale": "First season this back has held a lead role; genuinely new information relative to prior_history"
+          },
+          "story_tension": {
+            "score": 83,
+            "rationale": "Grounded in a tested, WEAKENED alternate explanation plus supporting signal convergence"
+          },
+          "audience_relevance": {
+            "score": 55,
+            "rationale": "Moderate name recognition; positional prominence heuristic, no defaulted fields",
+            "computation": "deterministic"
+          }
+        },
+        "composite_score": 76.75,
+        "gates": {
+          "big_one_eligible": true,
+          "watchlist_eligible": true
+        }
+      },
+      "expected_stress_target": "Confirms a genuinely strong, well-grounded story is recognized and eligible for the Big One \u2014 the baseline case every other fixture is contrasted against. Note: this fixture's gates are big_one_eligible: true AND watchlist_eligible: true simultaneously \u2014 it is also the double-gate stress case. Correct behavior is exactly one stories[] entry (Big One), with no second entry in Watchlist even though it independently clears that gate too. A cross_references[] pointer from Watchlist back to it is acceptable; a second full entry is not."
+    },
+    {
+      "fixture_id": "fixture_2",
+      "intelligence_story_id": "b0ccd7ed-2846-4bf8-af5b-f6832932c31b",
+      "player_id": "SYNTHETIC-PLAYER-2",
+      "intelligence_family": "market_intelligence",
+      "entity": "WR Callum Rhoads",
+      "headline": "Rhoads' price has settled into a stable range",
+      "story": "Rhoads' ATTD price has moved within a narrow band across three books for two straight weeks, with high agreement across books.",
+      "time_window": "2 weeks",
+      "sample_size": 3,
+      "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "change": {
+          "what_changed": "Cross-book price convergence, low volatility",
+          "magnitude": "+340 to +365 range, 3 books",
+          "window": "2 weeks"
+        },
+        "context": {
+          "prior_baseline": "Similar range the prior 2 weeks",
+          "sample_size": "n_books = 3",
+          "historical_normal": "Consistent with season-long pricing for this role"
+        },
+        "challenge": {
+          "alternate_explanations": []
+        },
+        "confirmation": {
+          "supporting_signals": "Role and target share flat over the same window, consistent with price stability",
+          "contradicting_signals": "None",
+          "market_reaction": "No meaningful movement \u2014 this is the observation itself, not a reaction to something else"
+        },
+        "judgment": {
+          "what_we_know": "The market has reached stable, well-agreed pricing on a role that itself hasn't changed",
+          "what_we_dont_know": "Nothing unresolved \u2014 this is a confirmed steady state, not an open question",
+          "evidence_significance": "High confidence in current pricing being accurate and well-calibrated to the underlying role, which is itself unchanged"
+        }
+      },
+      "eps": {
+        "eps_version": "v1",
+        "dimensions": {
+          "significance": {
+            "score": 22,
+            "rationale": "No underlying change occurred \u2014 this is confirmation of stability, not a shift"
+          },
+          "evidence_strength": {
+            "score": 71,
+            "rationale": "Full n_books coverage, no alternate explanation needed since nothing is being contested",
+            "computation": "deterministic"
+          },
+          "betting_relevance": {
+            "score": 28,
+            "rationale": "Confirms existing interpretation rather than changing it"
+          },
+          "novelty": {
+            "score": 18,
+            "rationale": "Tells the reader nothing they didn't already know from the prior two weeks"
+          },
+          "story_tension": {
+            "score": 15,
+            "rationale": "No relationship or divergence between signals \u2014 confirmation, not tension"
+          },
+          "audience_relevance": {
+            "score": 40,
+            "rationale": "Moderate positional relevance, no defaulted fields",
+            "computation": "deterministic"
+          }
+        },
+        "composite_score": 31.85,
+        "gates": {
+          "big_one_eligible": true,
+          "watchlist_eligible": false
+        }
+      },
+      "expected_stress_target": "Evidence Strength is genuinely high here \u2014 this tests whether the Editor understands that clears the Big One evidence floor mechanically without being a Big One candidate in practice, since Significance/Tension are both low. If the Editor treats this as Big-One-worthy because the gate is technically open, that's a failure: gates are a floor, not a trigger. Correct placement is supporting context at most, more likely excluded as not worth a section given how little it tells the reader."
+    },
+    {
+      "fixture_id": "fixture_3",
+      "intelligence_story_id": "56e0caef-91f8-412a-af21-b3f998f0a25e",
+      "player_id": "SYNTHETIC-TEAM-DEN",
+      "intelligence_family": "coaching_trends",
+      "entity": "Denver red-zone play-calling",
+      "headline": "Denver's red-zone tendencies may be shifting",
+      "story": "A single-week sample shows a higher pass rate inside the 10 than the season average.",
+      "time_window": "1 game",
+      "sample_size": 6,
+      "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "change": {
+          "what_changed": "Red-zone pass rate above season average in one game",
+          "magnitude": "season avg 41% -> this game 67%",
+          "window": "1 game"
+        },
+        "context": {
+          "prior_baseline": "41% season average across 5 prior games",
+          "sample_size": "6 red-zone plays",
+          "historical_normal": "41% over 5-game baseline"
+        },
+        "challenge": {
+          "alternate_explanations": [
+            {
+              "explanation": "Team trailed by 17 points for most of the second half, which independently increases pass rate regardless of any real tendency shift",
+              "evidence": "Game script shows a 17-point deficit from late in the 2nd quarter onward",
+              "test": "Does the pass-rate shift hold once game-script (score differential) is accounted for?",
+              "result": "Sample is too small (6 plays, one game state) to separate a real tendency shift from a game-script effect",
+              "status": "NOT_TESTABLE"
+            }
+          ]
+        },
+        "confirmation": {
+          "supporting_signals": "None available beyond this single game",
+          "contradicting_signals": "5-game baseline shows no trend in this direction prior to this game",
+          "market_reaction": "Not applicable \u2014 no market tied to this signal type"
+        },
+        "judgment": {
+          "what_we_know": "One game showed an elevated red-zone pass rate under trailing-script conditions",
+          "what_we_dont_know": "Whether this reflects any real coaching tendency shift at all, given the sample can't be separated from game script",
+          "evidence_significance": "Single-game sample confounded by game script means this cannot yet be distinguished from a normal trailing-team pass-rate spike"
+        }
+      },
+      "eps": {
+        "eps_version": "v1",
+        "dimensions": {
+          "significance": {
+            "score": 24,
+            "rationale": "One game, small sample, plausible confound \u2014 banded as small, not material"
+          },
+          "evidence_strength": {
+            "score": 21,
+            "rationale": "NOT_TESTABLE status, single-game sample, real confound identified",
+            "computation": "deterministic"
+          },
+          "betting_relevance": {
+            "score": 45,
+            "rationale": "Would matter if real, but confound means interpretation shouldn't change yet"
+          },
+          "novelty": {
+            "score": 58,
+            "rationale": "A real deviation from the 5-game baseline, even if its cause is unclear"
+          },
+          "story_tension": {
+            "score": 62,
+            "rationale": "Surface-level tension (baseline vs. this game) exists but is capped by the ungrounded/NOT_TESTABLE challenge"
+          },
+          "audience_relevance": {
+            "score": 35,
+            "rationale": "Team-level story, moderate general interest, no defaulted fields",
+            "computation": "deterministic"
+          }
+        },
+        "composite_score": 38.35,
+        "gates": {
+          "big_one_eligible": false,
+          "watchlist_eligible": false
+        }
+      },
+      "expected_stress_target": "Evidence Strength (21) fails the Big One floor (40), so the gate correctly excludes it \u2014 but Novelty (58) and Story Tension (62) are both high enough that a naive 'exciting-sounding story' read could tempt the Editor toward the Big One anyway if it weren't respecting gates as authoritative. Watchlist also correctly fails since Evidence Strength (21) is below the Watchlist's own floor (25). Correct outcome: excluded entirely, or at most one flagged line in a lower section \u2014 never narrated as a discovered tendency shift."
+    },
+    {
+      "fixture_id": "fixture_4",
+      "intelligence_story_id": "80736c96-490c-4d2d-99af-13dd35f22afa",
+      "player_id": "SYNTHETIC-TEAM-CAR",
+      "intelligence_family": "defensive_trends",
+      "entity": "Carolina slot-defense vulnerability",
+      "headline": "Carolina's slot coverage may be a soft spot \u2014 or may just be facing good slot receivers",
+      "story": "Opposing slot receivers have out-produced expectation against Carolina in 2 of the last 3 games.",
+      "time_window": "3 games",
+      "sample_size": 3,
+      "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "change": {
+          "what_changed": "Slot-receiver production above expectation against this defense",
+          "magnitude": "+18% over expected in 2 of 3 games",
+          "window": "3 games"
+        },
+        "context": {
+          "prior_baseline": "Roughly at expectation over the first 4 weeks of the season",
+          "sample_size": "3 games",
+          "historical_normal": "At-expectation baseline weeks 1-4"
+        },
+        "challenge": {
+          "alternate_explanations": [
+            {
+              "explanation": "The two elevated games came against two of the league's better slot receivers, so this may reflect opponent quality rather than a defensive weakness",
+              "evidence": "Both opposing slot receivers rank top-8 in the league in slot production this season",
+              "test": "Was the third game (the one at expectation) against a weaker slot receiver, consistent with opponent quality driving the pattern rather than a real defensive issue?",
+              "result": "Yes \u2014 the at-expectation game came against a bottom-half slot receiver, which is consistent with either explanation and doesn't clearly separate them",
+              "status": "UNRESOLVED"
+            }
+          ]
+        },
+        "confirmation": {
+          "supporting_signals": "None distinguishing \u2014 coverage scheme data isn't available to separate personnel quality from scheme vulnerability",
+          "contradicting_signals": "The at-expectation game is itself a data point against a real, persistent vulnerability",
+          "market_reaction": "Not applicable \u2014 no market tied to this signal type"
+        },
+        "judgment": {
+          "what_we_know": "Slot production against this defense has been elevated in 2 of 3 recent games",
+          "what_we_dont_know": "Whether this reflects a real defensive vulnerability or simply facing stronger slot receivers in those two games \u2014 the available data cannot distinguish these",
+          "evidence_significance": "The alternate explanation was tested and the result doesn't clearly favor either the vulnerability read or the opponent-quality read \u2014 this remains genuinely unresolved, not weak evidence for a vulnerability"
+        }
+      },
+      "eps": {
+        "eps_version": "v1",
+        "dimensions": {
+          "significance": {
+            "score": 48,
+            "rationale": "A real, meaningful deviation from baseline, banded as meaningful given the magnitude and 3-game window"
+          },
+          "evidence_strength": {
+            "score": 44,
+            "rationale": "UNRESOLVED status \u2014 tested but inconclusive, small downward adjustment from base completeness",
+            "computation": "deterministic"
+          },
+          "betting_relevance": {
+            "score": 51,
+            "rationale": "Would matter for opposing slot-receiver props if confirmed, but genuine ambiguity limits how strongly to lean on it"
+          },
+          "novelty": {
+            "score": 55,
+            "rationale": "A real deviation from the season's first-month baseline"
+          },
+          "story_tension": {
+            "score": 57,
+            "rationale": "Real tension between two plausible explanations that the data can't yet separate \u2014 grounded, not manufactured"
+          },
+          "audience_relevance": {
+            "score": 30,
+            "rationale": "Team-defense-level story, lower general interest, no defaulted fields",
+            "computation": "deterministic"
+          }
+        },
+        "composite_score": 48.15,
+        "gates": {
+          "big_one_eligible": true,
+          "watchlist_eligible": true
+        }
+      },
+      "expected_stress_target": "Both gates pass, which is correct \u2014 this is a legitimately uncertain but real story, not a weak one. The test is whether the Editor's prose honestly represents the UNRESOLVED status (two plausible explanations, genuinely can't distinguish yet) rather than picking a side and writing it as either 'Carolina has a real weakness' or 'this is nothing, just matchups.' Correct placement is primarily the Watchlist \u2014 'something worth tracking, not yet confirmed either way.' UPDATED (duplicate-detection two-case rule): a brief cross-reference to this story from another section (e.g. naming it in passing while covering something else) is now explicitly correct, not a violation \u2014 but only ONE section may give it a full treatment with its own eps_scores/provenance block. A second full retelling of the same argument in a different section (e.g. an independent What Changed entry making the same case a second time) is the actual failure this fixture now tests for."
+    },
+    {
+      "fixture_id": "fixture_5",
+      "intelligence_story_id": "ef86bfc1-d7dd-49b2-86b2-1935112fa7b0",
+      "player_id": "SYNTHETIC-PLAYER-5",
+      "intelligence_family": "role_changes",
+      "entity": "TE Palmer Osei",
+      "headline": "Osei's red-zone role held even after the starter's return",
+      "story": "Osei's red-zone snap share rose while the starting TE was out, and has only partially receded now that the starter is back.",
+      "time_window": "4 games",
+      "sample_size": 14,
+      "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "change": {
+          "what_changed": "Red-zone snap share increase, partial retention after starter's return",
+          "magnitude": "12% -> 34%, now holding at 26%",
+          "window": "4 games"
+        },
+        "context": {
+          "prior_baseline": "12% prior to starter's injury in Week 6",
+          "sample_size": "14 red-zone snaps across the window",
+          "historical_normal": null
+        },
+        "challenge": {
+          "alternate_explanations": [
+            {
+              "explanation": "Starting TE's injury explains the entire increase, and the role should fully revert now that he's back",
+              "evidence": "Starting TE missed Weeks 6-8 with a hamstring injury, returned Week 9",
+              "test": "Did Osei's red-zone share fully revert to the 12% baseline in Week 9, or did some of the gain persist?",
+              "result": "Osei's share dropped from 34% to 26% after the starter's return \u2014 a partial reversion, not a full one",
+              "status": "WEAKENED"
+            }
+          ]
+        },
+        "confirmation": {
+          "supporting_signals": "Offensive coordinator has used more two-TE red-zone personnel since Week 9 than the season's first 5 weeks",
+          "contradicting_signals": "The share did drop meaningfully (34% to 26%), so the injury explanation isn't fully rejected \u2014 this is a partial result",
+          "market_reaction": "ATTD price moved from +1100 to +850, a modest but real shift"
+        },
+        "judgment": {
+          "what_we_know": "The role gain partially outlasted the injury that originally caused it, and personnel usage data supports a real if modest permanent change",
+          "what_we_dont_know": "Whether the 26% level is the new stable rate or still settling",
+          "evidence_significance": "The alternate explanation (injury fully explains it) was weakened but not eliminated \u2014 some of the shift appears durable, some appears to have been temporary"
+        }
+      },
+      "eps": {
+        "eps_version": "v1",
+        "dimensions": {
+          "significance": {
+            "score": 44,
+            "rationale": "A real, moderate role change \u2014 meaningful but not major given the partial reversion"
+          },
+          "evidence_strength": {
+            "score": 58,
+            "rationale": "WEAKENED status but with an honest contradicting signal noted, so the adjustment is moderate, not maximal",
+            "computation": "deterministic"
+          },
+          "betting_relevance": {
+            "score": 49,
+            "rationale": "Real but modest reinterpretation of price, matching the modest market movement already observed"
+          },
+          "novelty": {
+            "score": 47,
+            "rationale": "Genuinely new information, though the magnitude is moderate rather than surprising"
+          },
+          "story_tension": {
+            "score": 61,
+            "rationale": "Grounded in a real, partial WEAKENED result \u2014 an honest 'partly durable, partly temporary' tension, not a clean survival story"
+          },
+          "audience_relevance": {
+            "score": 25,
+            "rationale": "TE, lower general audience prominence, no defaulted fields",
+            "computation": "deterministic"
+          }
+        },
+        "composite_score": 49.5,
+        "gates": {
+          "big_one_eligible": true,
+          "watchlist_eligible": false
+        }
+      },
+      "expected_stress_target": "Deliberately contrasts with Fixture 1's clean WEAKENED result \u2014 this one is WEAKENED but with a real contradicting signal (partial, not full, reversion), and the evidence_significance field explicitly says so. Tests whether the Editor's prose can express a partial, honest result ('some of this held, some of it didn't') rather than flattening every WEAKENED status into the same confident 'survived the test' framing Fixture 1 earns. If the Editor writes this identically to Fixture 1, that's a failure to reason from the specific interrogation content rather than just the status label."
+    },
+    {
+      "fixture_id": "fixture_6",
+      "intelligence_story_id": "c55076c2-8f0c-41ac-bc00-6f2d662fe915",
+      "player_id": "SYNTHETIC-PLAYER-6",
+      "intelligence_family": "market_intelligence",
+      "entity": "QB Anderson Voss",
+      "headline": "Voss's price moved slightly ahead of a nationally televised game",
+      "story": "A marquee national-broadcast matchup produced a small, unremarkable price shift for a highly prominent player.",
+      "time_window": "1 week",
+      "sample_size": 3,
+      "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "change": {
+          "what_changed": "Small price movement ahead of a nationally televised game",
+          "magnitude": "+280 to +255",
+          "window": "1 week"
+        },
+        "context": {
+          "prior_baseline": "+280 the prior two weeks",
+          "sample_size": "n_books = 3",
+          "historical_normal": "Consistent with normal week-to-week variance for this player"
+        },
+        "challenge": {
+          "alternate_explanations": []
+        },
+        "confirmation": {
+          "supporting_signals": "None beyond the price movement itself",
+          "contradicting_signals": "Role and usage data show no change over the same window",
+          "market_reaction": "This is the market reaction being described \u2014 a small, unremarkable move"
+        },
+        "judgment": {
+          "what_we_know": "Price moved modestly, within normal variance, with no underlying role change behind it",
+          "what_we_dont_know": "Nothing meaningfully unresolved \u2014 this looks like ordinary market noise",
+          "evidence_significance": "No underlying signal beyond typical short-term price variance; nothing here changes the evidence picture"
+        }
+      },
+      "eps": {
+        "eps_version": "v1",
+        "dimensions": {
+          "significance": {
+            "score": 14,
+            "rationale": "Movement within normal variance, no underlying change \u2014 banded as noise"
+          },
+          "evidence_strength": {
+            "score": 55,
+            "rationale": "Full n_books coverage; nothing to test since nothing is being contested",
+            "computation": "deterministic"
+          },
+          "betting_relevance": {
+            "score": 19,
+            "rationale": "No real reinterpretation available \u2014 normal noise"
+          },
+          "novelty": {
+            "score": 12,
+            "rationale": "Tells the reader nothing new"
+          },
+          "story_tension": {
+            "score": 10,
+            "rationale": "No relationship or divergence present"
+          },
+          "audience_relevance": {
+            "score": 88,
+            "rationale": "High-profile QB, nationally televised game \u2014 genuinely high on this dimension alone",
+            "computation": "deterministic"
+          }
+        },
+        "composite_score": 24.5,
+        "gates": {
+          "big_one_eligible": true,
+          "watchlist_eligible": false
+        }
+      },
+      "expected_stress_target": "The single clearest test of whether the 5% weight cap actually holds in practice. Audience Relevance (88) is the highest single-dimension score across all six fixtures, but composite (24.5) is the lowest \u2014 deliberately, since every other dimension reflects an unremarkable story. If the Editor's placement or prose treats this as newsletter-worthy because of the player's name recognition, that's the specific failure this fixture exists to catch. Correct outcome: excluded, or at most a passing mention \u2014 never elevated on the strength of who the player is."
+    }
+  ],
+  "season": 2099,
+  "week": 1,
+  "preview_only": false
+}
