@@ -100,8 +100,26 @@ def opening_phrase(title: str) -> str:
 
 def call_claude_for_nfl_shelf_card(api_key: str, system_prompt: str, user_prompt: str) -> dict:
     """Thin, named wrapper around the shared call_claude_with_tool() --
-    same shape as every other writer's own entry point in this pipeline."""
-    return call_claude_with_tool(api_key, system_prompt, user_prompt, NFL_SHELF_CARD_TOOL_SCHEMA)
+    same shape as every other writer's own entry point in this pipeline.
+
+    max_tokens=2048, not the shared module default (1024): a real
+    production run showed 8 of 32 calls (25%) truncated at 1024 for this
+    schema (title + a 1-2 paragraph story + 2-4 grounded why_reasons) --
+    not an occasional near-miss, a regular occurrence. 2048 is an interim,
+    evidence-informed value (real headroom above a rate that high, same
+    "headroom, not a bare revert" reasoning already applied when
+    shelf_card_llm_top_n was raised from 6 to 8) pending the real
+    output_tokens distribution the new usage logging in
+    call_claude_with_tool will produce on the next real run -- not a
+    permanent number picked without data. Overriding here, not raising
+    the shared MAX_TOKENS default, matches this module's own stated
+    convention (call_claude_with_tool's docstring: "real callers with a
+    larger structured shape can override it") and leaves other writer
+    types (Tasty Six) that haven't shown this failure untouched.
+    """
+    return call_claude_with_tool(
+        api_key, system_prompt, user_prompt, NFL_SHELF_CARD_TOOL_SCHEMA, max_tokens=2048,
+    )
 
 
 # Skip source-fact values this small -- a jersey number, a single-digit

@@ -199,12 +199,29 @@ def flatten_source_facts(
     these live on the shelf-entry wrapper, not inside "candidate") whose
     value is a flat dict, flattened to "{key}.{field_name}", skipping any
     name in flat_dict_skip_fields.
+
+    REAL BUG FIX, ported from the NFL copy of this file after a real
+    production crash there (NFL's own shelf_card_llm_top_n scaling
+    investigation): every "skip if missing" check below used to test
+    `is not None` / `is None` only. A pandas/numpy NaN float is neither
+    -- `float('nan') is not None` is True -- so a genuinely-missing
+    numeric field sails straight into source_facts as a real NaN, where
+    downstream code (validate_no_field_narration's `round(value)`) has
+    no NaN guard and crashes with `ValueError: cannot convert float NaN
+    to integer`. Applying the same fix here even though MLB hadn't hit
+    this failure yet -- the two files are supposed to stay behaviorally
+    identical (see this file's own role as the copied-from original),
+    and there's no reason MLB's own scored data is immune to the same
+    NaN-survives-a-None-only-check gap.
     """
+    def _is_missing(value) -> bool:
+        return value is None or (isinstance(value, float) and value != value)
+
     c = candidate.get("candidate", candidate)  # unwrap a shelf-entry shape if present
 
     facts = {}
     for key in top_level_fields:
-        if key in c and c[key] is not None:
+        if key in c and not _is_missing(c[key]):
             facts[key] = c[key]
 
     for nested_key in nested_dict_fields:
@@ -212,10 +229,12 @@ def flatten_source_facts(
         for group_name, group_data in nested.items():
             if not isinstance(group_data, dict):
                 continue
-            if "score" in group_data:
+            if "score" in group_data and not _is_missing(group_data["score"]):
                 facts[f"{nested_key}.{group_name}.score"] = group_data["score"]
             components = group_data.get("components") or {}
             for comp_key, comp_val in components.items():
+                if _is_missing(comp_val):
+                    continue
                 facts[f"{nested_key}.{group_name}.components.{comp_key}"] = comp_val
 
     for key in flat_dict_fields:
@@ -223,7 +242,7 @@ def flatten_source_facts(
         if not isinstance(form, dict):
             continue
         for field_name, field_val in form.items():
-            if field_name in flat_dict_skip_fields or field_val is None:
+            if field_name in flat_dict_skip_fields or _is_missing(field_val):
                 continue
             facts[f"{key}.{field_name}"] = field_val
 

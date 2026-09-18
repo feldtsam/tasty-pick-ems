@@ -216,12 +216,33 @@ def flatten_source_facts(
     these live on the shelf-entry wrapper, not inside "candidate") whose
     value is a flat dict, flattened to "{key}.{field_name}", skipping any
     name in flat_dict_skip_fields.
+
+    REAL BUG FIX, confirmed via a real production crash (NFL's own
+    shelf_card_llm_top_n scaling investigation): every "skip if missing"
+    check below used to test `is not None` / `is None` only. A pandas/
+    numpy NaN float is neither -- `float('nan') is not None` is True --
+    so a genuinely-missing numeric field (market_value_score for a
+    player with no live odds coverage this poll; evidence_quality for a
+    thin-data player -- see scoring.score_evidence_quality's own fix)
+    sailed straight into source_facts as a real NaN, where downstream
+    code (validate_no_field_narration's `round(value)`) had no NaN guard
+    and crashed with `ValueError: cannot convert float NaN to integer`.
+    A comment elsewhere in this codebase (nfl_writer_common.py) already
+    CLAIMED "flatten_source_facts already skips None/NaN values
+    automatically" -- true for None, false for NaN, until this fix.
+    _is_missing() below is the exact same NaN-check idiom already used
+    in editorial_lenses.py's resolve_supporting_signals (kept local
+    rather than importing pandas just for isna(), same reasoning that
+    module gives for its own inline check).
     """
+    def _is_missing(value) -> bool:
+        return value is None or (isinstance(value, float) and value != value)
+
     c = candidate.get("candidate", candidate)  # unwrap a shelf-entry shape if present
 
     facts = {}
     for key in top_level_fields:
-        if key in c and c[key] is not None:
+        if key in c and not _is_missing(c[key]):
             facts[key] = c[key]
 
     for nested_key in nested_dict_fields:
@@ -229,10 +250,12 @@ def flatten_source_facts(
         for group_name, group_data in nested.items():
             if not isinstance(group_data, dict):
                 continue
-            if "score" in group_data:
+            if "score" in group_data and not _is_missing(group_data["score"]):
                 facts[f"{nested_key}.{group_name}.score"] = group_data["score"]
             components = group_data.get("components") or {}
             for comp_key, comp_val in components.items():
+                if _is_missing(comp_val):
+                    continue
                 facts[f"{nested_key}.{group_name}.components.{comp_key}"] = comp_val
 
     for key in flat_dict_fields:
@@ -240,7 +263,7 @@ def flatten_source_facts(
         if not isinstance(form, dict):
             continue
         for field_name, field_val in form.items():
-            if field_name in flat_dict_skip_fields or field_val is None:
+            if field_name in flat_dict_skip_fields or _is_missing(field_val):
                 continue
             facts[f"{key}.{field_name}"] = field_val
 
@@ -887,14 +910,33 @@ def call_claude_with_tool(
         )
         raise
     elapsed = round(time.monotonic() - call_start, 2)
+    if response.status_code >= 400:
+        # Error bodies aren't guaranteed to be valid JSON, so this branch
+        # never attempts response.json() -- same as before, just reordered
+        # so the success path below can log real token usage in the same
+        # line. No usage figures exist for a call that never got a 2xx.
+        print(
+            f"[call_claude_with_tool] tool={tool_name} elapsed_seconds={elapsed} "
+            f"status={response.status_code}",
+            flush=True,
+        )
+        raise ValueError(f"Claude API returned {response.status_code}: {response.text}")
+
+    data = response.json()
+    # Real token usage, added for the max_tokens=1024 truncation
+    # investigation (shelf_card_llm_top_n scaling work) -- picking a real
+    # ceiling needs the real distribution of output_tokens across actual
+    # calls, not a guess. Logged even for a call that's about to be
+    # rejected as truncated below: that's exactly the case where knowing
+    # the real output_tokens (should read at or near max_tokens) matters
+    # most.
+    usage = data.get("usage") or {}
     print(
         f"[call_claude_with_tool] tool={tool_name} elapsed_seconds={elapsed} "
-        f"status={response.status_code}",
+        f"status={response.status_code} input_tokens={usage.get('input_tokens')} "
+        f"output_tokens={usage.get('output_tokens')}",
         flush=True,
     )
-    if response.status_code >= 400:
-        raise ValueError(f"Claude API returned {response.status_code}: {response.text}")
-    data = response.json()
 
     if data.get("stop_reason") == "max_tokens":
         raise ValueError(

@@ -972,8 +972,23 @@ def score_evidence_quality(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Da
     weekly = weekly.copy()
     eq_cfg = config["evidence_quality"]
 
+    # REAL BUG FIX, confirmed via a real production crash (the shelf_card_
+    # llm_top_n scaling investigation): completeness had no fill_neutral()
+    # wrap, unlike convergence right below -- when every completeness_cols
+    # entry is itself NaN for a genuinely thin-data row (a real, not
+    # hypothetical, case), the row-wise .mean() over an all-NaN row is
+    # NaN, and that NaN propagated straight through evidence_quality =
+    # sqrt(completeness * convergence) into the stored evidence_quality
+    # column below -- the one pillar in this whole module that could be
+    # a real NaN rather than the neutral-50 fallback every other score
+    # here already gets. Downstream, a citable evidence_quality=NaN
+    # crashed the shelf-card writer's field-narration check (no NaN
+    # guard there either -- see card_writer_common.flatten_source_facts'
+    # own fix). Wrapped the same way convergence already is, immediately
+    # below -- this was very likely an oversight, not a deliberate
+    # exception to this module's own neutral-fallback convention.
     completeness_cols = [c for c in eq_cfg["completeness_columns"] if c in weekly.columns]
-    completeness = weekly[completeness_cols].mean(axis=1)
+    completeness = fill_neutral(weekly[completeness_cols].mean(axis=1))
 
     family_cols = [c for c in eq_cfg["family_score_columns"] if c in weekly.columns]
     family_scores = weekly[family_cols]
