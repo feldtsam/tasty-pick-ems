@@ -2025,3 +2025,130 @@ def grade_nfl_bookmarks_correction_health_check():
                  "grade_nfl_bookmarks_for_correction's own docstring for the full old-vs-new decision table.",
         "deployed_via": "github-auto-deploy",
     })
+
+
+@app.route("/api/write-newsletter", methods=["POST"])
+def write_newsletter_endpoint():
+    """
+    NFL Weekly Brief -- the newsletter-side equivalent of /api/write-
+    intelligence, for exactly the same real reason that endpoint exists:
+    NFL_PIPELINE_WEBHOOK_SECRET is a Vercel "Sensitive" env var (confirmed
+    write-only outside a running deployed function -- vercel env pull
+    returns a placeholder, not the real value, for any Sensitive var, by
+    Vercel's own design), so the one signed write persist_weekly_brief.py
+    makes to newsletter-write.ts can only ever be exercised for real from
+    inside a real deployed function, never from local execution.
+
+    POST body: {"editor_output": {...} (run_weekly_editor_agent()'s own
+    real return shape), "fixtures": [...] (the same fixture list the
+    Editor Agent was run against, needed here to rebuild stories_by_id
+    for gate-freezing), "season": int, "week": int, "preview_only": bool
+    (optional)}.
+
+    Deliberately does NOT run the Editor Agent itself -- unlike /api/
+    generate-and-write-intelligence's broader "fetch inputs itself"
+    shape, this mirrors /api/write-intelligence's narrower "caller
+    already has real content in hand" shape instead: the Editor Agent
+    call (needs ANTHROPIC_API_KEY, real model latency) runs wherever the
+    caller already has that access, and this endpoint's only real job is
+    the one step that genuinely requires being inside this specific
+    deployment -- shape_newsletter_rows() (pure) then the one real signed
+    forward_to_lovable() call.
+
+    AUTH: check_pipeline_secret() -- same small-fixed-trigger reasoning
+    as every other trigger route in this file.
+
+    preview_only: same dry-run flag /api/write-intelligence already has
+    -- shapes and freezes the gates, returns the result, never calls
+    forward_to_lovable() at all.
+
+    persist_weekly_brief (nfl/newsletter/) is imported LAZILY, inside
+    this function, wrapped in its own try/except -- deliberately NOT a
+    top-of-file import like every other module here. Reasoning: this
+    file is a single shared Vercel deployment serving every other real,
+    already-live route (poll-market-value, reconcile-week, write-
+    intelligence, etc.) -- a top-level import failure (a missing sys.path
+    entry, a transitive import this module pulls in that isn't available
+    in the deployed bundle) would crash the WHOLE app at cold start,
+    taking down every other route with it. A lazy, caught import failure
+    here only ever 500s THIS route; nothing else in this file is put at
+    risk by adding it.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    editor_output = data.get("editor_output")
+    fixtures = data.get("fixtures")
+    try:
+        season = int(data.get("season"))
+        week = int(data.get("week"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Expected {\"editor_output\": {...}, \"fixtures\": [...], \"season\": int, \"week\": int} in the request body."}), 400
+    if not isinstance(editor_output, dict) or not isinstance(fixtures, list):
+        return jsonify({"error": "Expected {\"editor_output\": {...}, \"fixtures\": [...], \"season\": int, \"week\": int} in the request body."}), 400
+    preview_only = bool(data.get("preview_only"))
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "newsletter"))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
+    try:
+        from persist_weekly_brief import DEFAULT_WRITE_URL, NEWSLETTER_WRITE_URL_ENV, shape_newsletter_rows
+    except Exception as e:
+        print(f"[write-newsletter] season={season} week={week} status=import_error error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "error": f"import failed: {e!r}"}), 500
+
+    stories_by_id = {f["intelligence_story_id"]: f for f in fixtures if "intelligence_story_id" in f}
+
+    try:
+        shaped = shape_newsletter_rows(editor_output, stories_by_id, season, week)
+    except Exception as e:
+        print(f"[write-newsletter] season={season} week={week} status=error error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
+
+    shaped = _json_safe(shaped)
+
+    forward_result = {"success": None, "status_code": None, "error": None}
+    if not preview_only:
+        secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+        if not secret:
+            return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+        write_url = resolve_url_env(NEWSLETTER_WRITE_URL_ENV, DEFAULT_WRITE_URL)
+        forward_result = forward_to_lovable({"issue": shaped["issue"], "stories": shaped["stories"]}, secret, write_url)
+
+    print(
+        f"[write-newsletter] season={season} week={week} stories_in={len(shaped['stories'])} "
+        f"skipped={len(shaped['skipped'])} preview_only={preview_only} "
+        f"forward_success={forward_result['success']} forward_status={forward_result['status_code']} "
+        f"forward_error={truncate_for_log(forward_result['error'], 500)!r} "
+        f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r}",
+        flush=True,
+    )
+
+    return jsonify({
+        "season": season,
+        "week": week,
+        "preview_only": preview_only,
+        "issue": shaped["issue"],
+        "stories": shaped["stories"],
+        "skipped": shaped["skipped"],
+        "forwarded": forward_result["success"],
+        "lovable_status_code": forward_result["status_code"],
+        "forward_error": forward_result["error"],
+        "forward_response_body": forward_result.get("response_body"),
+    }), (502 if forward_result["success"] is False else 200)
+
+
+@app.route("/api/write-newsletter", methods=["GET"])
+def write_newsletter_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"editor_output\": {...} (run_weekly_editor_agent()'s own real return shape), "
+                 "\"fixtures\": [...] (the same fixtures the Editor Agent ran against, used to rebuild "
+                 "stories_by_id for gate-freezing), \"season\": int, \"week\": int, \"preview_only\": bool "
+                 "(optional)}. Shapes and freezes the gates via persist_weekly_brief.shape_newsletter_rows(), "
+                 "then writes newsletter_issue/newsletter_story via one real signed call to newsletter-write.ts "
+                 "-- the one step that requires running inside this deployment (NFL_PIPELINE_WEBHOOK_SECRET is "
+                 "a Vercel Sensitive var, unavailable to local execution).",
+        "deployed_via": "github-auto-deploy",
+    })
