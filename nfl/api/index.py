@@ -52,6 +52,7 @@ import hmac
 import json
 import os
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -992,6 +993,15 @@ def curate_and_write_drafts_endpoint():
     happens, not silently retried. A real, contained follow-up (partial-
     failure handling), not addressed as part of this task's scope.
     """
+    # TIMING INSTRUMENTATION -- shelf_card_llm_top_n scaling investigation
+    # (see CONFIG["shelf_card_llm_top_n"]'s own comment for the real
+    # incident this is measuring against). Captured before auth so a
+    # legitimate run's total includes everything Vercel's own 300s ceiling
+    # actually counts against; only logged/returned at the real successful
+    # completion below, not on the early-exit paths (locked/404/error),
+    # since those never reach the real Claude-call loop this is measuring.
+    run_start = time.monotonic()
+
     auth_error = check_pipeline_secret()
     if auth_error:
         return auth_error
@@ -1305,6 +1315,8 @@ def curate_and_write_drafts_endpoint():
     for r in result["around_the_league_rows"]:
         around_the_league_counts[r["shelf"]] = around_the_league_counts.get(r["shelf"], 0) + 1
 
+    total_elapsed_seconds = round(time.monotonic() - run_start, 2)
+
     print(
         f"[curate-and-write-drafts] season={season} week={week} "
         f"rows_curated={len(all_rows)} rows_without_content={rows_without_content} "
@@ -1316,7 +1328,8 @@ def curate_and_write_drafts_endpoint():
         f"forward_error={truncate_for_log(forward_result['error'], 500)!r} "
         f"forward_response_body={truncate_for_log(forward_result.get('response_body'))!r} "
         f"superseded={supersede_result['superseded']}/{supersede_result['requested']} "
-        f"supersede_ok={supersede_result['ok']}",
+        f"supersede_ok={supersede_result['ok']} "
+        f"total_elapsed_seconds={total_elapsed_seconds}",
         flush=True,
     )
 
@@ -1324,6 +1337,9 @@ def curate_and_write_drafts_endpoint():
         "season": season,
         "week": week,
         "preview_only": preview_only,
+        "timing": {
+            "total_elapsed_seconds": total_elapsed_seconds,
+        },
         "market_value": {
             "price_history_rows": len(mv_snapshot),
             "players_with_live_odds": mv_players_with_odds,

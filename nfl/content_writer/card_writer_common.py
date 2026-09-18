@@ -62,6 +62,7 @@ production inputs, not just "tests still pass" — see the conversation
 this change was validated in.
 """
 import re
+import time
 
 import requests
 
@@ -845,23 +846,51 @@ def call_claude_with_tool(
     even with a real max_tokens passed, rather than silently returning
     a partial tool_use input the caller would only discover was
     incomplete by hitting a KeyError later, further from the real cause.
+
+    TIMING INSTRUMENTATION -- shelf_card_llm_top_n scaling investigation
+    (see nfl/api/curate_home_shelves.py's CONFIG["shelf_card_llm_top_n"]
+    for the real incident this is measuring against — the actual per-call
+    latency was never previously known, only that the full sequential
+    batch blew past Vercel's 300s ceiling at 140 calls). Logs wall-clock
+    elapsed time for this ONE real network call via a try/finally, so a
+    slow FAILURE is measured too (a call that hangs for 55s before a 5xx
+    or a timeout is exactly the case this investigation needs to see),
+    not just the happy path -- every call this function makes logs
+    exactly once, regardless of outcome.
     """
-    response = requests.post(
-        ANTHROPIC_API_URL,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        },
-        json={
-            "model": MODEL_NAME,
-            "max_tokens": max_tokens,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}],
-            "tools": [tool_schema],
-            "tool_choice": {"type": "tool", "name": tool_schema["name"]},
-        },
-        timeout=REQUEST_TIMEOUT_SECONDS,
+    tool_name = tool_schema.get("name", "unknown_tool")
+    call_start = time.monotonic()
+    try:
+        response = requests.post(
+            ANTHROPIC_API_URL,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+            json={
+                "model": MODEL_NAME,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}],
+                "tools": [tool_schema],
+                "tool_choice": {"type": "tool", "name": tool_schema["name"]},
+            },
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        elapsed = round(time.monotonic() - call_start, 2)
+        print(
+            f"[call_claude_with_tool] tool={tool_name} elapsed_seconds={elapsed} "
+            f"status=EXCEPTION error={e!r}",
+            flush=True,
+        )
+        raise
+    elapsed = round(time.monotonic() - call_start, 2)
+    print(
+        f"[call_claude_with_tool] tool={tool_name} elapsed_seconds={elapsed} "
+        f"status={response.status_code}",
+        flush=True,
     )
     if response.status_code >= 400:
         raise ValueError(f"Claude API returned {response.status_code}: {response.text}")
