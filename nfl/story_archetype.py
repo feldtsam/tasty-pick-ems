@@ -103,7 +103,7 @@ columns before writing any gate below):
                            only ever win when market_value's real score
                            beats every other real eligible archetype
                            for that shelf.
-  Going Nuclear        -- market_value_score, GATED to shelf ==
+  Signal Lock          -- market_value_score, GATED to shelf ==
                            "ATTD +700+" only, AND requires the shelf's
                            own dynamically-resolved real outlier
                            supporting signal (editorial_lenses.
@@ -111,17 +111,30 @@ columns before writing any gate below):
                            reused directly, not reimplemented) to ALSO
                            clear the floor — "market_value + any outlier
                            supporting signal" is a real, confirmed
-                           DOUBLE-STRONG-SIGNAL requirement, not
-                           market_value alone with a dramatic shelf name.
+                           DOUBLE-STRONG-SIGNAL requirement: the market's
+                           own read and the model's independent read
+                           agreeing on the same player, not a big price
+                           alone with nothing else behind it. RENAMED
+                           from GOING_NUCLEAR (TPE Terminology
+                           Architecture, "One Term, One Job") -- that
+                           name now belongs exclusively to the "ATTD
+                           +700+" PRICE shelf (GOING_NUCLEAR_SHELF below,
+                           unchanged), which is a different layer of the
+                           vocabulary than the archetype. The archetype
+                           itself was never really about the price or
+                           any "nuclear" drama -- it's specifically two
+                           independent signals locking onto the same
+                           conclusion, which is what its new name says
+                           directly instead of borrowing the shelf's.
 
 TIE-BREAKING: ties go to the primary signal's archetype family first
-(per the approved spec). A remaining tie between Going Nuclear and
+(per the approved spec). A remaining tie between Signal Lock and
 Value Shot specifically (the only two archetypes that can ever compete
 on the same real score, since both key off market_value_score, and
-both are already "primary family" on ATTD +700+) goes to Going Nuclear
+both are already "primary family" on ATTD +700+) goes to Signal Lock
 — it is the strictly more specifically-gated of the two (requires a
 real second signal to also clear the floor), so a real tie there means
-Going Nuclear's own extra condition is what's actually true of this row.
+Signal Lock's own extra condition is what's actually true of this row.
 
 FALLBACK: GENERIC when nothing clears the floor — the honest "no
 dramatic evidence yet" read, matching this project's existing fill_
@@ -142,9 +155,15 @@ FLOOR = 55.0
 
 ARCHETYPES = (
     "GOAL_LINE_THREAT", "TARGET_MAGNET", "ROLE_RISER", "MISMATCH",
-    "BACKFIELD_TAKEOVER", "END_ZONE_HUNTER", "VALUE_SHOT", "GOING_NUCLEAR",
+    "BACKFIELD_TAKEOVER", "END_ZONE_HUNTER", "VALUE_SHOT", "SIGNAL_LOCK",
 )
 
+# Shelf constant name unchanged, deliberately -- this names the "ATTD
+# +700+" PRICE shelf, a different vocabulary layer from the SIGNAL_LOCK
+# archetype (see TPE Terminology Architecture, "One Term, One Job"):
+# GOING_NUCLEAR is the price tier's own name now, not this module's
+# archetype name, even though this constant is still how that shelf gets
+# identified here.
 GOING_NUCLEAR_SHELF = "ATTD +700+"
 
 
@@ -238,7 +257,7 @@ def _value_shot(row: dict) -> float | None:
     return _real(row.get("market_value_score"))
 
 
-def _going_nuclear(shelf: str, row: dict, lens: dict) -> float | None:
+def _signal_lock(shelf: str, row: dict, lens: dict) -> float | None:
     if shelf != GOING_NUCLEAR_SHELF:
         return None
     market_value = _real(row.get("market_value_score"))
@@ -270,9 +289,9 @@ _SIGNAL_SCORE_KEY = {
 
 # {archetype: (governing_signal, score_fn)} -- score_fn(row) -> float|None,
 # already encoding that archetype's own real gate (position/evidence-
-# specific requirements) via returning None when ineligible. Going
-# Nuclear is handled separately in resolve_archetype (its score_fn also
-# needs `shelf`/`lens`, unlike every other archetype here).
+# specific requirements) via returning None when ineligible. Signal Lock
+# is handled separately in resolve_archetype (its score_fn also needs
+# `shelf`/`lens`, unlike every other archetype here).
 _ARCHETYPE_SPECS = {
     "GOAL_LINE_THREAT": ("td_opportunity", _goal_line_threat),
     "TARGET_MAGNET": ("role_momentum", _target_magnet),
@@ -301,9 +320,9 @@ def resolve_archetype(shelf: str, row: dict) -> dict:
     highest real score wins, PROVIDED it clears FLOOR — confirmed via
     real Week 1 2026 data that this floor is necessary, not
     theoretical (see this module's own docstring). Ties go to the
-    primary signal's own archetype family first; a remaining Going-
-    Nuclear-vs-Value-Shot tie (the only pair that can ever tie, since
-    both key off market_value_score) goes to Going Nuclear, the more
+    primary signal's own archetype family first; a remaining Signal-
+    Lock-vs-Value-Shot tie (the only pair that can ever tie, since
+    both key off market_value_score) goes to Signal Lock, the more
     specifically-gated of the two.
 
     `row`: one real scored weekly row (a dict or pandas Series, same
@@ -329,9 +348,9 @@ def resolve_archetype(shelf: str, row: dict) -> dict:
         candidates.append((score, archetype, signal))
 
     if "market_value" in eligible_signals:
-        going_nuclear_score = _going_nuclear(shelf, row, lens)
-        if going_nuclear_score is not None and going_nuclear_score >= FLOOR:
-            candidates.append((going_nuclear_score, "GOING_NUCLEAR", "market_value"))
+        signal_lock_score = _signal_lock(shelf, row, lens)
+        if signal_lock_score is not None and signal_lock_score >= FLOOR:
+            candidates.append((signal_lock_score, "SIGNAL_LOCK", "market_value"))
 
     if not candidates:
         return {
@@ -347,12 +366,12 @@ def resolve_archetype(shelf: str, row: dict) -> dict:
         if primary_family:
             tied = primary_family
     if len(tied) > 1:
-        # The only remaining real tie possible: Going Nuclear vs Value
+        # The only remaining real tie possible: Signal Lock vs Value
         # Shot, both keyed off market_value_score, both already "primary
-        # family" on ATTD +700+ -- see module docstring for why Going
-        # Nuclear (the stricter-gated one) wins.
-        nuclear = [c for c in tied if c[1] == "GOING_NUCLEAR"]
-        tied = nuclear if nuclear else tied
+        # family" on ATTD +700+ -- see module docstring for why Signal
+        # Lock (the stricter-gated one) wins.
+        signal_lock = [c for c in tied if c[1] == "SIGNAL_LOCK"]
+        tied = signal_lock if signal_lock else tied
 
     winner_score, winner_archetype, _ = tied[0]
     return {
