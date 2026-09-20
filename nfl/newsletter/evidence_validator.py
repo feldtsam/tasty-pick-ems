@@ -27,7 +27,9 @@ question, not three phrasings of the same check:
   scrutiny? Per the Story Interrogation spec's §10:
       4. A "survived scrutiny" claim must trace to a real
          challenge.alternate_explanations[] entry with status WEAKENED
-         or UNRESOLVED — not to interrogation's mere existence.
+         — not to interrogation's mere existence, and not to SUPPORTED
+         (the alternate explanation won, the opposite of survival),
+         UNRESOLVED, or NOT_TESTABLE (both inconclusive).
       5. A "market hasn't caught up" claim must trace to
          confirmation.market_reaction actually saying that.
       6. Confidence-escalating language on either kind of claim hard-
@@ -71,8 +73,8 @@ different confidence levels.
     with the same honest limits — a false miss just means a claim
     doesn't get this extra scrutiny (still checked as plain claim
     traceability); a detected claim that fails its trace IS a real hard
-    fail, since the trace itself (does a real WEAKENED/UNRESOLVED entry
-    exist, does market_reaction actually say this) is fully mechanical
+    fail, since the trace itself (does a real WEAKENED entry exist, does
+    market_reaction actually say this) is fully mechanical
     once the claim is detected at all.
   - The scoring-language-leak check (#7) is deliberately narrower than
     a bare word match for "scored" — this is an NFL newsletter, and
@@ -611,7 +613,16 @@ def check_interrogation_traceability(text: str, stories: list[dict]) -> list[dic
         for story in stories
         for alt in ((story.get("interrogation") or {}).get("challenge") or {}).get("alternate_explanations", [])
     ]
-    has_weakened_or_unresolved = any(s in ("WEAKENED", "UNRESOLVED") for s in alt_statuses)
+    # WEAKENED is the ONLY status that means the original signal survived a
+    # real challenge (per story_interrogation.py's own status definitions:
+    # "the test result works against the alternate explanation -- the
+    # detected signal held up despite the challenge"). SUPPORTED means the
+    # opposite -- the alternate explanation won, so the original signal did
+    # NOT survive, it was explained away. UNRESOLVED means the test was run
+    # but didn't clearly favor either side -- inconclusive, not survival.
+    # NOT_TESTABLE means no real test could even be run. None of the other
+    # three statuses are evidence a "survived scrutiny" claim is true.
+    has_weakened = any(s == "WEAKENED" for s in alt_statuses)
 
     market_reactions = [
         ((story.get("interrogation") or {}).get("confirmation") or {}).get("market_reaction")
@@ -627,20 +638,22 @@ def check_interrogation_traceability(text: str, stories: list[dict]) -> list[dic
 
         survival_phrase = next((p for p in _SURVIVAL_CLAIM_PHRASES if p in lowered), None)
         if survival_phrase:
-            status = "pass" if has_weakened_or_unresolved else "fail"
+            status = "pass" if has_weakened else "fail"
             results.append({
                 "check": "interrogation_traceability",
                 "claim_type": "survived_scrutiny",
                 "claim_text": sentence.strip(),
                 "status": status,
                 "detail": (
-                    f"A real challenge.alternate_explanations[] entry with status WEAKENED or "
-                    f"UNRESOLVED grounds this claim (matched phrase: {survival_phrase!r})."
+                    f"A real challenge.alternate_explanations[] entry with status WEAKENED "
+                    f"grounds this claim (matched phrase: {survival_phrase!r})."
                     if status == "pass" else
                     f"Claims a signal {survival_phrase!r} scrutiny, but no referenced story's "
                     f"interrogation record has an alternate_explanations[] entry with status "
-                    f"WEAKENED or UNRESOLVED — traces to interrogation's mere existence, not a "
-                    f"real tested-and-held result."
+                    f"WEAKENED — traces to interrogation's mere existence (or to a status that "
+                    f"does not mean survival: SUPPORTED means the alternate explanation won, "
+                    f"UNRESOLVED and NOT_TESTABLE are inconclusive), not a real tested-and-held "
+                    f"result."
                 ),
             })
             for phrase, pattern in _ESCALATING_PATTERNS.items():
@@ -652,8 +665,8 @@ def check_interrogation_traceability(text: str, stories: list[dict]) -> list[dic
                         "status": "fail",
                         "detail": (
                             f"{phrase!r} applied to a survived-scrutiny claim implies more than a "
-                            f"WEAKENED/UNRESOLVED status supports — a challenge that didn't hold up "
-                            f"means the signal survived THAT test, not that it's proven true."
+                            f"WEAKENED status supports — a challenge that didn't hold up means the "
+                            f"signal survived THAT test, not that it's proven true."
                         ),
                     })
 

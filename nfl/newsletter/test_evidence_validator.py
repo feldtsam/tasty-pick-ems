@@ -135,8 +135,99 @@ RHOADS_STORY = {
     },
 }
 
+# Same real shape as KEANE_STORY, one alternate_explanations[] entry
+# each, varying ONLY the status — for the per-status regression coverage
+# below (does a "survived scrutiny" claim validate correctly for EACH of
+# the four real statuses, not just WEAKENED/empty).
+SUPPORTED_STORY = {
+    "story_id": "aaaaaaaa-0000-0000-0000-000000000003",
+    "intelligence_family": "role_changes",
+    "entity": {"type": "player", "player_id": "00-supported", "player_name": "Dane Supported", "team": "DAL"},
+    "supporting_evidence": ["Goal-line opportunity share increased from 24% to 58% over 3 games"],
+    "related_players": [],
+    "evidence_classification": "strong",
+    "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "challenge": {
+            "alternate_explanations": [
+                {
+                    "explanation": "Incumbent RB was limited by a minor ankle issue",
+                    "evidence": "Injury report, Week 4",
+                    "test": "Did the shift persist after the incumbent returned to full practice?",
+                    "result": "Incumbent returned Week 5; opportunity share reverted to 26%",
+                    "status": "SUPPORTED",
+                },
+            ],
+        },
+        "confirmation": {
+            "supporting_signals": "None identified beyond the injury window",
+            "contradicting_signals": "Share reverted once the incumbent returned",
+            "market_reaction": "ATTD price moved from +650 to +400, then back to +600",
+        },
+    },
+}
+
+UNRESOLVED_STORY = {
+    "story_id": "aaaaaaaa-0000-0000-0000-000000000004",
+    "intelligence_family": "role_changes",
+    "entity": {"type": "player", "player_id": "00-unresolved", "player_name": "Reese Unresolved", "team": "DAL"},
+    "supporting_evidence": ["Goal-line opportunity share increased from 24% to 58% over 3 games"],
+    "related_players": [],
+    "evidence_classification": "strong",
+    "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "challenge": {
+            "alternate_explanations": [
+                {
+                    "explanation": "Incumbent RB was limited by a minor ankle issue",
+                    "evidence": "Injury report, Week 4",
+                    "test": "Did the shift persist after the incumbent returned to full practice?",
+                    "result": "Incumbent has not yet returned to a full practice snap count -- test not yet resolvable either way",
+                    "status": "UNRESOLVED",
+                },
+            ],
+        },
+        "confirmation": {
+            "supporting_signals": "Snap share also rose over the same window",
+            "contradicting_signals": "None identified",
+            "market_reaction": "ATTD price moved from +650 to +400",
+        },
+    },
+}
+
+NOT_TESTABLE_STORY = {
+    "story_id": "aaaaaaaa-0000-0000-0000-000000000005",
+    "intelligence_family": "role_changes",
+    "entity": {"type": "player", "player_id": "00-nottestable", "player_name": "Ames Nottestable", "team": "DAL"},
+    "supporting_evidence": ["Goal-line opportunity share increased from 24% to 58% over 3 games"],
+    "related_players": [],
+    "evidence_classification": "strong",
+    "interrogation": {
+        "interrogation_version": "v1_structured_data",
+        "challenge": {
+            "alternate_explanations": [
+                {
+                    "explanation": "A coaching change altered the goal-line scheme entirely",
+                    "evidence": "No coaching-staff data available in the current input",
+                    "test": "Would require play-calling attribution data not present in this input",
+                    "result": "Not testable with the fields available",
+                    "status": "NOT_TESTABLE",
+                },
+            ],
+        },
+        "confirmation": {
+            "supporting_signals": "Snap share also rose over the same window",
+            "contradicting_signals": "None identified",
+            "market_reaction": "ATTD price moved from +650 to +400",
+        },
+    },
+}
+
 STORIES_BY_ID[KEANE_STORY["story_id"]] = KEANE_STORY
 STORIES_BY_ID[RHOADS_STORY["story_id"]] = RHOADS_STORY
+STORIES_BY_ID[SUPPORTED_STORY["story_id"]] = SUPPORTED_STORY
+STORIES_BY_ID[UNRESOLVED_STORY["story_id"]] = UNRESOLVED_STORY
+STORIES_BY_ID[NOT_TESTABLE_STORY["story_id"]] = NOT_TESTABLE_STORY
 
 
 if __name__ == "__main__":
@@ -295,6 +386,44 @@ if __name__ == "__main__":
     r.append(check(
         "a 'survived' claim against a story with an EMPTY alternate_explanations[] fails — traces to nothing real",
         any(x["claim_type"] == "survived_scrutiny" and x["status"] == "fail" for x in survival_ungrounded),
+    ))
+
+    # --- Per-status regression: all four real interrogation statuses,
+    # individually, confirming ONLY WEAKENED grounds a "survived scrutiny"
+    # claim. The real bug this guards: SUPPORTED and UNRESOLVED were both
+    # previously (wrongly) treated as grounding -- SUPPORTED means the
+    # alternate explanation WON (the opposite of survival), and UNRESOLVED
+    # means the test was inconclusive (not evidence of survival either).
+    survival_supported = check_interrogation_traceability(
+        "Supported's goal-line role survived the incumbent's return.", [SUPPORTED_STORY],
+    )
+    r.append(check(
+        "SUPPORTED status does NOT ground a 'survived scrutiny' claim -- SUPPORTED means the alternate explanation won, the opposite of survival",
+        any(x["claim_type"] == "survived_scrutiny" and x["status"] == "fail" for x in survival_supported),
+    ))
+
+    survival_weakened_explicit = check_interrogation_traceability(
+        "Keane's goal-line role survived the incumbent's return.", [KEANE_STORY],
+    )
+    r.append(check(
+        "WEAKENED status DOES ground a 'survived scrutiny' claim -- the one real, correct grounding status",
+        any(x["claim_type"] == "survived_scrutiny" and x["status"] == "pass" for x in survival_weakened_explicit),
+    ))
+
+    survival_unresolved = check_interrogation_traceability(
+        "Unresolved's goal-line role survived the incumbent's return.", [UNRESOLVED_STORY],
+    )
+    r.append(check(
+        "UNRESOLVED status does NOT ground a 'survived scrutiny' claim -- an inconclusive test is not evidence of survival",
+        any(x["claim_type"] == "survived_scrutiny" and x["status"] == "fail" for x in survival_unresolved),
+    ))
+
+    survival_not_testable = check_interrogation_traceability(
+        "Nottestable's goal-line role survived the incumbent's return.", [NOT_TESTABLE_STORY],
+    )
+    r.append(check(
+        "NOT_TESTABLE status does NOT ground a 'survived scrutiny' claim -- no real test could even be run",
+        any(x["claim_type"] == "survived_scrutiny" and x["status"] == "fail" for x in survival_not_testable),
     ))
 
     market_text_grounded = "The market hasn't caught up with Rhoads' actual role yet."
