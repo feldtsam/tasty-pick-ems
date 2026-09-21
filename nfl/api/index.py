@@ -1011,6 +1011,69 @@ def curate_and_write_drafts_endpoint():
     across the split. Omit all three (the default) and every shelf
     processes in one call, byte-identical to this endpoint's behavior
     before this fix existed.
+
+    OPEN QUESTION, NOT RESOLVED — shelves_to_process and candidate-level
+    Interrogation duplication: flagged here deliberately, same rigor as
+    story_interrogation.py's own open questions (the all-WEAKENED+FAILS
+    gap, the market_data=None gap), not silently assumed safe. CONFIRMED
+    DORMANT as of this writing — a real investigation (Pass 3.5) grepped
+    every .py/.md/.ts/.sh/.json file in both repos and found no caller
+    anywhere that ever sets shelves_to_process; this endpoint's own
+    "eventual Make.com Part 3" language above confirms the intended
+    caller hasn't shipped yet. Because it's dormant, it is NOT currently
+    a live bug and does NOT block Pass 4's concurrency work, which
+    correctly targets today's real, single-invocation, 205-candidate
+    population.
+
+    The real risk, armed but inactive: curate_home_shelves.shape_
+    content_draft_rows calls _interrogate_unique_candidates() with the
+    FULL, unfiltered candidate set (capped_assignments) BEFORE
+    shelves_to_process's own filter ever applies (see that function's
+    docstring). That ordering is exactly correct WITHIN one HTTP call —
+    it's what gives Pass 2/2.1/3 their "once per candidate" guarantee
+    today. But shelves_to_process's two-call split is two independent,
+    stateless Vercel invocations, each running shape_content_draft_rows
+    (and therefore _interrogate_unique_candidates) fresh, with zero
+    shared state between them. If shelves_to_process is ever actually
+    activated without a fix, candidate-level grouping, the Pass 3 65%
+    selection gate, and every real interrogate_story() call would ALL
+    re-run in BOTH split calls, independently, over the SAME full
+    candidate population each time — not a partial overlap limited to
+    candidates whose placements straddle both halves, full duplication
+    of all of them. For today's real 205-selected population that's up
+    to 410 real Interrogation calls per logical curation run instead of
+    205, for no functional benefit. Worse than the extra cost: since
+    interrogate_story() isn't perfectly deterministic, the SAME real
+    candidate could get two independently-generated, potentially-
+    DIVERGENT signal_verdicts across the two calls — if that candidate
+    has placements on shelves in both halves, two placements of the same
+    real candidate could publish two different Interrogation truths in
+    one logical run. Not a database write race (rows are keyed by
+    (player_id, event_id, shelf, writer_type), confirmed against the
+    SUPERSEDE STALE APPROVED ROWS logic below, so nothing literally
+    clobbers) — a silent truth divergence, the same failure class Pass
+    2.1 closed at the shelf-iteration-order layer, reappearing here at
+    the HTTP-request-partitioning layer instead.
+
+    REQUIRED FIX BEFORE ACTIVATION, not yet decided between, NOT
+    implemented here: candidate-truth computation (_interrogate_unique_
+    candidates()'s grouping + Pass 3 selection + interrogate_story()
+    calls) must execute exactly ONCE per logical curation run and be
+    durably shared across both split calls, never re-run inside each
+    one independently. Two named approaches:
+      (a) a dedicated, always-single, non-split step that computes the
+          candidate truth package once and persists it somewhere both
+          split calls can read (a new interim store, or an existing one
+          reused for this), or
+      (b) restructure shelves_to_process so it scopes ONLY the
+          placement/writer phase, never the candidate phase — the
+          already-computed candidate truth package gets threaded in as
+          an argument instead of recomputed.
+    This must be resolved before shelves_to_process is ever wired into
+    real Make.com automation — not before Pass 4, since nothing today
+    exercises this path, and re-checked (this block re-read, not just
+    assumed still true) before that wiring happens, in case a caller
+    appears without this block being updated first.
     """
     # TIMING INSTRUMENTATION -- shelf_card_llm_top_n scaling investigation
     # (see CONFIG["shelf_card_llm_top_n"]'s own comment for the real

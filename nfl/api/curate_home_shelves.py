@@ -104,6 +104,8 @@ required fallback argument, not the real source of truth.
 import json
 import math
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # nfl/ itself, so `from shelves import ...` resolves regardless of
@@ -264,6 +266,30 @@ CONFIG = {
     # this was locked in as production policy. See _interrogate_
     # unique_candidates' own docstring for the full mechanism.
     "interrogation_top_pct_per_price_band": 0.65,
+    # Pass 4 execution policy: how many of the Pass-3-selected candidates'
+    # interrogate_story() calls run at once (ThreadPoolExecutor max_
+    # workers), never how MANY candidates get called -- that's Pass 3's
+    # own, frozen, 65%-per-band selection gate, entirely unaffected by
+    # this number. PROVISIONAL DEFAULT, not a confirmed-safe ceiling:
+    # this repo has no documented Anthropic account rate-limit/concurrent-
+    # request numbers anywhere (no `anthropic` SDK dependency, no tier
+    # info, no prior real concurrent-Claude-call precedent to measure
+    # against -- confirmed by a real investigation before this was
+    # chosen, not assumed). 5 is deliberately BELOW this same codebase's
+    # own existing concurrency precedent for OTHER external APIs
+    # (pipeline/api/live_data's ThreadPoolExecutor(max_workers=10) and
+    # backtest/scripts/fetch_game_context.py's max_workers=8, both for
+    # free/lenient public data endpoints, not a cost-bearing LLM call
+    # with up to MAX_TOKENS=4096 output) -- a deliberately conservative
+    # starting point, not a tuned one. REVISIT this number once (a) a
+    # human has confirmed the real account's actual RPM/concurrent-
+    # request tier limit against the Anthropic Console (still
+    # outstanding as of this writing -- not obtainable from this
+    # environment), or (b) real elapsed_seconds telemetry from a
+    # conservative production rollout (call_claude_with_tool already
+    # logs this per call, no new instrumentation needed) shows real
+    # headroom to raise it safely.
+    "interrogation_max_concurrency": 5,
 }
 
 
@@ -1005,6 +1031,89 @@ def _select_candidates_for_interrogation(candidate_rows: list, top_pct: float) -
     return selected, all_keys - selected
 
 
+def _interrogate_one_candidate(
+    key: tuple, weekly_lookup: dict, anthropic_api_key: str,
+    max_retries: int = 2, retry_backoff_seconds: float = 1.0,
+) -> dict:
+    """
+    Runs ONE candidate's Interrogation call in isolation -- the unit of
+    work Pass 4's ThreadPoolExecutor dispatches concurrently (see
+    _interrogate_unique_candidates below). NEVER raises: every real
+    failure, a genuine exception or interrogate_story() returning None,
+    resolves to a real {"interrogation_status": ..., "result": ...}
+    dict -- the SAME three-state contract and the SAME meaning per
+    state as the original sequential loop this replaces. Concurrency
+    changes HOW this runs, never WHAT a given outcome means.
+
+    BLIND, BOUNDED RETRY on a None result. interrogate_story() itself
+    doesn't distinguish "real API/network failure" from "a content-rule
+    violation that persisted after its own one internal retry" in what
+    it returns -- both come back as a bare None (see that function's
+    own docstring). This function deliberately does NOT reach into or
+    modify interrogate_story()/call_claude_with_tool() to make that
+    distinction; that would touch code Pass 4 is scoped to leave alone.
+    Instead: up to max_retries additional attempts at THIS layer,
+    exponential backoff (retry_backoff_seconds, doubling each attempt)
+    between them. A transient network/rate-limit failure is likely to
+    recover on retry; a persisted content-rule violation likely won't --
+    the cost of a wasted retry in that case is small and bounded, and
+    staying outside interrogate_story()'s own code is the actual point.
+
+    Exhausting every retry without a real result -- or any exception,
+    caught here rather than left to propagate into the calling
+    ThreadPoolExecutor Future -- resolves to interrogation_status:
+    "failed", the same state a single failed attempt already produced
+    before this pass. This candidate's own failure never crashes the
+    batch and never leaves its key unset; the caller always gets a real
+    dict back for every key it submits.
+    """
+    player_id, event_id = key
+    full_row = weekly_lookup.get(player_id)
+    headline, supporting_evidence = _shelf_neutral_candidate_evidence(full_row)
+    story_input = {
+        "intelligence_family": "nfl_picks",
+        "entity": {
+            "type": "player",
+            "player_id": player_id,
+            "player_name": full_row.get("player_name") if full_row is not None else None,
+        },
+        "headline": headline,
+        "hero_metric": None,
+        "time_window": None,
+        "sample_size": None,
+        "supporting_evidence": supporting_evidence,
+        "related_players": [],
+    }
+
+    attempt = 0
+    backoff = retry_backoff_seconds
+    while True:
+        try:
+            result = interrogate_story(story_input, anthropic_api_key, prior_history=None, market_data=None)
+        except Exception as e:
+            print(
+                f"[shape_content_draft_rows] interrogate_story raised for {key!r} "
+                f"(attempt {attempt + 1}/{max_retries + 1}): {e!r}",
+                flush=True,
+            )
+            result = None
+
+        if result is not None:
+            return {"interrogation_status": "complete", "result": result}
+
+        if attempt >= max_retries:
+            print(
+                f"[shape_content_draft_rows] {key!r} exhausted {max_retries} retries with no usable "
+                f"result -- recording a 'failed' status, not defaulting to a passed-scrutiny result",
+                flush=True,
+            )
+            return {"interrogation_status": "failed", "result": None}
+
+        attempt += 1
+        time.sleep(backoff)
+        backoff *= 2
+
+
 def _interrogate_unique_candidates(
     capped_assignments: pd.DataFrame, weekly_lookup: dict, anthropic_api_key: str = None, config: dict = CONFIG,
 ) -> dict:
@@ -1063,6 +1172,25 @@ def _interrogate_unique_candidates(
     is a separate, real design decision, out of scope for this pass's own
     ask (candidate-level calling semantics, not input completeness).
 
+    OPEN QUESTION, NOT RESOLVED, CONFIRMED DORMANT — shelves_to_process
+    (api/index.py) can split ONE logical curation run across two
+    separate HTTP invocations, each calling shape_content_draft_rows
+    (and therefore this function) fresh, with no shared state between
+    them. This function's own dedup is correct WITHIN one call, but has
+    no cross-call memory — if shelves_to_process is ever activated, this
+    function would re-run its full grouping + Pass 3 selection +
+    interrogate_story() calls independently in EACH split call, over
+    the same candidate population each time (full duplication, not
+    partial overlap), with a real risk of the same candidate getting two
+    independently-generated, potentially-divergent signal_verdicts
+    across the two calls. See the full write-up and the two named
+    remediation approaches (not yet decided between, not implemented) in
+    api/index.py's own shelves_to_process docstring. Confirmed dormant
+    as of this writing (no caller anywhere sets shelves_to_process) —
+    does not block this function's own current behavior or Pass 4's
+    concurrency work, both of which correctly target today's real,
+    single-invocation call pattern.
+
     Pass 3 SELECTION GATE, before any Interrogation call is made: not
     every unique candidate is interrogated. config["interrogation_top_
     pct_per_price_band"] (see CONFIG's own comment) keeps only the top
@@ -1071,6 +1199,17 @@ def _interrogate_unique_candidates(
     interrogation for the real mechanism and why it's within-band, not a
     single pooled threshold or a tiered absolute one. This is a resource-
     allocation decision, not an epistemic one.
+
+    Pass 4 EXECUTION, after selection, before any state is returned:
+    selected candidates' interrogate_story() calls run CONCURRENTLY,
+    bounded by config["interrogation_max_concurrency"] (see CONFIG's own
+    comment on why that default is provisional), via ThreadPoolExecutor
+    -- see _interrogate_one_candidate for the per-candidate isolation/
+    retry unit of work, and this function's own body for how completed
+    futures get mapped back to the right candidate key regardless of
+    completion order. This changes ONLY how the selected set's calls
+    execute -- which candidates are selected (above) and what each
+    interrogation_status means (below) are both unaffected.
 
     Returns {(player_id, event_id): {"interrogation_status": str,
     "result": dict | None}} — a THREE-state contract, deliberately not a
@@ -1085,11 +1224,12 @@ def _interrogate_unique_candidates(
         `signal_verdict` must stay genuinely absent, never defaulted or
         fabricated.
       - "failed": the candidate WAS selected and interrogate_story() was
-        called, but it returned None (a real API failure, or a language-
-        rule violation that persisted after its own one retry — see that
-        function's own docstring). result is None. Distinct from
-        "not_selected": an attempt genuinely happened and did not
-        produce a usable result.
+        called, but it returned None on every attempt -- its own one
+        internal content-rule retry, PLUS Pass 4's own bounded blind
+        retry at the dispatch layer (see _interrogate_one_candidate) for
+        a real API/network failure. result is None. Distinct from
+        "not_selected": an attempt (several, in fact) genuinely happened
+        and did not produce a usable result.
     A key MISSING from this dict entirely (as opposed to present with
     any of the three statuses above) is a different, fourth case this
     function's own caller (below) must treat as a loud, visible contract
@@ -1137,38 +1277,44 @@ def _interrogate_unique_candidates(
     for key in not_selected_keys:
         results[key] = {"interrogation_status": "not_selected", "result": None}
 
-    for key in selected_keys:
-        player_id, event_id = key
-        full_row = weekly_lookup.get(player_id)
-        headline, supporting_evidence = _shelf_neutral_candidate_evidence(full_row)
-        story_input = {
-            "intelligence_family": "nfl_picks",
-            "entity": {
-                "type": "player",
-                "player_id": player_id,
-                "player_name": full_row.get("player_name") if full_row is not None else None,
-            },
-            "headline": headline,
-            "hero_metric": None,
-            "time_window": None,
-            "sample_size": None,
-            "supporting_evidence": supporting_evidence,
-            "related_players": [],
-        }
-        try:
-            result = interrogate_story(story_input, anthropic_api_key, prior_history=None, market_data=None)
-        except Exception as e:
-            print(
-                f"[shape_content_draft_rows] interrogate_story raised for {key!r}: {e!r} — "
-                f"recording a 'failed' status for this candidate, not defaulting to a passed-scrutiny result",
-                flush=True,
-            )
-            result = None
-        results[key] = (
-            {"interrogation_status": "complete", "result": result}
-            if result is not None
-            else {"interrogation_status": "failed", "result": None}
-        )
+    # Pass 4: bounded-concurrency dispatch. Each selected candidate's
+    # call is fully isolated -- _interrogate_one_candidate never raises,
+    # always returns the real {"interrogation_status": ..., "result": ...}
+    # dict, so one candidate's failure can never cancel or corrupt any
+    # other's in-flight call (ThreadPoolExecutor's own per-Future
+    # exception isolation is a second, redundant layer of the same
+    # guarantee, not the only one). future_to_key is built at SUBMISSION
+    # time and resolved by dict lookup on the Future object itself, never
+    # by list position or completion order -- results complete in
+    # whatever order the real network calls happen to finish, and that
+    # order must never determine which candidate a result gets attached
+    # to. This governs EXECUTION ONLY: which candidates are selected
+    # (Pass 3) and what each interrogation_status means (the three-state
+    # contract) are both unchanged.
+    if selected_keys:
+        max_workers = max(1, min(config["interrogation_max_concurrency"], len(selected_keys)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_key = {
+                executor.submit(_interrogate_one_candidate, key, weekly_lookup, anthropic_api_key): key
+                for key in selected_keys
+            }
+            for future in as_completed(future_to_key):
+                key = future_to_key[future]
+                try:
+                    results[key] = future.result()
+                except Exception as e:
+                    # Defense in depth -- _interrogate_one_candidate is
+                    # designed to never raise, but if something truly
+                    # unexpected still escapes it, this candidate alone
+                    # resolves to "failed" rather than this exception
+                    # propagating and taking down every other in-flight
+                    # future's own result.
+                    print(
+                        f"[shape_content_draft_rows] unexpected error resolving future for {key!r}: {e!r} -- "
+                        f"recording a 'failed' status, not letting this candidate's failure affect any other",
+                        flush=True,
+                    )
+                    results[key] = {"interrogation_status": "failed", "result": None}
 
     return results
 

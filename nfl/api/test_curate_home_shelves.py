@@ -14,6 +14,8 @@ Run: python3 nfl/api/test_curate_home_shelves.py
 import io
 import json
 import sys
+import threading
+import time
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -857,6 +859,140 @@ if __name__ == "__main__":
         "three-state contract: the run log states the real selection-gate mechanism and counts explicitly "
         "(band + best_gap + kept/not-selected counts), not just a bare candidate count",
         "selection gate" in log_output and "best_gap" in log_output,
+    ))
+
+    # ============================================================
+    # Pass 4 -- bounded-concurrency execution. Governing invariant:
+    # concurrent execution of the same selected candidate set must
+    # produce the same candidate -> interrogation_status/result mapping
+    # sequential execution would, never a result attributed to the
+    # wrong candidate, never a candidate silently dropped, and one
+    # failed candidate must never affect any other.
+    # ============================================================
+
+    concurrency_rows = pd.DataFrame([
+        {"player_id": f"CONC_{i:02d}", "home_shelf": "Red Zone Trends", "capped": False}
+        for i in range(20)
+    ])
+    concurrency_weekly_lookup = {}
+    for i in range(20):
+        # market_value_score spaced 10 apart, everything else flat, so
+        # best_gap = |market_value_score - 50| = 10*i exactly -- a fully
+        # deterministic, hand-computable ranking. round-half-up(20*0.65)
+        # = 13 kept: i=7..19 (gap 70..190) selected, i=0..6 (gap 0..60) not.
+        concurrency_weekly_lookup[f"CONC_{i:02d}"] = pd.Series({
+            "player_id": f"CONC_{i:02d}", "player_name": f"Concurrency Test {i}",
+            "game_id": "2026_04_TST_OPP", "consensus_price_american": 900,
+            "market_value_score": 50.0 + 10.0 * i,
+            "td_opportunity": 50.0, "role_momentum": 50.0, "situation": 50.0,
+            "role_trend": 50.0, "proven_heat": 50.0, "emerging_heat": 50.0,
+        })
+    concurrency_config = dict(CONFIG)
+    concurrency_config["interrogation_max_concurrency"] = 3
+    BOOM_KEY = ("CONC_19", "2026_04_TST_OPP")  # the highest-best_gap selected candidate -- deliberately made to always fail
+
+    in_flight_lock = threading.Lock()
+    # Plain dict, not module/nonlocal-scope ints -- this test file's own
+    # top-level `if __name__` block isn't a function scope, so a nested
+    # closure has no enclosing binding to declare `nonlocal` against. A
+    # mutable container sidesteps that cleanly.
+    in_flight_counters = {"current": 0, "max": 0}
+    # chs.time IS this test file's own `time` module (Python only loads a
+    # module once) -- capturing the REAL sleep here, before chs.time.sleep
+    # gets patched to a no-op below, so the mock's own deliberate jitter
+    # keeps working (jitter is a test tool; the no-op below is only meant
+    # to silence _interrogate_one_candidate's own retry backoff).
+    real_sleep = time.sleep
+
+    def concurrency_mock_interrogate_story(story_input, api_key, prior_history=None, market_data=None):
+        key = (story_input["entity"]["player_id"], "2026_04_TST_OPP")
+        with in_flight_lock:
+            in_flight_counters["current"] += 1
+            in_flight_counters["max"] = max(in_flight_counters["max"], in_flight_counters["current"])
+        try:
+            # Small, key-derived jitter -- deliberately scrambles
+            # completion order relative to submission/set-iteration
+            # order, without making the test slow or flaky.
+            real_sleep((hash(key) % 5) * 0.02)
+            if key == BOOM_KEY:
+                return None  # always fails -- exhausts retries, must become "failed" without affecting anyone else
+            return {"signal_verdict": "SURVIVES", "_echo_key": list(key)}
+        finally:
+            with in_flight_lock:
+                in_flight_counters["current"] -= 1
+
+    orig_interrogate_conc = chs.interrogate_story
+    orig_sleep = chs.time.sleep
+    chs.interrogate_story = concurrency_mock_interrogate_story
+    chs.time.sleep = lambda _seconds: None  # no-op retry backoff -- keep the test fast, not the retry COUNT
+    try:
+        concurrent_results = chs._interrogate_unique_candidates(
+            concurrency_rows, concurrency_weekly_lookup, anthropic_api_key="fake-key", config=concurrency_config,
+        )
+
+        # Independent serial reference: the SAME unit of work
+        # (_interrogate_one_candidate), called in a plain for-loop, same
+        # mock active. This IS what "sequential execution" means for
+        # this unit of work -- concurrency only changes how these same
+        # calls get scheduled, never what any one of them computes.
+        expected_selected = {f"CONC_{i:02d}" for i in range(7, 20)}
+        expected_not_selected = {f"CONC_{i:02d}" for i in range(0, 7)}
+        serial_results = {}
+        for i in range(20):
+            key = (f"CONC_{i:02d}", "2026_04_TST_OPP")
+            if key[0] in expected_selected:
+                serial_results[key] = chs._interrogate_one_candidate(key, concurrency_weekly_lookup, "fake-key")
+            else:
+                serial_results[key] = {"interrogation_status": "not_selected", "result": None}
+    finally:
+        chs.interrogate_story = orig_interrogate_conc
+        chs.time.sleep = orig_sleep
+
+    results.append(check(
+        "Pass 4: selection is unaffected by concurrency -- same 13 selected / 7 not_selected as the "
+        "hand-computed best_gap ranking (13*0.65 round-half-up = 13 of 20)",
+        {k[0] for k, v in concurrent_results.items() if v["interrogation_status"] != "not_selected"} == expected_selected
+        and {k[0] for k, v in concurrent_results.items() if v["interrogation_status"] == "not_selected"} == expected_not_selected,
+    ))
+    results.append(check(
+        "Pass 4: concurrent execution produced the SAME interrogation_status for every one of the 20 keys "
+        "as the independent serial reference -- the governing invariant, holding under real concurrent "
+        "execution with scrambled completion order, not just in a single-threaded happy path",
+        {k: v["interrogation_status"] for k, v in concurrent_results.items()}
+        == {k: v["interrogation_status"] for k, v in serial_results.items()},
+    ))
+    results.append(check(
+        "Pass 4: every 'complete' result's echoed key matches the dict key it's stored under -- no result "
+        "attributed to the wrong candidate under concurrent, out-of-submission-order completion",
+        all(
+            v["result"]["_echo_key"] == list(key)
+            for key, v in concurrent_results.items()
+            if v["interrogation_status"] == "complete"
+        ),
+    ))
+    results.append(check(
+        "Pass 4: failure isolation -- the one deliberately-failing candidate (CONC_19, highest best_gap, "
+        "otherwise would be selected and expected to succeed) is 'failed', and it alone",
+        concurrent_results[BOOM_KEY]["interrogation_status"] == "failed"
+        and concurrent_results[BOOM_KEY]["result"] is None
+        and sum(1 for v in concurrent_results.values() if v["interrogation_status"] == "failed") == 1,
+    ))
+    results.append(check(
+        "Pass 4: failure isolation -- all 12 OTHER selected candidates still completed successfully with "
+        "their own correct result -- one failed call never cancelled or corrupted the rest of the batch",
+        sum(
+            1 for k, v in concurrent_results.items()
+            if k[0] in expected_selected and k != BOOM_KEY and v["interrogation_status"] == "complete"
+        ) == 12,
+    ))
+    results.append(check(
+        f"Pass 4: the configured concurrency bound (3) was actually reached, not just nominally respected "
+        f"(observed max in-flight = {in_flight_counters['max']})",
+        in_flight_counters["max"] == 3,
+    ))
+    results.append(check(
+        "Pass 4: the concurrency bound was never EXCEEDED at any point during execution",
+        in_flight_counters["max"] <= 3,
     ))
 
     print()
