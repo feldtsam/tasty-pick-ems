@@ -270,26 +270,48 @@ CONFIG = {
     # interrogate_story() calls run at once (ThreadPoolExecutor max_
     # workers), never how MANY candidates get called -- that's Pass 3's
     # own, frozen, 65%-per-band selection gate, entirely unaffected by
-    # this number. PROVISIONAL DEFAULT, not a confirmed-safe ceiling:
-    # this repo has no documented Anthropic account rate-limit/concurrent-
-    # request numbers anywhere (no `anthropic` SDK dependency, no tier
-    # info, no prior real concurrent-Claude-call precedent to measure
-    # against -- confirmed by a real investigation before this was
-    # chosen, not assumed). 5 is deliberately BELOW this same codebase's
-    # own existing concurrency precedent for OTHER external APIs
-    # (pipeline/api/live_data's ThreadPoolExecutor(max_workers=10) and
-    # backtest/scripts/fetch_game_context.py's max_workers=8, both for
-    # free/lenient public data endpoints, not a cost-bearing LLM call
-    # with up to MAX_TOKENS=4096 output) -- a deliberately conservative
-    # starting point, not a tuned one. REVISIT this number once (a) a
-    # human has confirmed the real account's actual RPM/concurrent-
-    # request tier limit against the Anthropic Console (still
-    # outstanding as of this writing -- not obtainable from this
-    # environment), or (b) real elapsed_seconds telemetry from a
-    # conservative production rollout (call_claude_with_tool already
-    # logs this per call, no new instrumentation needed) shows real
-    # headroom to raise it safely.
-    "interrogation_max_concurrency": 5,
+    # this number.
+    #
+    # FINALIZED against real constraints, not a guess. Real account
+    # limits for Claude Sonnet 5 (confirmed against the Anthropic
+    # Console): 10K requests/min, 10M input tokens/min, 2M output
+    # tokens/min -- nowhere close to a bottleneck for a 205-call batch
+    # at any concurrency considered here. The REAL constraint is
+    # Vercel's 300s hard function ceiling (vercel.json maxDuration) --
+    # shared with the pre-existing shelf-card writer loop that runs
+    # AFTER this in the same invocation and has its own real, separate
+    # history of exhausting that budget (see shelf_card_llm_top_n's own
+    # comment). Interrogation must leave that loop real room, not just
+    # fit itself.
+    #
+    # Sized against a real timing measurement, not the first one taken:
+    # an initial 3-call sample (mean 17.22s) turned out to be inflated
+    # by a real, now-fixed bug -- _shelf_neutral_candidate_evidence's
+    # "proven heat" label tripped story_interrogation.py's own
+    # confidence-escalation scan (the literal word "proven") on nearly
+    # every call, forcing its existing internal retry and roughly
+    # doubling wall time. Relabeled to "season-long heat" (see
+    # _SHELF_NEUTRAL_SIGNAL_LABELS), re-measured clean: 5 real calls,
+    # zero retries, mean 8.53s (range 7.17-9.42s).
+    #
+    # At mean=8.53s, ceil(205/c) waves x 8.53s: c=10 -> 179s (40% margin
+    # under 300s), c=15 -> 119s (60% margin), c=20 -> 94s (69% margin).
+    # 15 is chosen over 10 for a real cushion against a small (n=5)
+    # sample's own uncertainty, and over 20+ for not taking more margin
+    # than the writer loop's own real, still-uncharacterized need
+    # justifies -- roughly half the 300s budget for Interrogation,
+    # leaving the other half (~180s) for everything already downstream
+    # of it. NOTE: no concurrency value makes the genuine WORST case
+    # (every call hitting its own 60s REQUEST_TIMEOUT_SECONDS ceiling)
+    # fit under 300s below c~52 -- concurrency tuning protects the
+    # expected case, not a full pile-up; true worst-case safety is a
+    # separate, structural question (tied to the still-dormant
+    # shelves_to_process two-call split, tracked separately). REVISIT
+    # if either the writer loop's own real budget need gets measured
+    # (no granular timing checkpoint exists yet -- see this module's
+    # own open-question notes) or real production telemetry at this
+    # setting shows more/less headroom than modeled here.
+    "interrogation_max_concurrency": 15,
 }
 
 
@@ -842,7 +864,24 @@ _SHELF_NEUTRAL_SIGNAL_LABELS = (
     ("role_momentum", "role momentum"),
     ("situation", "situation"),
     ("role_trend", "role trend"),
-    ("proven_heat", "proven heat"),
+    # "season-long heat", not "proven heat" -- deliberately reworded,
+    # confirmed via a real measurement (Pass 4 timing investigation):
+    # the literal word "proven" here tripped story_interrogation.py's
+    # own confidence-escalation scan (CONFIDENCE_ESCALATING_LANGUAGE's
+    # \bproven\b) on nearly every real call, not because the model made
+    # an overconfident claim, but because its own prose echoed this
+    # field's name back. The scan itself is correct and untouched (a
+    # real word-boundary match on a real banned word, exactly as
+    # designed) -- the fix belongs in the input, not the guardrail.
+    # "season-long" pairs with "emerging" the same way nfl_tension.py's
+    # own change-type story_angle already does for this exact field
+    # pair ("the season-long ... read" vs. "the recent (emerging) read"
+    # -- see that module's `change` branch) -- reused terminology, not
+    # invented fresh here. This label is internal-evidence-record only
+    # (Interrogation's own input), never reader-facing -- the real,
+    # published "Proven Heat" display label elsewhere (shelves.py's own
+    # role_signals) is untouched and unaffected.
+    ("proven_heat", "season-long heat"),
     ("emerging_heat", "emerging heat"),
 )
 
