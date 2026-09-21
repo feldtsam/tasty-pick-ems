@@ -11,8 +11,10 @@ claim anything about a real player's real market price.
 
 Run: python3 nfl/api/test_curate_home_shelves.py
 """
+import io
 import json
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -714,6 +716,148 @@ if __name__ == "__main__":
             captured_inputs[0]["supporting_evidence"] is not None
             and len(captured_inputs[0]["supporting_evidence"]) == 6,
         ))
+
+    # ============================================================
+    # Pass 3 -- LOCKED capacity policy: within each real price band,
+    # keep the top interrogation_top_pct_per_price_band (0.65) of that
+    # band's own candidates by count, ranked by best_gap descending.
+    # ============================================================
+
+    results.append(check(
+        "_price_band_for_row: real ATTD bands resolve correctly, honest None for missing/unbanded price",
+        chs._price_band_for_row(pd.Series({"consensus_price_american": 350})) == "ATTD +300-499"
+        and chs._price_band_for_row(pd.Series({"consensus_price_american": 600})) == "ATTD +500-699"
+        and chs._price_band_for_row(pd.Series({"consensus_price_american": 900})) == "ATTD +700+"
+        and chs._price_band_for_row(pd.Series({"consensus_price_american": 150})) is None
+        and chs._price_band_for_row(pd.Series({})) is None
+        and chs._price_band_for_row(None) is None,
+    ))
+
+    from nfl_tension import find_tension, GAP_THRESHOLD  # noqa: E402
+
+    gap_case_divergence = {
+        "market_value_score": 80.0, "td_opportunity": 50.0, "role_momentum": 50.0, "situation": 50.0,
+        "role_trend": 50.0, "proven_heat": 50.0, "emerging_heat": 50.0,
+    }
+    gap_case_flat = {
+        "market_value_score": 51.0, "td_opportunity": 50.0, "role_momentum": 49.0, "situation": 50.0,
+        "role_trend": 50.0, "proven_heat": 50.0, "emerging_heat": 51.0,
+    }
+    results.append(check(
+        "_candidate_best_gap: agrees with the real, unmodified find_tension() on which of two cases "
+        "has a real, large relationship vs. which is flat/convergent -- reimplementation validated "
+        "against the real function it mirrors, not just self-consistent",
+        chs._candidate_best_gap(pd.Series(gap_case_divergence)) >= GAP_THRESHOLD
+        and find_tension(gap_case_divergence)["type"] == "divergence"
+        and chs._candidate_best_gap(pd.Series(gap_case_flat)) < GAP_THRESHOLD
+        and find_tension(gap_case_flat)["type"] == "convergence",
+    ))
+    results.append(check(
+        "_candidate_best_gap: missing full_row / all-missing signals is an honest 0.0, never a crash or a guess",
+        chs._candidate_best_gap(None) == 0.0
+        and chs._candidate_best_gap(pd.Series({})) == 0.0,
+    ))
+
+    selection_rows = (
+        [{"key": (f"HI_{i}", "ev"), "price_band": "ATTD +700+", "best_gap": 100.0 - i} for i in range(7)]
+        + [{"key": (f"LO_{i}", "ev"), "price_band": "ATTD +700+", "best_gap": 10.0 - i} for i in range(3)]
+        + [{"key": ("SMALL_A", "ev"), "price_band": "ATTD +300-499", "best_gap": 40.0}]
+        + [{"key": ("SMALL_B", "ev"), "price_band": "ATTD +300-499", "best_gap": 20.0}]
+    )
+    selected, not_selected = chs._select_candidates_for_interrogation(selection_rows, 0.65)
+    results.append(check(
+        "_select_candidates_for_interrogation: ATTD +700+ band (10 candidates) keeps round(10*0.65)=7 -- "
+        "exactly the 7 highest-best_gap keys, never the lowest (the exact misimplementation risk flagged "
+        "in the locked instruction: percentile>=0.65 would keep only the top 35%, the opposite of intended)",
+        {k for k in selected if k[0].startswith("HI_")} == {(f"HI_{i}", "ev") for i in range(7)}
+        and {k for k in not_selected if k[0].startswith("LO_")} == {(f"LO_{i}", "ev") for i in range(3)},
+    ))
+    results.append(check(
+        "_select_candidates_for_interrogation: a separate 2-candidate band (ATTD +300-499) is ranked "
+        "against its OWN band only -- round(2*0.65)=1 kept, the higher-best_gap one, unaffected by the "
+        "other band's much larger raw best_gap values",
+        ("SMALL_A", "ev") in selected and ("SMALL_B", "ev") in not_selected,
+    ))
+    results.append(check(
+        "_select_candidates_for_interrogation: selected/not_selected are disjoint and exactly cover every key",
+        selected.isdisjoint(not_selected) and selected | not_selected == {r["key"] for r in selection_rows},
+    ))
+    # Order-independence of the same selection, same discipline as the
+    # Pass 2.1 shelf-order invariance test -- selection must not depend
+    # on input list order either.
+    selected_rev, not_selected_rev = chs._select_candidates_for_interrogation(list(reversed(selection_rows)), 0.65)
+    results.append(check(
+        "_select_candidates_for_interrogation: selection is invariant to input row order",
+        selected == selected_rev and not_selected == not_selected_rev,
+    ))
+
+    # Three-state contract, end to end, against a real 15-player
+    # population (the same real WR rows the shelf_card_llm_top_n block
+    # above already built, all real-consensus-priced into ATTD +500-699
+    # -- reused rather than re-fabricated).
+    import math as _math  # local alias, avoids shadowing anything module-level in this test file
+    llm_weekly_lookup = {row["player_id"]: row for _, row in llm_cutoff_rows.iterrows()}
+    survivor_ids = list(on_shelf["player_id"])  # the 15 real, non-capped, on-shelf candidates -- matches
+    # exactly what _interrogate_unique_candidates itself derives from capped_assignments (capped=True
+    # rows never become a candidate_key at all, so they must be excluded from this independent check too).
+    real_gaps = {pid: chs._candidate_best_gap(llm_weekly_lookup[pid]) for pid in survivor_ids}
+    expected_keep = _math.floor(len(real_gaps) * CONFIG["interrogation_top_pct_per_price_band"] + 0.5)
+    expected_selected_ids = {
+        pid for pid, _ in sorted(real_gaps.items(), key=lambda kv: (-kv[1], kv[0]))[:expected_keep]
+    }
+
+    three_state_captured = []
+
+    def fake_interrogate_story_3state(story_input, api_key, prior_history=None, market_data=None):
+        three_state_captured.append(story_input["entity"]["player_id"])
+        return {"signal_verdict": "SURVIVES"}
+
+    orig_interrogate_3s = chs.interrogate_story
+    chs.interrogate_story = fake_interrogate_story_3state
+    try:
+        stdout_capture = io.StringIO()
+        with redirect_stdout(stdout_capture):
+            three_state_results = chs._interrogate_unique_candidates(llm_capped, llm_weekly_lookup, anthropic_api_key="fake-key")
+    finally:
+        chs.interrogate_story = orig_interrogate_3s
+    log_output = stdout_capture.getvalue()
+
+    results.append(check(
+        f"three-state contract: every one of the {len(survivor_ids)} real on-shelf candidates gets "
+        "exactly one entry, each tagged with a real interrogation_status",
+        len(three_state_results) == len(survivor_ids)
+        and all(v["interrogation_status"] in ("complete", "not_selected", "failed") for v in three_state_results.values()),
+    ))
+    results.append(check(
+        f"three-state contract: exactly {expected_keep} of {len(survivor_ids)} are 'complete' "
+        "(selected and interrogate_story succeeded), matching the same top-65%-by-count ranking computed "
+        "independently above",
+        {key[0] for key, v in three_state_results.items() if v["interrogation_status"] == "complete"} == expected_selected_ids,
+    ))
+    results.append(check(
+        "three-state contract: interrogate_story was called ONLY for selected candidates -- a not_selected "
+        "candidate never reaches the LLM call at all, not even to be discarded after the fact",
+        set(three_state_captured) == expected_selected_ids,
+    ))
+    results.append(check(
+        "three-state contract: every 'not_selected' entry's result is None -- never a fabricated or "
+        "defaulted signal_verdict-shaped value standing in for 'we chose not to scrutinize this'",
+        all(
+            v["result"] is None
+            for v in three_state_results.values()
+            if v["interrogation_status"] == "not_selected"
+        ),
+    ))
+    results.append(check(
+        "three-state contract: a legitimate 'not_selected' skip is never logged as a CONTRACT FAILURE -- "
+        "resource allocation must never read as a scrutiny problem in the run log either",
+        "CONTRACT FAILURE" not in log_output,
+    ))
+    results.append(check(
+        "three-state contract: the run log states the real selection-gate mechanism and counts explicitly "
+        "(band + best_gap + kept/not-selected counts), not just a bare candidate count",
+        "selection gate" in log_output and "best_gap" in log_output,
+    ))
 
     print()
     if all(results):

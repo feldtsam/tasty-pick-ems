@@ -102,6 +102,7 @@ index.py) — the DEFAULT_ constant below is kept only as resolve_url_env's
 required fallback argument, not the real source of truth.
 """
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -246,6 +247,23 @@ CONFIG = {
     # Proposal 3, approved, PROVISIONAL — same as above.
     "tasty_six_tpe_threshold": 55.0,
     "tasty_six_evidence_threshold": 65.0,
+    # Pass 3 capacity policy, LOCKED: within each real ATTD price band
+    # (ODDS_BANDS), rank unique candidates by _candidate_best_gap
+    # descending and keep the top this-fraction BY COUNT of that band's
+    # own population, round() to the nearest integer. Chosen over a
+    # single pooled threshold/ranking (which under-represents longshots
+    # -- ATTD +700+ candidates structurally produce a smaller best_gap
+    # than shorter-priced bands, confirmed against the real 316-
+    # candidate population) and over a tiered absolute threshold per
+    # band (which fixes the percentage skew only by starving the small
+    # bands' absolute count, since they're ~37 of 316 candidates
+    # combined). Within-band percentile ranking keeps each band's
+    # representation proportional to its own real population by
+    # construction, real-data-validated at ~207/316 selected with
+    # ~87.9% ATTD +700+ share (vs. the real pool's own 88.3%) before
+    # this was locked in as production policy. See _interrogate_
+    # unique_candidates' own docstring for the full mechanism.
+    "interrogation_top_pct_per_price_band": 0.65,
 }
 
 
@@ -849,8 +867,146 @@ def _shelf_neutral_candidate_evidence(full_row) -> tuple[str | None, list[str] |
     return headline, supporting_evidence
 
 
+def _real(value) -> float | None:
+    """None for missing/NaN, the real float value otherwise -- same
+    honest-None convention as nfl_tension.py's own _real (duplicated,
+    not imported: this module's selection gate must not depend on or
+    reach into Tension's own module, see _candidate_best_gap)."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f  # NaN != NaN
+
+
+def _candidate_best_gap(full_row) -> float:
+    """The raw magnitude of the strongest real relationship among a
+    candidate's own scored signals -- REIMPLEMENTS (does not import)
+    nfl_tension.py's own three internal gap computations (divergence:
+    market_value_score vs. the blended td_opportunity/role_momentum/
+    situation read; contradiction: the largest pairwise gap among those
+    same three; change: role_trend vs. role_momentum, and emerging_heat
+    vs. proven_heat). find_tension() itself never returns this number,
+    only descriptive text built from it, so this is duplicated at this
+    layer on purpose -- this selection gate is a resource-allocation
+    concern (Pass 3), not an editorial one, and must not import from or
+    modify nfl_tension.py (Tension/Eyebrow Test stays frozen, unaffected
+    by candidate selection, per this pass's own scope). This
+    reimplementation was validated against find_tension()'s real
+    behavior across the real 316-candidate population during Pass 3's
+    own investigation before being approved as the ranking signal.
+
+    Missing/NaN inputs are dropped, never guessed -- same honest-gap
+    convention as _shelf_neutral_candidate_evidence. Returns 0.0 (never
+    None) when full_row is None or no real gap is computable at all --
+    a candidate with too little data to compute any gap ranks lowest
+    within its band, it never crashes or silently opts itself out of
+    grouping.
+    """
+    if full_row is None:
+        return 0.0
+    mv = _real(full_row.get("market_value_score"))
+    td = _real(full_row.get("td_opportunity"))
+    rm = _real(full_row.get("role_momentum"))
+    sit = _real(full_row.get("situation"))
+    rm_trend = _real(full_row.get("role_trend"))
+    proven = _real(full_row.get("proven_heat"))
+    emerging = _real(full_row.get("emerging_heat"))
+
+    internal = {"td_opportunity": td, "role_momentum": rm, "situation": sit}
+    internal_present = {k: v for k, v in internal.items() if v is not None}
+
+    gaps = []
+    if mv is not None and internal_present:
+        internal_avg = sum(internal_present.values()) / len(internal_present)
+        gaps.append(abs(mv - internal_avg))
+    if len(internal_present) >= 2:
+        names = list(internal_present)
+        pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
+        gaps.append(max(abs(internal_present[a] - internal_present[b]) for a, b in pairs))
+    for level_val, trend_val in ((rm, rm_trend), (proven, emerging)):
+        if level_val is not None and trend_val is not None:
+            gaps.append(abs(trend_val - level_val))
+
+    return max(gaps) if gaps else 0.0
+
+
+def _price_band_for_row(full_row) -> str | None:
+    """Real ATTD price band (ODDS_BANDS) for one candidate's own real
+    consensus_price_american -- a genuine candidate-level property (the
+    real market price on this player), never derived from or dependent
+    on which shelf(s) the candidate happens to be placed on. None when
+    full_row is missing or its price doesn't resolve to a real band
+    (honest gap, not a guess) -- callers group these under their own
+    "unbanded" bucket rather than dropping them silently."""
+    if full_row is None:
+        return None
+    price = _real(full_row.get("consensus_price_american"))
+    if price is None:
+        return None
+    for label, lo, hi in ODDS_BANDS:
+        if price >= lo and (hi is None or price <= hi):
+            return label
+    return None
+
+
+def _select_candidates_for_interrogation(candidate_rows: list, top_pct: float) -> tuple:
+    """
+    Pass 3's LOCKED capacity policy: within each real price band, rank
+    candidates by _candidate_best_gap DESCENDING and keep the top
+    `top_pct` of that band's own population BY COUNT (round() to the
+    nearest integer -- e.g. a 279-candidate band at top_pct=0.65 keeps
+    round(279 * 0.65) = 181, not "gap >= some pooled value"). Deliberately
+    NOT a single pooled ranking/threshold across all candidates: real-
+    data modeling (Pass 3) showed pooled ranking structurally under-
+    represents ATTD +700+ candidates (their best_gap runs lower on
+    average -- noisier internal-signal comparisons vs. the shorter-
+    priced bands' cleaner market-divergence gaps), and a tiered
+    ABSOLUTE threshold per band only inverts that skew by starving the
+    small bands' absolute count instead. Ranking WITHIN each band and
+    taking a uniform top_pct keeps every band's representation
+    proportional to its own real population by construction.
+
+    price_band is a real, intrinsic property of the candidate (its own
+    market price) -- this is NOT a shelf-placement policy, and does not
+    reopen the leak Pass 2.1 closed (no shelf name or shelf-specific
+    story enters this function; see _price_band_for_row).
+
+    Deterministic tie-break: candidates with an equal best_gap at a
+    band's cutoff boundary are ordered by `key` (not by input order),
+    so selection never depends on capped_assignments' own row order --
+    same shelf-order-invariance discipline Pass 2.1 established for the
+    Interrogation input itself, now extended to whether Interrogation
+    runs at all.
+
+    candidate_rows: list of {"key": (player_id, event_id), "price_band":
+    str | None, "best_gap": float}. Returns (selected_keys, not_selected_
+    keys) -- two disjoint sets whose union is every key in candidate_rows.
+    """
+    by_band = {}
+    for row in candidate_rows:
+        by_band.setdefault(row["price_band"], []).append(row)
+
+    selected = set()
+    for band_rows in by_band.values():
+        ordered = sorted(band_rows, key=lambda r: (-r["best_gap"], r["key"]))
+        # Round-half-UP, deliberately not Python's builtin round() (banker's
+        # rounding: round(6.5) == 6, not 7) -- a band size landing exactly
+        # on a half-integer keep-count must round to the MORE-selected
+        # side, never silently under-select. math.floor(x + 0.5) is exact
+        # for these small positive magnitudes (band sizes here are at most
+        # a few hundred).
+        keep_count = math.floor(len(ordered) * top_pct + 0.5)
+        selected.update(row["key"] for row in ordered[:keep_count])
+
+    all_keys = {row["key"] for row in candidate_rows}
+    return selected, all_keys - selected
+
+
 def _interrogate_unique_candidates(
-    capped_assignments: pd.DataFrame, weekly_lookup: dict, anthropic_api_key: str = None,
+    capped_assignments: pd.DataFrame, weekly_lookup: dict, anthropic_api_key: str = None, config: dict = CONFIG,
 ) -> dict:
     """
     Candidate-level Interrogation — called ONCE per (player_id, event_id),
@@ -907,13 +1063,39 @@ def _interrogate_unique_candidates(
     is a separate, real design decision, out of scope for this pass's own
     ask (candidate-level calling semantics, not input completeness).
 
-    Returns {(player_id, event_id): interrogation_result | None}. A key
-    present with value None means interrogate_story() itself returned
-    None for that candidate (a real API failure, or a language-rule
-    violation that persisted after its own one retry — see that
-    function's own docstring) — a different, already-handled case from a
-    MISSING key entirely, which this function's own caller (below) must
-    treat as a loud, visible contract failure, never a silent default.
+    Pass 3 SELECTION GATE, before any Interrogation call is made: not
+    every unique candidate is interrogated. config["interrogation_top_
+    pct_per_price_band"] (see CONFIG's own comment) keeps only the top
+    fraction of EACH real price band's own candidates, ranked by
+    _candidate_best_gap — see that function and _select_candidates_for_
+    interrogation for the real mechanism and why it's within-band, not a
+    single pooled threshold or a tiered absolute one. This is a resource-
+    allocation decision, not an epistemic one.
+
+    Returns {(player_id, event_id): {"interrogation_status": str,
+    "result": dict | None}} — a THREE-state contract, deliberately not a
+    bare result-or-None, so a caller can never confuse "we chose not to
+    scrutinize this" with "scrutiny found a problem" or with "scrutiny
+    should have run but didn't":
+      - "complete": interrogate_story() returned a real result.
+        result is that dict (has a real signal_verdict).
+      - "not_selected": the selection gate above did not choose this
+        candidate this run. result is always None. NOT an epistemic
+        verdict of any kind — no attempt was made, and this placement's
+        `signal_verdict` must stay genuinely absent, never defaulted or
+        fabricated.
+      - "failed": the candidate WAS selected and interrogate_story() was
+        called, but it returned None (a real API failure, or a language-
+        rule violation that persisted after its own one retry — see that
+        function's own docstring). result is None. Distinct from
+        "not_selected": an attempt genuinely happened and did not
+        produce a usable result.
+    A key MISSING from this dict entirely (as opposed to present with
+    any of the three statuses above) is a different, fourth case this
+    function's own caller (below) must treat as a loud, visible contract
+    failure ("missing_unexpectedly") — every real placement is expected
+    to find its candidate's key present with one of the three statuses
+    above, even when that status is "not_selected".
     """
     if not anthropic_api_key:
         # No key -- the same "no bespoke content this run" degradation
@@ -931,16 +1113,31 @@ def _interrogate_unique_candidates(
             continue
         candidate_keys.add((r["player_id"], full_row.get("game_id")))
 
+    candidate_rows_for_selection = [
+        {
+            "key": key,
+            "price_band": _price_band_for_row(weekly_lookup.get(key[0])),
+            "best_gap": _candidate_best_gap(weekly_lookup.get(key[0])),
+        }
+        for key in candidate_keys
+    ]
+    top_pct = config["interrogation_top_pct_per_price_band"]
+    selected_keys, not_selected_keys = _select_candidates_for_interrogation(candidate_rows_for_selection, top_pct)
+
     print(
-        f"[shape_content_draft_rows] interrogating {len(candidate_keys)} unique "
-        f"(player_id, event_id) candidates, derived from {len(candidates)} real placements "
-        f"({len(candidates) - len(candidate_keys)} placement(s) share a candidate "
-        f"already covered by another placement's interrogation call)",
+        f"[shape_content_draft_rows] {len(candidate_keys)} unique (player_id, event_id) candidates "
+        f"derived from {len(candidates)} real placements "
+        f"({len(candidates) - len(candidate_keys)} placement(s) share a candidate already covered by "
+        f"another placement's interrogation call) -- selection gate (top {top_pct:.0%} of each real "
+        f"price band, ranked by best_gap) keeps {len(selected_keys)}, does not select {len(not_selected_keys)}",
         flush=True,
     )
 
     results = {}
-    for key in candidate_keys:
+    for key in not_selected_keys:
+        results[key] = {"interrogation_status": "not_selected", "result": None}
+
+    for key in selected_keys:
         player_id, event_id = key
         full_row = weekly_lookup.get(player_id)
         headline, supporting_evidence = _shelf_neutral_candidate_evidence(full_row)
@@ -963,11 +1160,15 @@ def _interrogate_unique_candidates(
         except Exception as e:
             print(
                 f"[shape_content_draft_rows] interrogate_story raised for {key!r}: {e!r} — "
-                f"recording None for this candidate, not defaulting to a passed-scrutiny result",
+                f"recording a 'failed' status for this candidate, not defaulting to a passed-scrutiny result",
                 flush=True,
             )
             result = None
-        results[key] = result
+        results[key] = (
+            {"interrogation_status": "complete", "result": result}
+            if result is not None
+            else {"interrogation_status": "failed", "result": None}
+        )
 
     return results
 
@@ -1177,7 +1378,7 @@ def shape_content_draft_rows(
     # placement, with its own per-shelf lens, exactly as it does today;
     # this dict only makes the shared candidate-level result reachable
     # at that call site, it does not change what Tension does with it.
-    interrogation_by_candidate = _interrogate_unique_candidates(capped_assignments, weekly_lookup, anthropic_api_key)
+    interrogation_by_candidate = _interrogate_unique_candidates(capped_assignments, weekly_lookup, anthropic_api_key, config)
 
     rows = []
     # REAL CROSS-BATCH VARIETY STATE (NFL Content Generation V1, Part 1)
@@ -1214,26 +1415,43 @@ def shape_content_draft_rows(
         # Candidate-level Interrogation fan-out -- O(1) lookup of the
         # ONE shared result this placement's candidate already got from
         # _interrogate_unique_candidates above, never recomputed here.
-        # A missing key (full_row real, a key was expected, anthropic_
-        # api_key was provided, but the dict has no entry) is a real
-        # contract failure -- logged loudly, never silently treated as
-        # if this candidate passed scrutiny. Not consumed by anything
-        # below yet (plumbing only, per this pass's own scope) -- kept
-        # on the row for a later pass to actually wire into Tension.
+        # Status-aware, per that function's own three-state contract:
+        # only "complete" ever produces a real interrogation_result --
+        # "not_selected" (Pass 3's capacity gate chose not to interrogate
+        # this candidate this run) and "failed" (it was selected, but
+        # interrogate_story() didn't produce a usable result) both stay
+        # None here, on purpose, same as each other from this
+        # placement's own point of view: neither is a signal_verdict,
+        # and NEITHER may be defaulted or fabricated into one. A key
+        # MISSING entirely (full_row real, a key was expected, anthropic_
+        # api_key was provided, but the dict has no entry at all -- not
+        # even a "not_selected"/"failed" status) is the real, fourth,
+        # loudly-logged case: a genuine contract failure, never silently
+        # treated as if this candidate passed scrutiny. Not consumed by
+        # anything below yet (plumbing only, per Pass 2's own scope) --
+        # kept on the row for a later pass to actually wire into Tension.
         interrogation_result = None
         if full_row is not None and anthropic_api_key:
             interrogation_key = (r["player_id"], event_id)
             if interrogation_key not in interrogation_by_candidate:
                 print(
-                    f"[shape_content_draft_rows] CONTRACT FAILURE: no interrogation_result for "
-                    f"{interrogation_key!r} on shelf {r['home_shelf']!r} -- every placement with a "
-                    f"real full_row must have a candidate-level interrogation entry when "
+                    f"[shape_content_draft_rows] CONTRACT FAILURE (missing_unexpectedly): no "
+                    f"interrogation entry at all for {interrogation_key!r} on shelf "
+                    f"{r['home_shelf']!r} -- every placement with a real full_row must have a "
+                    f"candidate-level interrogation entry (complete/not_selected/failed) when "
                     f"anthropic_api_key is provided. Proceeding with interrogation_result=None for "
                     f"this placement only; NOT defaulting to a passed-scrutiny result.",
                     flush=True,
                 )
             else:
-                interrogation_result = interrogation_by_candidate[interrogation_key]
+                entry = interrogation_by_candidate[interrogation_key]
+                if entry["interrogation_status"] == "complete":
+                    interrogation_result = entry["result"]
+                # "not_selected" / "failed": interrogation_result stays
+                # None above -- a legitimate "no scrutiny performed or
+                # succeeded" state, not a contract failure, and not
+                # logged as one (both are already-handled, expected
+                # outcomes, not bugs).
 
         title = editorial_sentence = None
         # Editorial Voice Spec, "Find the Tension" addition -- the real
