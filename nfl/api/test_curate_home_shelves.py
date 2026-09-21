@@ -11,6 +11,7 @@ claim anything about a real player's real market price.
 
 Run: python3 nfl/api/test_curate_home_shelves.py
 """
+import json
 import sys
 from pathlib import Path
 
@@ -642,6 +643,77 @@ if __name__ == "__main__":
         "qualifying players still get a written row (the whole point of raising max_per_shelf in the first place)",
         len(on_shelf_drafts) == n_survivors,
     ))
+
+    # ============================================================
+    # Pass 2.1 acceptance test: shelf-order invariance. One candidate
+    # placed on all three shelves a real survivor can qualify for at
+    # once (its own price-band shelf + its own position trend shelf +
+    # Red Zone Trends, which is position-agnostic — the real 3-way
+    # overlap measured earlier this session against live data, not a
+    # contrived combination). Run _interrogate_unique_candidates twice,
+    # once with these placements in their natural order and once
+    # reversed, capturing the exact story_input dict handed to
+    # interrogate_story() each time (mocked — this is a structural
+    # invariance test, not a live-model test). The two payloads must be
+    # byte-for-byte identical: candidate-level Interrogation input must
+    # never depend on which shelf placement is encountered first.
+    # ============================================================
+    invariance_row = pd.Series({
+        "player_id": "SYN_INVARIANCE", "player_name": "Synthetic Invariance", "game_id": "2026_02_TST_OPP",
+        "posteam": "TST", "position_group": "RB",
+        "td_opportunity": 72.0, "role_momentum": 55.0, "situation": 61.0,
+        "role_trend": 48.0, "proven_heat": 66.0, "emerging_heat": 39.0,
+    })
+    invariance_weekly_lookup = {"SYN_INVARIANCE": invariance_row}
+    invariance_placements = [
+        {"player_id": "SYN_INVARIANCE", "home_shelf": "Red Zone Trends", "capped": False},
+        {"player_id": "SYN_INVARIANCE", "home_shelf": "RB Trends", "capped": False},
+        {"player_id": "SYN_INVARIANCE", "home_shelf": "ATTD +500-699", "capped": False},
+    ]
+
+    captured_inputs = []
+
+    def fake_interrogate_story(story_input, api_key, prior_history=None, market_data=None):
+        captured_inputs.append(story_input)
+        return {"signal_verdict": "UNRESOLVED"}
+
+    orig_interrogate = chs.interrogate_story
+    chs.interrogate_story = fake_interrogate_story
+    try:
+        forward = pd.DataFrame(invariance_placements)
+        chs._interrogate_unique_candidates(forward, invariance_weekly_lookup, anthropic_api_key="fake-key")
+        reversed_df = pd.DataFrame(list(reversed(invariance_placements)))
+        chs._interrogate_unique_candidates(reversed_df, invariance_weekly_lookup, anthropic_api_key="fake-key")
+    finally:
+        chs.interrogate_story = orig_interrogate
+
+    results.append(check(
+        "shelf-order invariance: exactly one interrogate_story call made per order "
+        "(one candidate, three placements, deduplicated correctly in both directions)",
+        len(captured_inputs) == 2,
+    ))
+    if len(captured_inputs) == 2:
+        forward_json = json.dumps(captured_inputs[0], sort_keys=True)
+        reversed_json = json.dumps(captured_inputs[1], sort_keys=True)
+        results.append(check(
+            "shelf-order invariance: candidate-level Interrogation input (headline, supporting_evidence, "
+            "everything) is byte-for-byte identical whether Red Zone Trends, RB Trends, or ATTD +500-699 "
+            "is the first placement encountered",
+            forward_json == reversed_json,
+        ))
+        results.append(check(
+            "shelf-order invariance: the shelf-neutral headline actually reflects the candidate's real "
+            "scored signals (not null, not a shelf-specific story)",
+            captured_inputs[0]["headline"] is not None
+            and "72.0" in captured_inputs[0]["headline"]
+            and "TD opportunity" in captured_inputs[0]["headline"],
+        ))
+        results.append(check(
+            "shelf-order invariance: supporting_evidence carries all six real scored signals, not a subset "
+            "tied to one shelf's own story",
+            captured_inputs[0]["supporting_evidence"] is not None
+            and len(captured_inputs[0]["supporting_evidence"]) == 6,
+        ))
 
     print()
     if all(results):

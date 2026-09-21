@@ -215,6 +215,7 @@ def generate_nfl_shelf_card_draft(
     row: dict, shelf: str, confidence_band: str, anthropic_api_key: str,
     debug_inject_violation_instruction: str = None,
     avoid_headlines: list[str] | None = None, avoid_opening_phrases: list[str] | None = None,
+    interrogation_result: dict | None = None,
 ) -> dict:
     """
     The full pipeline for one real regular (non-Tasty-Six) NFL shelf
@@ -258,7 +259,7 @@ def generate_nfl_shelf_card_draft(
         "model_name":..., "validation_passed": bool,
         "validation_issues": [...], "review_status": "pending_review"|"flagged",
         "opening_phrase": str, "_editorial_lens": {...}, "_tension": {...},
-        "_raw_model_output": {...},
+        "_interrogation_result": {...} | None, "_raw_model_output": {...},
       }
     `story` (Editorial Voice Spec, "Find the Tension" addition) is the
     real Story-tier text — see nfl_shelf_card_writer_schema.py's own
@@ -276,6 +277,21 @@ def generate_nfl_shelf_card_draft(
     loop) needs it un-prefixed and readable to grow avoid_opening_
     phrases across the batch, the same way it already reads
     draft["title"] for avoid_headlines.
+
+    `interrogation_result`: the CANDIDATE-level Interrogation result
+    (story_interrogation.interrogate_story()'s own output — signal_
+    verdict/challenge/confirmation/judgment) already computed ONCE for
+    this player+event by curate_home_shelves._interrogate_unique_
+    candidates(), before shape_content_draft_rows' own per-placement
+    loop ever calls this function. PLUMBING ONLY in this pass — passed
+    straight to _tension_block/find_tension by NEITHER (tension below
+    still runs exactly as it did before this parameter existed, same
+    call, same two arguments), and kept on the return value under
+    _interrogation_result purely for inspection/debugging/QA, same
+    "storable, inspectable" treatment _editorial_lens/_tension already
+    get. A later pass, not this one, is what makes find_tension() (or
+    this function's own prompt-building) actually READ signal_verdict —
+    seeing it reach this call site correctly is this pass's whole job.
     """
     candidate = build_nfl_writer_candidate(row)
     lens = resolve_editorial_lens(shelf, candidate)
@@ -310,6 +326,7 @@ def generate_nfl_shelf_card_draft(
         "opening_phrase": opening_phrase(title),
         "_editorial_lens": lens,
         "_tension": tension,
+        "_interrogation_result": interrogation_result,
         "_raw_model_output": output,
     }
 

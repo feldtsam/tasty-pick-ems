@@ -1,16 +1,92 @@
 """
 Story Interrogation V1 — Step 2 of the spec (the "Population Prompt"
-piece): LLM-populated `challenge`/`confirmation`/`judgment` sections of
-the `interrogation` object Step 1 already attaches (as None) to every
-real Story Object in all four NFL Intelligence families.
+piece): LLM-populated `challenge`/`confirmation`/`judgment`/
+`signal_verdict` sections of the `interrogation` object Step 1 already
+attaches (as None) to every real Story Object in all four NFL
+Intelligence families.
 
 `change` and `context` are deterministic passthrough from fields
 already on the Story Object — this module computes them too (see
 build_interrogation_input), but never asks the model to. Only
-`challenge`/`confirmation`/`judgment` go through call_claude_with_tool
-(card_writer_common.py, Claude Sonnet 5, forced tool-use) — the same
-convention already used for citation/numeric-grounding validation
-elsewhere in this codebase.
+`challenge`/`confirmation`/`judgment`/`signal_verdict` go through
+call_claude_with_tool (card_writer_common.py, Claude Sonnet 5, forced
+tool-use) — the same convention already used for citation/numeric-
+grounding validation elsewhere in this codebase.
+
+`signal_verdict` (SURVIVES | UNRESOLVED | FAILS, Task 4 in the system
+prompt below) answers a question challenge.alternate_explanations
+deliberately does not: does the ORIGINAL signal itself survive
+scrutiny, independent of what happened to any one alternate
+explanation. This is the same array-as-proxy fallacy already found and
+fixed once in this codebase (newsletter/evidence_validator.py's
+check_interrogation_traceability() used to treat a WEAKENED or
+UNRESOLVED alternate-explanation status as grounding for a "survived
+scrutiny" narrative claim — wrong, since neither one is evidence the
+original signal holds up). signal_verdict exists so downstream
+consumers (EPS, Tension) have a real, independently-judged answer to
+read instead of inferring one from the array themselves.
+
+OPEN QUESTION, NOT RESOLVED — flagged here deliberately rather than
+silently dropped: real, live-model testing (4 separately-constructed
+cases) proved signal_verdict=SURVIVES and signal_verdict=UNRESOLVED
+each co-occurring with a genuinely all-WEAKENED challenge.alternate_
+explanations array, and proved FAILS is independently reachable on its
+own — but never produced the specific combination of an all-WEAKENED
+array together with FAILS, across 4 real attempts with substantively
+different inputs. Every attempt that supplied evidence strong enough to
+plausibly justify FAILS also got incorporated by the model into
+challenge.alternate_explanations as a genuine rival explanation
+(SUPPORTED or UNRESOLVED), rather than staying confirmation-only
+material with the tested alternate(s) still WEAKENED. The working
+hypothesis — real-world evidence sharp enough to independently fail a
+signal tends to double as a plausible rival explanation for it, making
+it Task 1 material rather than pure Task 4 material — is PLAUSIBLE, not
+proven. Do not treat "all-WEAKENED + FAILS never happens" as an
+established fact anywhere downstream (a gate, a test fixture, a default
+value); if it later turns out this combination genuinely cannot occur,
+that is worth knowing deliberately, not assuming from this note. Any
+gate/consumer of signal_verdict should read it as its own field, on its
+own terms, and never assume a particular challenge.alternate_
+explanations shape accompanies any particular signal_verdict value.
+
+OPEN QUESTION, NOT RESOLVED — market_data=None and signal_verdict:
+flagged here deliberately, same as the open question above, rather than
+treated as a settled non-issue. Traced directly against this module's
+own code (build_interrogation_input, the system prompt above, and this
+function's own reshaping): when market_data=None, it is passed through
+to the model as an explicit null in the input contract (never omitted,
+never silently defaulted — confirmed by a real test in test_story_
+interrogation.py), and the system prompt's own Task 2 instruction tells
+the model "If market_data is not provided, say it isn't available; do
+not guess." No code anywhere in this module branches on market_data is
+None, so nothing here actively reinterprets absence as "the market did
+not react."
+
+The gap is what's missing, not what's present: unlike the confidence-
+escalation and reader-framing checks (scan_for_confidence_escalation,
+scan_evidence_significance_for_reader_framing), there is no
+deterministic post-generation check enforcing that market_reaction
+actually reads as "not available" when market_data was None — the
+system prompt sentence above is the only safeguard, and it is untested
+against real model output (only the input-contract null itself is
+covered by an existing test). More specifically, Task 4's own
+signal_verdict guardrail block goes out of its way to warn against
+treating an empty or all-WEAKENED challenge.alternate_explanations
+array as evidence for SURVIVES, but says nothing equivalent about
+confirmation.market_reaction — despite Task 4 explicitly listing
+market_reaction as one of the three possible sources of real supporting
+evidence for SURVIVES. A missing market_reaction should carry the same
+"absence is not evidence" treatment the array already gets; the prompt
+does not yet say so.
+
+This is a real, distinct correctness risk, not merely a completeness
+note: missing market evidence may honestly reduce what Interrogation
+knows, but it must never be interpreted as evidence that the market did
+not react, and it must never by itself support a SURVIVES verdict. Not
+fixed in this pass (Pass 2.1 was scoped to shelf-order invariance, not
+market_data wiring or prompt changes) — reported here so it lives with
+the code it affects rather than only in conversation history, and is
+prioritized deliberately rather than discovered by accident later.
 
 DETERMINISTIC change/context MAPPING — a real design decision made
 here, not dictated verbatim by the spec (§11 explicitly leaves this
@@ -165,6 +241,47 @@ Status definitions:
   bettors should pay attention before the market catches up." — reject any
   draft of this field that reads like this before returning it.
 
+## Task 4 — signal_verdict
+
+Answer a question Task 1 does not: does the ORIGINAL observed signal itself
+survive scrutiny? Assign exactly one value: SURVIVES, UNRESOLVED, or FAILS.
+
+- SURVIVES: real, independent evidence in the input actively supports the
+  original signal — something in confirmation.supporting_signals,
+  confirmation.market_reaction, or the surrounding context genuinely
+  corroborates it. Not merely the absence of a successful alternate
+  explanation — actual, present, supporting evidence.
+- FAILS: real, independent evidence in the input actively undermines or
+  contradicts the original signal itself — e.g. a real contradicting
+  signal, or a market reaction that argues against it. This is a
+  different question from whether any one alternate explanation won;
+  it is asking whether the original claim holds up on its own merits.
+- UNRESOLVED: neither of the above is supported by real evidence in the
+  input. This is the correct default whenever the available confirmation
+  or context is thin, ambiguous, or simply silent — not a failure to
+  decide, but the honest answer when the input doesn't say enough either
+  way.
+
+CRITICAL — READ BEFORE ANSWERING THIS FIELD: signal_verdict must be
+determined INDEPENDENTLY of challenge.alternate_explanations' own
+statuses. Those statuses answer a completely different question — what
+happened to each candidate alternate explanation — not whether the
+original signal survives. Specifically:
+  - An alternate explanation being WEAKENED (the challenge against it
+    failed) does NOT by itself mean the original signal survives. It
+    only means that one candidate explanation didn't hold up. You still
+    need real, independent supporting evidence to answer SURVIVES.
+  - An EMPTY alternate_explanations array (no alternate explanation was
+    even found to test) does NOT by itself mean the original signal
+    survives either. It means nothing was there to challenge it — that
+    is silence, not confirmation.
+  - If every alternate explanation you tested came back WEAKENED, or the
+    array is empty, and you cannot point to real, independent supporting
+    evidence beyond that, the correct answer is UNRESOLVED, not SURVIVES.
+    Do not let a clean sweep of rejected alternate explanations stand in
+    for evidence the original signal actually holds up — that is exactly
+    the mistake this field exists to prevent.
+
 ## Language rules (apply to every field above)
 
 - Never use confidence-escalating language — "confirmed," "proven," "settled,"
@@ -226,8 +343,13 @@ INTERROGATION_TOOL_SCHEMA = {
                 },
                 "required": ["what_we_know", "what_we_dont_know", "evidence_significance"],
             },
+            "signal_verdict": {
+                "type": "string",
+                "enum": ["SURVIVES", "UNRESOLVED", "FAILS"],
+                "description": "Does the ORIGINAL observed signal survive scrutiny — determined independently of challenge.alternate_explanations' own statuses. See Task 4 in the system prompt.",
+            },
         },
-        "required": ["challenge", "confirmation", "judgment"],
+        "required": ["challenge", "confirmation", "judgment", "signal_verdict"],
     },
 }
 
@@ -433,4 +555,5 @@ def interrogate_story(
             k: response["judgment"].get(k)
             for k in ("what_we_know", "what_we_dont_know", "evidence_significance")
         },
+        "signal_verdict": response.get("signal_verdict"),
     }

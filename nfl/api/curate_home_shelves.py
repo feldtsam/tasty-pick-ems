@@ -123,6 +123,7 @@ from shelves import (
     odds_band_story, position_story, red_zone_story, section_title_for_shelf, td_opportunity_trend_for_row,
 )
 from story_archetype import resolve_archetype
+from story_interrogation import interrogate_story
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
 from generate_tasty_six_content import generate_nfl_tasty_six_draft  # noqa: E402
@@ -792,6 +793,185 @@ def _matchup_from_game_id(game_id) -> str | None:
     return f"{away} @ {home}"
 
 
+_SHELF_NEUTRAL_SIGNAL_LABELS = (
+    ("td_opportunity", "TD opportunity"),
+    ("role_momentum", "role momentum"),
+    ("situation", "situation"),
+    ("role_trend", "role trend"),
+    ("proven_heat", "proven heat"),
+    ("emerging_heat", "emerging heat"),
+)
+
+
+def _shelf_neutral_candidate_evidence(full_row) -> tuple[str | None, list[str] | None]:
+    """Candidate-level headline/supporting_evidence for Interrogation,
+    built ONLY from full_row's own already-scored fields — the same six
+    real signals find_tension() itself reads (nfl_tension.py's own
+    `_INTERNAL_SIGNALS` plus role_trend/proven_heat/emerging_heat).
+    Deliberately mechanical, not a "preferred shelf" pick: no shelf name
+    or shelf-specific story (_story_for_row / red_zone_story /
+    position_story / odds_band_story) is read here, so the same
+    candidate produces the same evidence regardless of which shelf(s) it
+    appears on or in what order they're encountered (see this function's
+    caller for the real bug this closes).
+
+    Numeric, not narrated -- this is Interrogation's own internal
+    evidence record, not reader-facing shelf-card prose, so citing raw
+    0-100 scores directly is the established convention at this layer
+    (story_interrogation.py's own supporting_evidence/judgment fields do
+    the same; distinct from the shelf-card WRITER's separate "never
+    narrate a raw field" rule, which governs reader-facing text only).
+
+    Missing/NaN fields are dropped, not guessed at -- honest gap, same
+    convention as _real() elsewhere in this pipeline. Returns (None,
+    None) if full_row is None or no real field survives.
+    """
+    if full_row is None:
+        return None, None
+    readings = []
+    for key, label in _SHELF_NEUTRAL_SIGNAL_LABELS:
+        value = full_row.get(key)
+        if value is None:
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if value != value:  # NaN
+            continue
+        readings.append((label, value))
+    if not readings:
+        return None, None
+    headline = "This week's real scored signals: " + ", ".join(
+        f"{label} {value:.1f}/100" for label, value in readings
+    ) + "."
+    supporting_evidence = [f"{label}: {value:.1f}/100" for label, value in readings]
+    return headline, supporting_evidence
+
+
+def _interrogate_unique_candidates(
+    capped_assignments: pd.DataFrame, weekly_lookup: dict, anthropic_api_key: str = None,
+) -> dict:
+    """
+    Candidate-level Interrogation — called ONCE per (player_id, event_id),
+    NOT once per placement. This is the real fix for a real, measured bug:
+    shape_content_draft_rows' own loop below produces one row per
+    (surviving-the-cap) player-shelf PLACEMENT, and calling Interrogation
+    from inside that loop — the same pattern find_tension() already uses,
+    correctly, for placement-level Tension — would call it once per shelf
+    a candidate appears on. Confirmed directly against a real live-data
+    measurement, not assumed: a real candidate can appear on 3 shelves at
+    once (its price-band shelf + its own position trend shelf + Red Zone
+    Trends, which is position-agnostic), and every one of 316 real
+    survivors in that measurement cleared all three simultaneously — so
+    calling Interrogation per placement would have run it ~3x more than
+    necessary for no real reason. The underlying candidate truth (does
+    the signal survive scrutiny) does not change depending on which
+    shelf is asking; only Tension's framing of it does. See this
+    project's own architecture note: "Truth belongs to the candidate.
+    Editorial framing belongs to the placement. Deduplicate scrutiny,
+    not storytelling."
+
+    (player_id, event_id) is the real candidate identity key, not bare
+    player_id — adopted from where this exact convention is already
+    established in this codebase (nfl-results.ts's own nflResultKey;
+    get_published_nfl_shelf_picks' own PARTITION BY ..., player_id,
+    event_id, writer_type), not invented fresh here. event_id = game_id,
+    the same real field this function's own caller already derives a few
+    lines below in its main loop.
+
+    SHELF-NEUTRAL INPUT, not a "representative placement": the `headline`
+    / `supporting_evidence` fed into Interrogation's own input contract
+    come from _shelf_neutral_candidate_evidence(full_row) — a function
+    that takes ONLY full_row, never a shelf name, and reads the same six
+    already-scored fields find_tension() itself reads (td_opportunity,
+    role_momentum, situation, role_trend, proven_heat, emerging_heat).
+    This is a deliberate fix for a real bug an earlier version of this
+    function had: it built `story` from _story_for_row(full_row,
+    representative_shelf), where `representative_shelf` was whichever
+    placement happened to be first-encountered while grouping — making
+    the candidate-level Interrogation call's own input depend on shelf
+    iteration order (or, with a "preferred"/sorted shelf, on which shelf
+    a fixed priority list picks — the same leak, just hidden behind
+    determinism instead of iteration order). Truth belongs to the
+    candidate; a shelf-specific story (red_zone_story / position_story /
+    odds_band_story) is placement-level editorial framing and must never
+    determine what candidate-level Interrogation is told. See this
+    module's own acceptance test (test_curate_home_shelves.py) proving
+    the same candidate produces a byte-for-byte identical Interrogation
+    input regardless of placement order.
+
+    market_data is NOT wired in this pass — every real interrogate_story()
+    call below passes market_data=None. Shaping NFL Picks' own real price/
+    book_odds fields into the shape Interrogation's system prompt expects
+    is a separate, real design decision, out of scope for this pass's own
+    ask (candidate-level calling semantics, not input completeness).
+
+    Returns {(player_id, event_id): interrogation_result | None}. A key
+    present with value None means interrogate_story() itself returned
+    None for that candidate (a real API failure, or a language-rule
+    violation that persisted after its own one retry — see that
+    function's own docstring) — a different, already-handled case from a
+    MISSING key entirely, which this function's own caller (below) must
+    treat as a loud, visible contract failure, never a silent default.
+    """
+    if not anthropic_api_key:
+        # No key -- the same "no bespoke content this run" degradation
+        # every other real LLM call in this module already has. Nothing
+        # to look up later; every placement's own fan-out lookup skips
+        # the hard-failure check in this same case (see the main loop
+        # below), matching this early return exactly.
+        return {}
+
+    candidates = capped_assignments[~capped_assignments["capped"]]
+    candidate_keys = set()
+    for _, r in candidates.iterrows():
+        full_row = weekly_lookup.get(r["player_id"])
+        if full_row is None:
+            continue
+        candidate_keys.add((r["player_id"], full_row.get("game_id")))
+
+    print(
+        f"[shape_content_draft_rows] interrogating {len(candidate_keys)} unique "
+        f"(player_id, event_id) candidates, derived from {len(candidates)} real placements "
+        f"({len(candidates) - len(candidate_keys)} placement(s) share a candidate "
+        f"already covered by another placement's interrogation call)",
+        flush=True,
+    )
+
+    results = {}
+    for key in candidate_keys:
+        player_id, event_id = key
+        full_row = weekly_lookup.get(player_id)
+        headline, supporting_evidence = _shelf_neutral_candidate_evidence(full_row)
+        story_input = {
+            "intelligence_family": "nfl_picks",
+            "entity": {
+                "type": "player",
+                "player_id": player_id,
+                "player_name": full_row.get("player_name") if full_row is not None else None,
+            },
+            "headline": headline,
+            "hero_metric": None,
+            "time_window": None,
+            "sample_size": None,
+            "supporting_evidence": supporting_evidence,
+            "related_players": [],
+        }
+        try:
+            result = interrogate_story(story_input, anthropic_api_key, prior_history=None, market_data=None)
+        except Exception as e:
+            print(
+                f"[shape_content_draft_rows] interrogate_story raised for {key!r}: {e!r} — "
+                f"recording None for this candidate, not defaulting to a passed-scrutiny result",
+                flush=True,
+            )
+            result = None
+        results[key] = result
+
+    return results
+
+
 def shape_content_draft_rows(
     capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int,
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
@@ -989,6 +1169,16 @@ def shape_content_draft_rows(
         weekly_lookup = {row["player_id"]: row for _, row in prepped.iterrows()}
     history_lookup = add_td_opportunity_history_lookup(history_weekly)
 
+    # Candidate-level Interrogation — ONE call per (player_id, event_id),
+    # before any per-placement processing below, not one call per shelf
+    # placement. See _interrogate_unique_candidates' own docstring for
+    # the full reasoning. Tension (find_tension, inside generate_nfl_
+    # shelf_card_draft below) is UNCHANGED — still runs once per
+    # placement, with its own per-shelf lens, exactly as it does today;
+    # this dict only makes the shared candidate-level result reachable
+    # at that call site, it does not change what Tension does with it.
+    interrogation_by_candidate = _interrogate_unique_candidates(capped_assignments, weekly_lookup, anthropic_api_key)
+
     rows = []
     # REAL CROSS-BATCH VARIETY STATE (NFL Content Generation V1, Part 1)
     # -- grown across EVERY row in this one curation run, Tasty Six and
@@ -1020,6 +1210,30 @@ def shape_content_draft_rows(
             ku = full_row.get("kickoff_utc")
             if pd.notna(ku) and hasattr(ku, "isoformat"):
                 kickoff_utc = ku.isoformat()
+
+        # Candidate-level Interrogation fan-out -- O(1) lookup of the
+        # ONE shared result this placement's candidate already got from
+        # _interrogate_unique_candidates above, never recomputed here.
+        # A missing key (full_row real, a key was expected, anthropic_
+        # api_key was provided, but the dict has no entry) is a real
+        # contract failure -- logged loudly, never silently treated as
+        # if this candidate passed scrutiny. Not consumed by anything
+        # below yet (plumbing only, per this pass's own scope) -- kept
+        # on the row for a later pass to actually wire into Tension.
+        interrogation_result = None
+        if full_row is not None and anthropic_api_key:
+            interrogation_key = (r["player_id"], event_id)
+            if interrogation_key not in interrogation_by_candidate:
+                print(
+                    f"[shape_content_draft_rows] CONTRACT FAILURE: no interrogation_result for "
+                    f"{interrogation_key!r} on shelf {r['home_shelf']!r} -- every placement with a "
+                    f"real full_row must have a candidate-level interrogation entry when "
+                    f"anthropic_api_key is provided. Proceeding with interrogation_result=None for "
+                    f"this placement only; NOT defaulting to a passed-scrutiny result.",
+                    flush=True,
+                )
+            else:
+                interrogation_result = interrogation_by_candidate[interrogation_key]
 
         title = editorial_sentence = None
         # Editorial Voice Spec, "Find the Tension" addition -- the real
@@ -1135,6 +1349,7 @@ def shape_content_draft_rows(
                     draft = generate_nfl_shelf_card_draft(
                         full_row.to_dict(), r["home_shelf"], confidence_band, anthropic_api_key,
                         avoid_headlines=generated_titles, avoid_opening_phrases=generated_opening_phrases,
+                        interrogation_result=interrogation_result,
                     )
                 except Exception as e:
                     print(
