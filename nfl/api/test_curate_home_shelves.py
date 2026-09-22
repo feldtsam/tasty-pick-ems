@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 import curate_home_shelves as chs
+import generate_nfl_shelf_card_content as gnscc
 from curate_home_shelves import (
     CONFIG,
     ODDS_SHELVES,
@@ -750,9 +751,9 @@ if __name__ == "__main__":
         "has a real, large relationship vs. which is flat/convergent -- reimplementation validated "
         "against the real function it mirrors, not just self-consistent",
         chs._candidate_best_gap(pd.Series(gap_case_divergence)) >= GAP_THRESHOLD
-        and find_tension(gap_case_divergence)["type"] == "divergence"
+        and find_tension(gap_case_divergence)["tension_type"] == "divergence"
         and chs._candidate_best_gap(pd.Series(gap_case_flat)) < GAP_THRESHOLD
-        and find_tension(gap_case_flat)["type"] == "convergence",
+        and find_tension(gap_case_flat)["tension_type"] == "convergence",
     ))
     results.append(check(
         "_candidate_best_gap: missing full_row / all-missing signals is an honest 0.0, never a crash or a guess",
@@ -993,6 +994,235 @@ if __name__ == "__main__":
     results.append(check(
         "Pass 4: the concurrency bound was never EXCEEDED at any point during execution",
         in_flight_counters["max"] <= 3,
+    ))
+
+    # ============================================================
+    # signal_verdict integration -- the STOP gate, real end-to-end
+    # through shape_content_draft_rows (not a unit test of find_tension()
+    # in isolation -- that's content_writer/test_nfl_tension.py's job).
+    # A gated-out (FAILS/UNRESOLVED) candidate's placement must get NO
+    # row at all: not written, not a deterministic-template fallback
+    # either, and no backfill/promotion of a replacement candidate.
+    # ============================================================
+    gate_rows = sub[sub["tpe_score"].notna() & sub["position_group"].notna()].head(4).copy().reset_index(drop=True)
+    gate_rows["consensus_price_american"] = 900
+    gate_rows["td_opportunity_completeness"] = 0.0
+    gate_rows["role_momentum_completeness"] = 0.0
+    gate_rows["tpe_score"] = [80.0, 79.0, 78.0, 77.0]
+    gate_home = assign_home_shelves(gate_rows)
+    gate_capped = apply_shelf_cap(gate_home, CONFIG)
+    gate_on_shelf = gate_capped[(gate_capped["home_shelf"] == "ATTD +700+") & (~gate_capped["capped"])]
+    results.append(check(
+        "signal_verdict STOP-gate setup: all 4 real candidates land on ATTD +700+, a real test population",
+        len(gate_on_shelf) == 4,
+    ))
+    gate_player_ids = list(gate_on_shelf["player_id"])
+    GATED_IDS = set(gate_player_ids[:2])      # one FAILS, one UNRESOLVED
+    SURVIVING_IDS = set(gate_player_ids[2:])  # SURVIVES, all-WEAKENED -> discovery
+
+    def fake_interrogate_story_gate(story_input, api_key, prior_history=None, market_data=None):
+        pid = story_input["entity"]["player_id"]
+        if pid in GATED_IDS:
+            verdict = "FAILS" if pid == gate_player_ids[0] else "UNRESOLVED"
+            return {"signal_verdict": verdict, "challenge": {"alternate_explanations": []}}
+        return {"signal_verdict": "SURVIVES", "challenge": {"alternate_explanations": [{"status": "WEAKENED"}]}}
+
+    def fake_call_claude_for_gate(api_key, system_prompt, user_prompt):
+        return {
+            "title": "Gate Test Title",
+            "story": "A short, plain story about this week's role, written without any banned phrasing at all.",
+            "why_reasons": [{"pillar": "market_value", "stars": 3, "reason_text": "Consensus price reflects real market interest.", "source_fact_keys": []}],
+        }
+
+    orig_interrogate_gate = chs.interrogate_story
+    orig_call_claude_gate = gnscc.call_claude_for_nfl_shelf_card
+    chs.interrogate_story = fake_interrogate_story_gate
+    gnscc.call_claude_for_nfl_shelf_card = fake_call_claude_for_gate
+    try:
+        gate_config = dict(CONFIG)
+        # Select ALL 4 candidates -- isolates the STOP gate from Pass 3's
+        # own, separately-tested selection gate (which would otherwise
+        # drop one of the 4 from being interrogated at all, muddying
+        # this test's own real question: does a real SURVIVES/FAILS/
+        # UNRESOLVED outcome control row presence correctly).
+        gate_config["interrogation_top_pct_per_price_band"] = 1.0
+        stdout_gate = io.StringIO()
+        with redirect_stdout(stdout_gate):
+            gate_result = chs.shape_content_draft_rows(
+                gate_capped, {}, 2026, 1, weekly=gate_rows, anthropic_api_key="fake-key", config=gate_config,
+            )
+    finally:
+        chs.interrogate_story = orig_interrogate_gate
+        gnscc.call_claude_for_nfl_shelf_card = orig_call_claude_gate
+    gate_log = stdout_gate.getvalue()
+
+    gate_written_ids = {r["player_id"] for r in gate_result["rows"]}
+    results.append(check(
+        "STOP gate end-to-end: FAILS/UNRESOLVED candidates get NO row at all -- not written, "
+        "not a deterministic fallback either",
+        GATED_IDS.isdisjoint(gate_written_ids),
+    ))
+    results.append(check(
+        "STOP gate end-to-end: SURVIVES candidates still get their real row, unaffected by the "
+        "other two being gated out in the same batch",
+        SURVIVING_IDS.issubset(gate_written_ids),
+    ))
+    results.append(check(
+        "STOP gate end-to-end: exactly 2 rows written from 4 real candidates -- 2 gated out, no "
+        "backfill/promotion of a replacement candidate to fill the gap",
+        len(gate_result["rows"]) == 2,
+    ))
+    results.append(check(
+        "STOP gate end-to-end: the skip is logged loudly with the real signal_verdict that caused "
+        "it, for both FAILS and UNRESOLVED -- never a silent gap",
+        gate_log.count("SKIPPING row") == 2 and "FAILS" in gate_log and "UNRESOLVED" in gate_log,
+    ))
+
+    # ============================================================
+    # Input-completeness fix: _market_data_for_candidate and
+    # _evidentiary_basis_readings -- the real fix for the real 36/36
+    # UNRESOLVED finding.
+    # ============================================================
+    price_rows = [
+        {"player_id": "P1", "poll_timestamp": "2026-09-10T12:00:00Z", "consensus_price_american": 700},
+        {"player_id": "P1", "poll_timestamp": "2026-09-10T14:00:00Z", "consensus_price_american": 700},  # repeat, no real movement
+        {"player_id": "P1", "poll_timestamp": "2026-09-15T12:00:00Z", "consensus_price_american": 550},
+        {"player_id": "P1", "poll_timestamp": "2026-09-17T23:00:00Z", "consensus_price_american": -120},
+    ]
+    md = chs._market_data_for_candidate(price_rows)
+    results.append(check(
+        "_market_data_for_candidate: current_attd_odds is the most RECENT real price, correctly signed",
+        md["current_attd_odds"] == "-120",
+    ))
+    results.append(check(
+        "_market_data_for_candidate: odds_history collapses repeated-identical-price polls to real DISTINCT "
+        "checkpoints only (4 raw polls, 3 real price changes -> 3 entries, not 4)",
+        len(md["odds_history"]) == 3 and [h["odds"] for h in md["odds_history"]] == ["+700", "+550", "-120"],
+    ))
+    results.append(check(
+        "_market_data_for_candidate: honest None for no rows / no real price+timestamp data",
+        chs._market_data_for_candidate([]) is None and chs._market_data_for_candidate(None) is None,
+    ))
+    many_checkpoints = [
+        {"player_id": "P2", "poll_timestamp": f"2026-09-{10+i:02d}T12:00:00Z", "consensus_price_american": 500 + i * 10}
+        for i in range(8)
+    ]
+    md2 = chs._market_data_for_candidate(many_checkpoints, max_checkpoints=5)
+    results.append(check(
+        "_market_data_for_candidate: caps odds_history at max_checkpoints, keeping the MOST RECENT ones",
+        len(md2["odds_history"]) == 5 and md2["odds_history"][0]["odds"] == "+530" and md2["odds_history"][-1]["odds"] == "+570",
+    ))
+
+    # Noise-reduction fix: same-day/same-few-hours churn (real examples
+    # from a real measurement showed swings like +190->+196->+537->
+    # +1000->+3000 within ~4 hours) must collapse to the single most
+    # recent value within that window, while genuinely day-separated
+    # real movement still survives as its own checkpoint.
+    noisy_then_real = [
+        {"player_id": "P3", "poll_timestamp": "2026-09-18T12:00:00+00:00", "consensus_price_american": 300},
+        # same-day churn, a few hours apart -- should collapse away
+        {"player_id": "P3", "poll_timestamp": "2026-09-19T10:00:00+00:00", "consensus_price_american": 190},
+        {"player_id": "P3", "poll_timestamp": "2026-09-19T12:00:00+00:00", "consensus_price_american": 196},
+        {"player_id": "P3", "poll_timestamp": "2026-09-19T14:00:00+00:00", "consensus_price_american": 537},
+        {"player_id": "P3", "poll_timestamp": "2026-09-19T16:00:00+00:00", "consensus_price_american": 1000},
+        {"player_id": "P3", "poll_timestamp": "2026-09-19T18:00:00+00:00", "consensus_price_american": 3000},
+        # genuinely the next day -- a real, separated checkpoint
+        {"player_id": "P3", "poll_timestamp": "2026-09-20T18:00:00+00:00", "consensus_price_american": 250},
+    ]
+    md3 = chs._market_data_for_candidate(noisy_then_real)
+    results.append(check(
+        "_market_data_for_candidate noise fix: same-day churn (5 raw price changes within ~8 hours on 9/19) "
+        "collapses to a single checkpoint (the last one before the next real gap), not 5 separate 'moves' -- "
+        "3 real checkpoints survive total: the 9/18 starting price, the collapsed 9/19 churn, and the 9/20 move",
+        len(md3["odds_history"]) == 3,
+    ))
+    results.append(check(
+        "_market_data_for_candidate noise fix: the surviving mid-churn checkpoint is the LAST same-day value "
+        "(+3000, the most current information from that day) -- not any of the 4 earlier same-day blips -- "
+        "and the next-day real move survives as its own entry",
+        [h["odds"] for h in md3["odds_history"]] == ["+300", "+3000", "+250"],
+    ))
+    results.append(check(
+        "_market_data_for_candidate noise fix: current_attd_odds is still always the single most recent real poll",
+        md3["current_attd_odds"] == "+250",
+    ))
+    # A malformed/unparseable timestamp degrades to an honest inclusion, never a crash.
+    md4 = chs._market_data_for_candidate([
+        {"player_id": "P4", "poll_timestamp": "not-a-real-timestamp", "consensus_price_american": 100},
+        {"player_id": "P4", "poll_timestamp": "2026-09-20T18:00:00+00:00", "consensus_price_american": 150},
+    ])
+    results.append(check(
+        "_market_data_for_candidate: an unparseable timestamp is kept as its own checkpoint, not dropped or crashed on",
+        md4 is not None and len(md4["odds_history"]) == 2,
+    ))
+
+    evidentiary_row = pd.Series({
+        "evidence_quality": 62.0, "td_opportunity_completeness": 30.0, "role_momentum_completeness": 100.0,
+        "situation_completeness": None, "defensive_matchup_completeness": float("nan"),
+    })
+    readings = chs._evidentiary_basis_readings(evidentiary_row)
+    results.append(check(
+        "_evidentiary_basis_readings: real present fields are read; missing/NaN fields are honestly dropped, "
+        "never guessed",
+        len(readings) == 3
+        and any("evidence quality: 62%" in r for r in readings)
+        and any("TD opportunity completeness: 30%" in r for r in readings)
+        and not any("situation" in r.lower() for r in readings),
+    ))
+    results.append(check(
+        "_evidentiary_basis_readings: honest empty list (not None) for a missing full_row -- always safe to extend",
+        chs._evidentiary_basis_readings(None) == [],
+    ))
+    headline, supp = chs._shelf_neutral_candidate_evidence(pd.Series({
+        "td_opportunity": 50.0, "role_momentum": 50.0, "situation": 50.0, "role_trend": 50.0,
+        "proven_heat": 50.0, "emerging_heat": 50.0, "evidence_quality": 80.0,
+    }))
+    results.append(check(
+        "_shelf_neutral_candidate_evidence: evidentiary-basis readings are appended onto supporting_evidence "
+        "alongside the six real signal readings, not replacing them",
+        len(supp) == 7 and any("evidence quality" in s for s in supp),
+    ))
+
+    # ============================================================
+    # Missing-signal_verdict edge case: a real, well-formed response
+    # (challenge/confirmation/judgment all present) with signal_verdict
+    # itself absent must NOT resolve to "complete" -- it's a response
+    # gap, the same real-attempt-no-usable-outcome case a None result
+    # already is, and must resolve to "failed" after retries exhaust,
+    # never silent legacy fallthrough.
+    # ============================================================
+    well_formed_no_verdict = {
+        "challenge": {"alternate_explanations": []},
+        "confirmation": {"supporting_signals": "x", "contradicting_signals": "y", "market_reaction": "z"},
+        "judgment": {"what_we_know": "a", "what_we_dont_know": "b", "evidence_significance": "c"},
+        "signal_verdict": None,
+    }
+    call_count = {"n": 0}
+
+    def fake_interrogate_story_missing_verdict(story_input, api_key, prior_history=None, market_data=None):
+        call_count["n"] += 1
+        return well_formed_no_verdict
+
+    orig_interrogate_mv = chs.interrogate_story
+    orig_sleep_mv = chs.time.sleep
+    chs.interrogate_story = fake_interrogate_story_missing_verdict
+    chs.time.sleep = lambda _seconds: None  # keep the retry loop fast, not the retry COUNT
+    try:
+        outcome = chs._interrogate_one_candidate(("MV_TEST", "ev"), {}, "fake-key")
+    finally:
+        chs.interrogate_story = orig_interrogate_mv
+        chs.time.sleep = orig_sleep_mv
+
+    results.append(check(
+        "missing-signal_verdict: a real, well-formed response with signal_verdict absent resolves to "
+        "'failed', not 'complete' -- never falls silently through to legacy-tier treatment as if "
+        "Interrogation ran meaningfully",
+        outcome == {"interrogation_status": "failed", "result": None},
+    ))
+    results.append(check(
+        "missing-signal_verdict: this went through the SAME retry path as a None result (2 retries + the "
+        "original attempt = 3 real calls), not special-cased into an immediate failure",
+        call_count["n"] == 3,
     ))
 
     print()

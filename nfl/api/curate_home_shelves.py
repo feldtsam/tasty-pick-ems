@@ -106,6 +106,7 @@ import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 
 # nfl/ itself, so `from shelves import ...` resolves regardless of
@@ -130,7 +131,7 @@ from story_interrogation import interrogate_story
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
 from generate_tasty_six_content import generate_nfl_tasty_six_draft  # noqa: E402
-from generate_nfl_shelf_card_content import generate_nfl_shelf_card_draft  # noqa: E402
+from generate_nfl_shelf_card_content import CandidateGatedOut, generate_nfl_shelf_card_draft  # noqa: E402
 from nfl_writer_common import nfl_confidence_band_for_score, nfl_regular_row_confidence_band_for_score  # noqa: E402
 
 SHELF_ORDER = [
@@ -929,7 +930,173 @@ def _shelf_neutral_candidate_evidence(full_row) -> tuple[str | None, list[str] |
         f"{label} {value:.1f}/100" for label, value in readings
     ) + "."
     supporting_evidence = [f"{label}: {value:.1f}/100" for label, value in readings]
+    supporting_evidence.extend(_evidentiary_basis_readings(full_row))
     return headline, supporting_evidence
+
+
+# Real fields find_tension() itself already reads from the SAME full_row
+# (_evidence_strength/_uncertainty_note in nfl_tension.py) -- already
+# present on the real weekly DataFrame in production (build_nfl_writer_
+# candidate() is a straight `dict(row)`, confirmed by reading it; no new
+# RPC needed for THIS field to reach here). Absent from the narrow
+# get_nfl_current_week_candidates RPC used for this session's own funnel
+# MEASUREMENT work (a real, separate finding, documented in Pass 3) --
+# that gap is in the measurement harness's own data source, not in what
+# full_row actually carries during a real curation run.
+_EVIDENTIARY_BASIS_LABELS = (
+    ("evidence_quality", "evidence quality"),
+    ("td_opportunity_completeness", "TD opportunity completeness"),
+    ("role_momentum_completeness", "role momentum completeness"),
+    ("situation_completeness", "situation completeness"),
+    ("defensive_matchup_completeness", "defensive matchup completeness"),
+)
+
+
+def _evidentiary_basis_readings(full_row) -> list:
+    """
+    Real evidence_quality/completeness readings from full_row, formatted
+    as additional supporting_evidence entries -- closes a real,
+    measured gap: a real 36-candidate sample of Interrogation calls
+    built WITHOUT this (and without market_data/prior_history) came back
+    36/36 UNRESOLVED, because the input gave the model nothing to judge
+    how much basis the six scored signals actually stand on. This
+    doesn't fabricate a "sample_size" (no real games-played-style count
+    field exists on full_row) -- it gives Interrogation the real,
+    already-computed confidence/completeness numbers behind the six
+    signals themselves, the same honest substitute this pipeline's own
+    "sample_size / evidentiary basis" framing calls for. Missing/NaN
+    fields dropped, same honest-gap convention as the six signal
+    readings above. Returns [] (not None) when full_row is None or
+    nothing survives -- always safe to .extend() onto an existing list.
+    """
+    if full_row is None:
+        return []
+    readings = []
+    for key, label in _EVIDENTIARY_BASIS_LABELS:
+        value = full_row.get(key)
+        if value is None:
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if value != value:  # NaN
+            continue
+        readings.append(f"{label}: {value:.0f}% (how much basis this week's scored signals actually stand on)")
+    return readings
+
+
+_MARKET_DATA_MIN_CHECKPOINT_GAP_HOURS = 24.0
+
+
+def _market_data_for_candidate(price_history_rows: list, max_checkpoints: int = 5) -> dict | None:
+    """
+    Reduces one candidate's REAL nfl_price_history poll rows (market_
+    value.read_price_history()'s own unreduced row shape -- player_id/
+    poll_timestamp/consensus_price_american, already a real, live,
+    established data source in this pipeline, not a new one) into the
+    market_data shape interrogate_story()'s own input contract expects:
+    {"current_attd_odds": str, "odds_history": [{"timestamp": str,
+    "odds": str}, ...]}.
+
+    current_attd_odds: the single most RECENT real poll's price
+    (max poll_timestamp), formatted with an explicit sign ("+450"/"-150"
+    -- consensus_price_american itself is a plain int, per market_value.
+    py's own snapshot_scoring_inputs()).
+
+    odds_history: real checkpoints, NOISE-FILTERED, not every raw poll
+    or every raw price change. Two real problems, confirmed against a
+    real 36-candidate measurement, not assumed:
+      1. Most polls repeat the same price (multiple polls/day with no
+         real movement) -- burying the real signal (does the price
+         actually move) without adding information. Collapsed by
+         de-duplicating consecutive identical prices, same as before.
+      2. That de-duplication ALONE still let same-day/same-few-hours
+         churn through as if it were meaningful movement -- real
+         examples from that measurement showed swings like +190 ->
+         +196 -> +537 -> +1000 -> +3000 within ~4 hours on a single
+         day, which reads as thin-liquidity noise from a still-settling
+         early market, not genuine market disagreement, and was a real,
+         confirmed driver of an inflated FAILS rate once this function
+         started feeding Interrogation real market_data.
+
+    Fix for (2): a MINIMUM ELAPSED TIME between any two INCLUDED
+    checkpoints (_MARKET_DATA_MIN_CHECKPOINT_GAP_HOURS = 24h). Walked
+    backward from the current (most recent) price -- always kept -- and
+    each earlier checkpoint is only included once it's at least the
+    threshold BEFORE the previously-included (more recent) one; anything
+    closer than that in real elapsed time is treated as the same
+    observation and dropped, not averaged or specially reinterpreted.
+    24h, not a shorter window, because the real polling cadence in this
+    data is itself sub-daily (multiple real polls per day, confirmed
+    directly against real cached data) -- a same-day gap is exactly the
+    noise case (1) already exists to filter within a single price level,
+    just not across DIFFERENT price levels reached the same day. A full
+    day is the smallest gap that reliably separates "the market moved
+    and held" from "the market wobbled for a few hours."
+
+    Capped at the most recent `max_checkpoints` checkpoints AFTER this
+    filtering, oldest-first, current price last -- still favors recent
+    (now genuinely separated) movement over the full multi-week history,
+    since "did the market react" is a near-term question.
+
+    Returns None for no rows / nothing with a real player_id+price+
+    timestamp -- honest absence, matching this function's own caller's
+    existing "no market_data provided" default, never a fabricated
+    price.
+    """
+    if not price_history_rows:
+        return None
+    real_rows = [
+        r for r in price_history_rows
+        if r.get("poll_timestamp") and r.get("consensus_price_american") is not None
+    ]
+    if not real_rows:
+        return None
+    real_rows.sort(key=lambda r: r["poll_timestamp"])
+
+    def _fmt(price) -> str:
+        price = int(price)
+        return f"+{price}" if price >= 0 else str(price)
+
+    def _parse_ts(ts: str):
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+
+    distinct = []
+    for r in real_rows:
+        price = r["consensus_price_american"]
+        if not distinct or distinct[-1][1] != price:
+            distinct.append((r["poll_timestamp"], price))
+
+    # Noise filter: walk backward from the most recent distinct price,
+    # keeping an earlier one only once it's genuinely >= the minimum gap
+    # before the last KEPT checkpoint. A timestamp that fails to parse
+    # is kept as its own checkpoint rather than silently dropped or
+    # crashing -- honest inclusion of real, if malformed, data over a
+    # guess at its real age.
+    filtered = [distinct[-1]]
+    last_kept_ts = _parse_ts(distinct[-1][0])
+    for ts, price in reversed(distinct[:-1]):
+        parsed = _parse_ts(ts)
+        if last_kept_ts is None or parsed is None:
+            filtered.append((ts, price))
+            last_kept_ts = parsed
+            continue
+        gap_hours = (last_kept_ts - parsed).total_seconds() / 3600.0
+        if gap_hours >= _MARKET_DATA_MIN_CHECKPOINT_GAP_HOURS:
+            filtered.append((ts, price))
+            last_kept_ts = parsed
+    filtered.reverse()
+
+    checkpoints = filtered[-max_checkpoints:]
+
+    return {
+        "current_attd_odds": _fmt(checkpoints[-1][1]),
+        "odds_history": [{"timestamp": ts, "odds": _fmt(price)} for ts, price in checkpoints],
+    }
 
 
 def _real(value) -> float | None:
@@ -1073,6 +1240,7 @@ def _select_candidates_for_interrogation(candidate_rows: list, top_pct: float) -
 def _interrogate_one_candidate(
     key: tuple, weekly_lookup: dict, anthropic_api_key: str,
     max_retries: int = 2, retry_backoff_seconds: float = 1.0,
+    price_history_by_player: dict = None,
 ) -> dict:
     """
     Runs ONE candidate's Interrogation call in isolation -- the unit of
@@ -1105,10 +1273,21 @@ def _interrogate_one_candidate(
     before this pass. This candidate's own failure never crashes the
     batch and never leaves its key unset; the caller always gets a real
     dict back for every key it submits.
+
+    price_history_by_player: {player_id: [real nfl_price_history row,
+    ...]}, optional. Reduced via _market_data_for_candidate() into this
+    candidate's own real market_data -- see _interrogate_unique_
+    candidates' own docstring for why this exists (a real, measured
+    input-starvation finding, not a speculative enrichment) and what's
+    still NOT wired (a live per-request fetch in api/index.py). None by
+    default -- market_data stays None, same as before this existed.
     """
     player_id, event_id = key
     full_row = weekly_lookup.get(player_id)
     headline, supporting_evidence = _shelf_neutral_candidate_evidence(full_row)
+    market_data = None
+    if price_history_by_player is not None:
+        market_data = _market_data_for_candidate(price_history_by_player.get(player_id))
     story_input = {
         "intelligence_family": "nfl_picks",
         "entity": {
@@ -1128,7 +1307,7 @@ def _interrogate_one_candidate(
     backoff = retry_backoff_seconds
     while True:
         try:
-            result = interrogate_story(story_input, anthropic_api_key, prior_history=None, market_data=None)
+            result = interrogate_story(story_input, anthropic_api_key, prior_history=None, market_data=market_data)
         except Exception as e:
             print(
                 f"[shape_content_draft_rows] interrogate_story raised for {key!r} "
@@ -1137,15 +1316,34 @@ def _interrogate_one_candidate(
             )
             result = None
 
-        if result is not None:
+        # A real, well-formed result with signal_verdict itself absent
+        # (confirmed live: 2 of 36 real calls in one measurement session
+        # -- challenge/confirmation/judgment all present, signal_verdict
+        # missing from the model's own tool-call response despite being
+        # schema-required) is NOT a usable "complete" result -- it's a
+        # response gap, the same real-attempt-no-usable-outcome case a
+        # None result already is. Treating it as "complete" would let it
+        # silently fall through the STOP gate into legacy-tier treatment
+        # as if Interrogation ran meaningfully, when it didn't produce
+        # the one field the gate actually depends on. Retried the same
+        # as a None result, not given special-case handling.
+        if result is not None and result.get("signal_verdict"):
             return {"interrogation_status": "complete", "result": result}
 
         if attempt >= max_retries:
-            print(
-                f"[shape_content_draft_rows] {key!r} exhausted {max_retries} retries with no usable "
-                f"result -- recording a 'failed' status, not defaulting to a passed-scrutiny result",
-                flush=True,
-            )
+            if result is not None:
+                print(
+                    f"[shape_content_draft_rows] {key!r} got a real response with signal_verdict missing "
+                    f"after {max_retries} retries -- recording a 'failed' status, not silent legacy "
+                    f"fallthrough and not defaulting to a passed-scrutiny result",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[shape_content_draft_rows] {key!r} exhausted {max_retries} retries with no usable "
+                    f"result -- recording a 'failed' status, not defaulting to a passed-scrutiny result",
+                    flush=True,
+                )
             return {"interrogation_status": "failed", "result": None}
 
         attempt += 1
@@ -1155,6 +1353,7 @@ def _interrogate_one_candidate(
 
 def _interrogate_unique_candidates(
     capped_assignments: pd.DataFrame, weekly_lookup: dict, anthropic_api_key: str = None, config: dict = CONFIG,
+    price_history_by_player: dict = None,
 ) -> dict:
     """
     Candidate-level Interrogation — called ONCE per (player_id, event_id),
@@ -1205,11 +1404,33 @@ def _interrogate_unique_candidates(
     the same candidate produces a byte-for-byte identical Interrogation
     input regardless of placement order.
 
-    market_data is NOT wired in this pass — every real interrogate_story()
-    call below passes market_data=None. Shaping NFL Picks' own real price/
-    book_odds fields into the shape Interrogation's system prompt expects
-    is a separate, real design decision, out of scope for this pass's own
-    ask (candidate-level calling semantics, not input completeness).
+    INPUT-COMPLETENESS FIX (real, measured): a real 36-candidate sample
+    of Interrogation calls built with market_data/prior_history=None and
+    no evidentiary-basis context came back 36/36 UNRESOLVED, regardless
+    of tension_type or price band -- not a gate-tuning problem, a real
+    input-starvation bug (see story_interrogation.py's own docstring for
+    why: SURVIVES/FAILS both require real independent evidence the input
+    simply never supplied). Two real fixes, both wired here:
+      - _evidentiary_basis_readings() (inside _shelf_neutral_candidate_
+        evidence itself) adds real evidence_quality/completeness
+        readings to supporting_evidence -- already present on full_row
+        in a real curation run (find_tension() already reads them from
+        the same row), no new data source needed for this one.
+      - _market_data_for_candidate() reduces price_history_by_player's
+        real per-player nfl_price_history rows (market_value.
+        read_price_history()'s own established, live RPC) into
+        interrogate_story()'s expected market_data shape.
+    price_history_by_player: {player_id: [real price-history row, ...]}
+    -- optional, defaults to None (matches this module's own convention
+    for every other optional enrichment: absence degrades honestly, no
+    crash, no fabrication). NOT YET wired to a live per-request fetch
+    inside api/index.py -- that's the one real remaining integration
+    step; this function is ready for it, correctly no-ops without it.
+    prior_history stays None: the only real "prior" data available here
+    is price history, already captured under market_data's own
+    odds_history -- populating both with the same underlying data would
+    be redundant, not a second real source, so prior_history is left
+    honestly unpopulated rather than duplicated for its own sake.
 
     OPEN QUESTION, NOT RESOLVED, CONFIRMED DORMANT — shelves_to_process
     (api/index.py) can split ONE logical curation run across two
@@ -1263,12 +1484,21 @@ def _interrogate_unique_candidates(
         `signal_verdict` must stay genuinely absent, never defaulted or
         fabricated.
       - "failed": the candidate WAS selected and interrogate_story() was
-        called, but it returned None on every attempt -- its own one
-        internal content-rule retry, PLUS Pass 4's own bounded blind
-        retry at the dispatch layer (see _interrogate_one_candidate) for
-        a real API/network failure. result is None. Distinct from
-        "not_selected": an attempt (several, in fact) genuinely happened
-        and did not produce a usable result.
+        called, but never produced a usable result on any attempt --
+        either it returned None every time (its own one internal
+        content-rule retry, PLUS Pass 4's own bounded blind retry at the
+        dispatch layer for a real API/network failure -- see
+        _interrogate_one_candidate), OR it returned a real, well-formed
+        result with signal_verdict itself absent (confirmed live: a real
+        response can have challenge/confirmation/judgment all present
+        with signal_verdict missing despite being schema-required --
+        also retried, same as a None result, and also resolves to
+        "failed" if it never appears). result is None either way. Never
+        silently treated as "complete" just because SOME response came
+        back -- the field the STOP gate actually depends on is what
+        makes a result usable, not response presence alone. Distinct
+        from "not_selected": an attempt (several, in fact) genuinely
+        happened and did not produce a usable result.
     A key MISSING from this dict entirely (as opposed to present with
     any of the three statuses above) is a different, fourth case this
     function's own caller (below) must treat as a loud, visible contract
@@ -1334,7 +1564,10 @@ def _interrogate_unique_candidates(
         max_workers = max(1, min(config["interrogation_max_concurrency"], len(selected_keys)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_key = {
-                executor.submit(_interrogate_one_candidate, key, weekly_lookup, anthropic_api_key): key
+                executor.submit(
+                    _interrogate_one_candidate, key, weekly_lookup, anthropic_api_key,
+                    price_history_by_player=price_history_by_player,
+                ): key
                 for key in selected_keys
             }
             for future in as_completed(future_to_key):
@@ -1363,6 +1596,7 @@ def shape_content_draft_rows(
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
     history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None, config: dict = CONFIG,
     shelves_to_process: list = None, avoid_headlines: list = None, avoid_opening_phrases: list = None,
+    price_history_by_player: dict = None,
 ) -> dict:
     """
     One dict per (surviving-the-cap) player-shelf placement, shaped to
@@ -1530,6 +1764,18 @@ def shape_content_draft_rows(
     site before this parameter existed) starts both lists empty, exactly
     the original single-call behavior.
 
+    price_history_by_player: {player_id: [real nfl_price_history row,
+    ...]}, optional -- threaded straight through to _interrogate_unique_
+    candidates' own real market_data wiring (see that function's own
+    docstring for the real, measured input-starvation finding this
+    closes). None (the default, and every call site before this
+    parameter existed) leaves market_data unpopulated, unchanged from
+    before this existed. NOT fetched by this function itself -- the
+    caller owns getting real price-history rows (market_value.
+    read_price_history(), already established elsewhere in this
+    pipeline), same "caller fetches, this function only consumes"
+    convention `weekly`/`schedules`/`pbp` already follow.
+
     Returns {"rows": [...], "generated_titles": [...], "generated_
     opening_phrases": [...]} -- NOT a bare list anymore (a real, deliberate
     return-shape change from before this parameter existed; the one real
@@ -1563,7 +1809,10 @@ def shape_content_draft_rows(
     # placement, with its own per-shelf lens, exactly as it does today;
     # this dict only makes the shared candidate-level result reachable
     # at that call site, it does not change what Tension does with it.
-    interrogation_by_candidate = _interrogate_unique_candidates(capped_assignments, weekly_lookup, anthropic_api_key, config)
+    interrogation_by_candidate = _interrogate_unique_candidates(
+        capped_assignments, weekly_lookup, anthropic_api_key, config,
+        price_history_by_player=price_history_by_player,
+    )
 
     rows = []
     # REAL CROSS-BATCH VARIETY STATE (NFL Content Generation V1, Part 1)
@@ -1600,21 +1849,21 @@ def shape_content_draft_rows(
         # Candidate-level Interrogation fan-out -- O(1) lookup of the
         # ONE shared result this placement's candidate already got from
         # _interrogate_unique_candidates above, never recomputed here.
-        # Status-aware, per that function's own three-state contract:
-        # only "complete" ever produces a real interrogation_result --
-        # "not_selected" (Pass 3's capacity gate chose not to interrogate
-        # this candidate this run) and "failed" (it was selected, but
-        # interrogate_story() didn't produce a usable result) both stay
-        # None here, on purpose, same as each other from this
-        # placement's own point of view: neither is a signal_verdict,
-        # and NEITHER may be defaulted or fabricated into one. A key
-        # MISSING entirely (full_row real, a key was expected, anthropic_
-        # api_key was provided, but the dict has no entry at all -- not
-        # even a "not_selected"/"failed" status) is the real, fourth,
-        # loudly-logged case: a genuine contract failure, never silently
-        # treated as if this candidate passed scrutiny. Not consumed by
-        # anything below yet (plumbing only, per Pass 2's own scope) --
-        # kept on the row for a later pass to actually wire into Tension.
+        # interrogation_result is the FULL three-state wrapper dict
+        # ({"interrogation_status": ..., "result": ...}), not just its
+        # "result" unwrapped -- find_tension() itself (see nfl_tension.py's
+        # own _interrogation_status_for) needs the status tag to tell
+        # "not_selected"/"failed" apart from "complete", and to tell all
+        # three apart from a placement with no interrogation_result at
+        # all. Passed straight through for every real status; "complete"
+        # carries a real signal_verdict, "not_selected"/"failed" carry
+        # result=None but a real, distinct status label -- neither is a
+        # signal_verdict, and NEITHER may be defaulted or fabricated into
+        # one. A key MISSING entirely (full_row real, a key was expected,
+        # anthropic_api_key was provided, but the dict has no entry at
+        # all -- not even a "not_selected"/"failed" status) is the real,
+        # fourth, loudly-logged case: a genuine contract failure, never
+        # silently treated as if this candidate passed scrutiny.
         interrogation_result = None
         if full_row is not None and anthropic_api_key:
             interrogation_key = (r["player_id"], event_id)
@@ -1629,14 +1878,7 @@ def shape_content_draft_rows(
                     flush=True,
                 )
             else:
-                entry = interrogation_by_candidate[interrogation_key]
-                if entry["interrogation_status"] == "complete":
-                    interrogation_result = entry["result"]
-                # "not_selected" / "failed": interrogation_result stays
-                # None above -- a legitimate "no scrutiny performed or
-                # succeeded" state, not a contract failure, and not
-                # logged as one (both are already-handled, expected
-                # outcomes, not bugs).
+                interrogation_result = interrogation_by_candidate[interrogation_key]
 
         title = editorial_sentence = None
         # Editorial Voice Spec, "Find the Tension" addition -- the real
@@ -1754,6 +1996,26 @@ def shape_content_draft_rows(
                         avoid_headlines=generated_titles, avoid_opening_phrases=generated_opening_phrases,
                         interrogation_result=interrogation_result,
                     )
+                except CandidateGatedOut as e:
+                    # signal_verdict FAILS/UNRESOLVED for this candidate
+                    # (nfl_tension.find_tension's own STOP GATE) -- NOT a
+                    # generation failure to fall back from. This placement
+                    # gets no row at all: no bespoke content, no
+                    # deterministic template either. No backfill/promotion
+                    # of the next-ranked candidate to fill the gap --
+                    # explicitly out of scope for this pass; a shelf
+                    # simply displays fewer real cards when this fires.
+                    # Logged loudly so a gated-out placement is visible in
+                    # QA, never a silent gap.
+                    verdict = None
+                    if interrogation_result and interrogation_result.get("interrogation_status") == "complete":
+                        verdict = (interrogation_result.get("result") or {}).get("signal_verdict")
+                    print(
+                        f"[shape_content_draft_rows] SKIPPING row -- player_id={r['player_id']!r} "
+                        f"shelf={r['home_shelf']!r} gated out by signal_verdict={verdict!r}: {e!r}",
+                        flush=True,
+                    )
+                    continue
                 except Exception as e:
                     print(
                         f"[shape_content_draft_rows] shelf_card LLM generation failed for "
