@@ -88,6 +88,174 @@ market_data wiring or prompt changes) — reported here so it lives with
 the code it affects rather than only in conversation history, and is
 prioritized deliberately rather than discovered by accident later.
 
+PROMPT REVISION — tension-type-aware market_reaction weighting (Task 4's
+own new "WHAT KIND OF CLAIM IS ACTUALLY BEING MADE" block): a real,
+measured finding, not a speculative fix. A live 36-candidate sample (3
+measurement rounds, ruling out data noise and evidentiary-basis
+ambiguity as the cause first) found signal_verdict gating out ~92-100%
+of conclusive cases, 28 of 31 (90%) driven by genuine market-vs-
+internal-signal disagreement. Root cause: the prompt was treating
+market disagreement as uniform evidence against survival regardless of
+what the detected signal was actually claiming. For a divergence-shaped
+claim (the player's own signals vs. the market), market disagreement
+IS the claim, not a threat to it — the prior design structurally
+guaranteed these fail scrutiny by design, independent of whether the
+claimed gap was real. Task 4 now distinguishes three real claim shapes
+(market-vs-internal, cross-pillar internal split, same-signal temporal
+drift) and gives market_reaction a different, deliberate role in each —
+CONSTITUTIVE for the first, INCIDENTAL for the second, genuinely
+corroborating for the third. See this repo's own Interrogation
+semantics matrix (design doc, not code) for the full six-tension-type
+reasoning this revision is built from; nfl_tension.py's own convergence
+classification needed NO equivalent correction despite also being a
+"market constitutive" case (agreement across every signal including
+market IS convergence's own claim, so the prior uniform-weighting design
+already matched what convergence needs by coincidence) — only divergence
+and contradiction had a real mismatch between the claim being tested
+and how market evidence was being weighed.
+
+OPEN QUESTION, NOT RESOLVED — mismatch: nfl_tension.py does not (and, as
+of this writing, cannot) produce tension_type="mismatch" — real NFL
+data has no team-level offense trend distinct from an individual
+player's own signals yet, so this type has never been exercised against
+real data, in this module or in find_tension()'s own classification.
+Task 4's three claim-shape categories above do not attempt to cover it.
+If/when mismatch is ever implemented, its own claim shape (team-level
+trend vs. individual player) and market's role in it need to be worked
+out and verified against real data before being folded into this
+section — not assumed to fit one of the three existing categories by
+default.
+
+OPEN QUESTION, NOT RESOLVED — uncertainty and the STOP gate: uncertainty
+is nfl_tension.py's own reserved lowest-confidence type — by definition,
+the case where evidence is too thin to classify anything more
+confidently. Downstream, curate_home_shelves.py's STOP gate defaults to
+gating out any candidate whose signal_verdict is UNRESOLVED. Since
+UNRESOLVED is close to uncertainty's own expected resting state (the
+type exists specifically for genuinely-thin-evidence cases), a blanket
+STOP-on-UNRESOLVED policy may be systematically wrong for this
+tension_type specifically — gating out nearly all uncertainty-type
+candidates isn't obviously different from never having built the type
+at all. Currently moot in production: Pass 3's own selection gate ranks
+candidates by best_gap within each price band and keeps only the top
+65%, and uncertainty (like convergence) is by construction a low-
+best_gap classification — structurally unreachable under today's
+selection parameters. Worth having on record for if/when those
+selection parameters change, not resolved here — this is a gate-design
+question (curate_home_shelves.py), not a prompt-wording one, and out of
+this revision's own scope.
+
+FIELD ADDITION — relationship_established (Task 4b), added to partially
+answer the concern the open question above raises, though NOT a full
+resolution of it: a real, hand-classified 24-case sample of live
+UNRESOLVED verdicts (the fourth measurement) found 15 of 24 (62.5%)
+were cases where the underlying relationship was clearly real in the
+raw signal magnitudes and only its explanation/durability was actually
+unresolved -- a shape structurally identical to Golden's own worked
+example, not a genuine absence-of-evidence case. Blanket STOP-on-
+UNRESOLVED was gating these out too, the same overreach the uncertainty
+open question above already flagged, just not limited to the
+uncertainty tension_type. The investigation that produced this finding
+also checked, directly against the real 24-case sample, whether the
+distinction could be recovered deterministically from what Interrogation
+already outputs -- alternate_explanations' own status pattern (uniform
+NOT_TESTABLE/UNRESOLVED, presence of SUPPORTED/WEAKENED), market_data
+presence, best_gap, and confirmation field length all showed ZERO
+reliable correlation with the real hand-classified answer (see that
+investigation's own report for the full per-signal breakdown). No
+deterministic derivation was possible without either a second LLM call
+or a brittle heuristic tuned to one 24-case sample -- relationship_
+established exists because the model's own reasoning clearly already
+knows this distinction (several real cases state it explicitly, e.g.
+"a real and testable tension... cannot be resolved" vs. "cannot be
+distinguished from noise or data artifacts") but the prior schema never
+asked for it directly, folding a real, meaningful distinction into one
+undifferentiated UNRESOLVED bucket.
+
+FIX — relationship_established/evidence_significance consistency scan
+(scan_relationship_established_for_contradiction): a real, measured
+validation of relationship_established itself (13 comparable cases from
+the fourth measurement's real 24-candidate UNRESOLVED population) found
+2 of 5 disagreements between the model's own hand-checked answer and a
+human classifier were not genuine judgment calls -- they were the
+STRUCTURED relationship_established=True field directly contradicting
+the model's OWN evidence_significance prose in the same response (e.g.
+"...too thin and internally ambiguous to treat this as an established
+shift in either direction" alongside relationship_established=True).
+This is the identical failure shape CONFIDENCE_ESCALATING_LANGUAGE and
+READER_FRAMING_LANGUAGE already exist to catch (a structured/textual
+mismatch within one response), so it gets the same treatment: a
+deterministic post-generation scan, RELATIONSHIP_NOT_ESTABLISHED_
+LANGUAGE built from the two real cases that surfaced it (not guessed at
+in the abstract), checked only when relationship_established is True,
+with the same one-shot retry already wired for the other two scans.
+
+FIX — wrong-type crash in the reshaping/scanning code (_dict_field): a
+real, once-observed, non-reproduced failure during that same validation
+session -- one live call returned challenge, confirmation, or judgment
+as a plain string instead of a dict, and neither response.get(key, {})
+nor response.get(key) or {} catches that (the key IS present, holding
+the wrong type; a non-empty string is truthy). Every real call site
+touching these three fields -- _response_string_fields, the two
+existing scans, this new third scan, and the final reshaping block --
+now goes through _dict_field, which treats a non-dict value the same as
+a missing one. Narrow and isolated: this does not attempt to guard
+every possible nested type mismatch in the response (e.g. alternate_
+explanations holding a string instead of a list is a different,
+unobserved failure shape, left alone).
+
+OPEN QUESTION, DOCUMENTED NOT CHASED — borderline-magnitude ambiguity
+in relationship_established: the same real validation found that
+moderate internal splits (roughly 20-30 points apart on the real 0-100
+scales -- e.g. a situation score of 22.0 against a cluster reading
+47.9-57.2) are genuinely ambiguous for this field, in a way a starker
+split (90 vs. 20) is not. This isn't only a model limitation -- re-
+reading the same real cases by hand a second time did not produce
+fully self-consistent hand-classifications at this same magnitude
+either (two cases with nearly identical ~25-28-point gaps were hand-
+classified differently on first pass). This is treated as inherent
+ambiguity in the underlying judgment call, not a defect to keep tuning
+the prompt or the scan against -- there is a real, honest boundary
+region where "is this gap real" doesn't have a single correct answer
+from the raw magnitudes alone, the same way GAP_THRESHOLD itself
+(nfl_tension.py) is a real, calibrated-not-derived cutoff rather than a
+provably correct one. Not blocking; not resolved further here.
+
+OPEN QUESTION, DOCUMENTED NOT CHASED — market/confirmation ambiguity
+bleeding into relationship_established: a SEPARATE, distinct pattern
+from the magnitude ambiguity above, found in a second, larger real
+validation round (32 real UNRESOLVED cases, a different sample than the
+one the magnitude finding came from) after the consistency-scan and
+_dict_field fixes both landed. Overall agreement with hand-
+classification rose to 29/32 (90.6%), and the specific "structured
+field contradicts its own evidence_significance prose" failure the
+consistency scan was built to catch did not recur even once in this
+round -- that fix is working. The 3 real remaining disagreements are a
+DIFFERENT, narrower issue: all 3 involved large, UNAMBIGUOUS raw-
+magnitude splits (55-63 points apart -- e.g. situation 70.9 vs.
+season-long heat 7.6), not borderline ones, yet the model answered
+relationship_established=False. Reading its own reasoning in these
+cases directly, the pattern is not self-contradiction (the consistency
+scan correctly found nothing to flag) but a wrong CRITERION -- e.g. one
+case's own evidence_significance reasoned about whether "a clear
+internal signal" existed "to match the market shift," answering
+whether the market corroborates the split rather than whether the
+split itself is real. Task 4b's own guardrail explicitly warns against
+inferring relationship_established from challenge.alternate_
+explanations' shape, but says nothing equivalent about confirmation.
+market_reaction's own ambiguity leaking into this same judgment --
+this is that gap, low-volume (3/32, 9.4% of this round's real sample)
+but real and distinguishable from ordinary noise, since these 3 cases
+are not near GAP_THRESHOLD-style boundary magnitudes at all. A real
+candidate for a future guardrail addition to Task 4b (explicitly
+stating that market/confirmation ambiguity is not a valid basis for
+relationship_established=False either, mirroring the existing
+alternate_explanations warning) -- not implemented in this pass, same
+"document, don't chase" treatment as the magnitude-ambiguity finding
+above, since the volume here doesn't yet justify a third prompt
+revision without more real data on whether it's a stable pattern or
+this round's own sampling noise.
+
 DETERMINISTIC change/context MAPPING — a real design decision made
 here, not dictated verbatim by the spec (§11 explicitly leaves this
 "decide per-family during implementation"), flagged plainly:
@@ -217,6 +385,9 @@ Status definitions:
   whether the relevant price/line has moved. Describe the movement itself —
   do not interpret what the movement means for betting relevance. If
   market_data is not provided, say it isn't available; do not guess.
+  Stay purely descriptive here regardless of what kind of claim the
+  detected signal is making — WHETHER a real movement counts as support
+  for or against the signal is decided in Task 4 below, not here.
 
 ## Task 3 — judgment
 
@@ -281,6 +452,107 @@ original signal survives. Specifically:
     Do not let a clean sweep of rejected alternate explanations stand in
     for evidence the original signal actually holds up — that is exactly
     the mistake this field exists to prevent.
+
+CRITICAL — WHAT KIND OF CLAIM IS ACTUALLY BEING MADE, read this BEFORE
+deciding what weight confirmation.market_reaction carries: the detected
+signal is built from the player's own real scored numbers in
+supporting_evidence. Before treating market_reaction as evidence for or
+against signal_verdict, work out what relationship those numbers are
+actually claiming — market evidence plays a genuinely different role
+depending on the answer, not one uniform role every time.
+
+- MARKET-VS-INTERNAL CLAIM: the scored numbers read broadly consistent
+  with EACH OTHER (no sharp split between genuinely different signals —
+  see the cross-pillar split case below), and the real question the
+  signal poses is whether that consistent internal read matches what
+  the real market currently prices. This is the shape of claim a
+  divergence between a player's own numbers and the market IS — market
+  data here is CONSTITUTIVE, not corroborating: it is literally part of
+  what the signal claims, the same way a claimed price gap is only real
+  if both sides of the gap are real. Do NOT treat the market
+  disagreeing with the internal read as evidence against the signal for
+  this shape of claim — that disagreement is the substance being
+  tested, not a threat to it. Ask instead whether the gap itself looks
+  real and durable: is market_data based on more than a single stale or
+  thin reading, and does odds_history (when more than one real
+  checkpoint is present) show the gap holding or widening, rather than
+  already closing? A gap that has already reconverged by the most
+  recent real reading argues for FAILS or UNRESOLVED — not because the
+  market "disagreed," but because the specific gap being claimed no
+  longer holds.
+- CROSS-PILLAR INTERNAL-SPLIT CLAIM: two or more DIFFERENT underlying
+  signals — genuinely distinct concepts, e.g. TD opportunity vs. role
+  momentum vs. situation — point sharply in different directions from
+  EACH OTHER, independent of market context. This is what a
+  contradiction between a player's own signals IS: entirely about those
+  signals disagreeing with each other. Market_reaction here is
+  INCIDENTAL, not decisive — do NOT use it to argue FAILS or SURVIVES
+  for this shape of claim. The real test is whether one side of the
+  split is explainable as a sample-size or ceiling-effect artifact —
+  exactly what Task 1's alternate_explanations mechanism already exists
+  to test. A market that hasn't reacted is consistent with "nobody has
+  noticed this internal tension yet," not evidence the tension isn't
+  real.
+- SAME-SIGNAL TEMPORAL-DRIFT CLAIM: a signal's own recent-vs-established
+  pairing reads differently from itself — e.g. role momentum (the
+  season-long level) vs. role trend (its own recent read), or
+  season-long heat vs. emerging heat — the SAME underlying concept at
+  two different time horizons, not two different concepts. This is a
+  different kind of claim from a cross-pillar split: it's a trend that
+  hasn't caught up to its own level yet (or vice versa), not two
+  distinct signals disagreeing. Market_reaction remains a genuine,
+  independent check here, the same as always — both sides of this claim
+  are already internal/temporal, so the market is a real third data
+  point, and disagreement between the claimed recent shift and the
+  market's own (faster-updating) read is real, relevant evidence
+  against durability.
+- If you genuinely can't tell which of these shapes the signal is
+  claiming, or the evidence mixes more than one of them at once, reason
+  about each real relationship you can identify using the rule that
+  applies to it — do not default to treating market_reaction as
+  automatically decisive, and do not default to ignoring it either.
+
+## Task 4b — relationship_established (ONLY when signal_verdict is UNRESOLVED)
+
+UNRESOLVED itself does not distinguish two genuinely different real
+situations, and downstream routing needs to know which one you mean:
+
+- The claimed relationship/gap may not be REAL at all — the raw scored
+  numbers themselves don't clearly show it existing (e.g. values sitting
+  close together, no clear split, no clear gap between what's being
+  compared). There isn't enough here to say the relationship exists,
+  let alone explain it.
+- OR the claimed relationship/gap clearly IS real and visible in the raw
+  numbers — a genuine, sizeable split or gap is plainly there — and what
+  stays unresolved is its explanation, durability, or significance, not
+  its existence.
+
+When signal_verdict is UNRESOLVED, assign relationship_established:
+true or false, answering exactly one question: is the underlying
+relationship/gap itself real, independent of whether you can explain
+it? When signal_verdict is SURVIVES or FAILS, leave relationship_
+established null — that question is already answered by signal_verdict
+itself in those cases.
+
+- true: the raw signal magnitudes show a real, sizeable gap or split —
+  e.g. two values roughly 90 and 20 out of 100 is clearly a real split;
+  what's unresolved is why, whether it's durable, or what it means.
+- false: the raw signal magnitudes don't show a clear gap at all — e.g.
+  two values roughly 57 and 48 out of 100 is not a real, established
+  split, it's noise-level closeness; there isn't enough here to say a
+  relationship exists in the first place.
+
+CRITICAL — judge this directly from the raw signal magnitudes
+themselves, the same numbers you already cited in confirmation.
+supporting_signals/contradicting_signals. Do NOT infer relationship_
+established from the shape of challenge.alternate_explanations' own
+statuses — a uniform NOT_TESTABLE or UNRESOLVED array, or the presence
+of a SUPPORTED or WEAKENED status, tells you what happened to specific
+candidate explanations, not whether the underlying relationship is
+real. Those two questions are independent, the same way signal_verdict
+itself must be judged independently of alternate_explanations' statuses
+(see Task 4's own CRITICAL block above) — this is the identical
+guardrail, applied one level deeper.
 
 ## Language rules (apply to every field above)
 
@@ -348,8 +620,12 @@ INTERROGATION_TOOL_SCHEMA = {
                 "enum": ["SURVIVES", "UNRESOLVED", "FAILS"],
                 "description": "Does the ORIGINAL observed signal survive scrutiny — determined independently of challenge.alternate_explanations' own statuses. See Task 4 in the system prompt.",
             },
+            "relationship_established": {
+                "type": ["boolean", "null"],
+                "description": "ONLY when signal_verdict is UNRESOLVED: is the underlying claimed relationship/gap itself real (true, judged from raw signal magnitudes) even though its explanation/durability/meaning isn't, or is there insufficient evidence the relationship exists at all (false)? null when signal_verdict is SURVIVES or FAILS. See Task 4b in the system prompt.",
+            },
         },
-        "required": ["challenge", "confirmation", "judgment", "signal_verdict"],
+        "required": ["challenge", "confirmation", "judgment", "signal_verdict", "relationship_established"],
     },
 }
 
@@ -365,6 +641,37 @@ READER_FRAMING_LANGUAGE = (
     "worth watching for",
 )
 
+# relationship_established=True structurally contradicting the model's
+# OWN evidence_significance prose on the same response -- a real,
+# observed failure mode (2 of 13 comparable cases in a real 24-candidate
+# validation sample, not a hypothetical), not the "genuine borderline
+# magnitude" ambiguity this module's own docstring documents separately.
+# Built directly from the two real cases that surfaced it, same "grow
+# the list from real observed violations" convention CONFIDENCE_
+# ESCALATING_LANGUAGE/READER_FRAMING_LANGUAGE already follow -- not
+# guessed at in the abstract.
+RELATIONSHIP_NOT_ESTABLISHED_LANGUAGE = (
+    "in either direction",
+    "indicate a real",
+    "too thin and internally ambiguous",
+)
+
+
+def _dict_field(response: dict, key: str) -> dict:
+    """response[key] if it's genuinely a dict, {} otherwise -- missing,
+    None, or a wrong-type value (e.g. a stray string) all degrade to the
+    same honest empty shape, never a crash. Real, observed failure mode:
+    a malformed response returned challenge/confirmation/judgment as a
+    plain string instead of a dict on one real live call, which
+    response.get(key, {}) and response.get(key) or {} both still crash
+    on -- the key IS present, just holding the wrong type, so neither
+    the default-arg form nor the `or {}` fallback ever triggers. This is
+    the actual, narrow fix -- every real call site touching these three
+    fields goes through this one function now, not a repeated ad hoc
+    guard."""
+    value = response.get(key)
+    return value if isinstance(value, dict) else {}
+
 
 def _find_phrases(text: str, phrases: tuple) -> list[str]:
     if not text:
@@ -375,16 +682,16 @@ def _find_phrases(text: str, phrases: tuple) -> list[str]:
 def _response_string_fields(response: dict) -> list[tuple[str, str]]:
     """Every (field_path, text) pair in a tool-call response, for the confidence-escalation scan and for building a retry message."""
     fields = []
-    for i, alt in enumerate(response.get("challenge", {}).get("alternate_explanations", [])):
+    for i, alt in enumerate(_dict_field(response, "challenge").get("alternate_explanations", [])):
         for key in ("explanation", "evidence", "test", "result"):
             if alt.get(key):
                 fields.append((f"challenge.alternate_explanations[{i}].{key}", alt[key]))
     for key in ("supporting_signals", "contradicting_signals", "market_reaction"):
-        value = response.get("confirmation", {}).get(key)
+        value = _dict_field(response, "confirmation").get(key)
         if value:
             fields.append((f"confirmation.{key}", value))
     for key in ("what_we_know", "what_we_dont_know", "evidence_significance"):
-        value = response.get("judgment", {}).get(key)
+        value = _dict_field(response, "judgment").get(key)
         if value:
             fields.append((f"judgment.{key}", value))
     return fields
@@ -401,10 +708,31 @@ def scan_for_confidence_escalation(response: dict) -> list[dict]:
 
 def scan_evidence_significance_for_reader_framing(response: dict) -> list[dict]:
     """Same shape as scan_for_confidence_escalation, scoped to judgment.evidence_significance only, per §8's guardrail."""
-    text = response.get("judgment", {}).get("evidence_significance", "")
+    text = _dict_field(response, "judgment").get("evidence_significance", "")
     return [
         {"field": "judgment.evidence_significance", "phrase": phrase, "text": text}
         for phrase in _find_phrases(text, READER_FRAMING_LANGUAGE)
+    ]
+
+
+def scan_relationship_established_for_contradiction(response: dict) -> list[dict]:
+    """[{field, phrase, text}, ...] -- catches relationship_established
+    == True directly contradicting the model's OWN evidence_significance
+    prose on the same response (e.g. "...too thin and internally
+    ambiguous to treat this as an established shift in either
+    direction" alongside relationship_established=True -- a real case
+    from a real validation sample, not a hypothetical). Only checked
+    when relationship_established is True -- a False/None value already
+    means "not established," so this specific contradiction can't occur
+    there; this scan is not a general relationship_established
+    validator, just the one real, observed inconsistency shape. Empty
+    list = clean, same convention as the other two scans."""
+    if response.get("relationship_established") is not True:
+        return []
+    text = _dict_field(response, "judgment").get("evidence_significance", "")
+    return [
+        {"field": "judgment.evidence_significance", "phrase": phrase, "text": text}
+        for phrase in _find_phrases(text, RELATIONSHIP_NOT_ESTABLISHED_LANGUAGE)
     ]
 
 
@@ -502,12 +830,13 @@ def interrogate_story(
         print(f"[story_interrogation] API call failed: {e!r}", flush=True)
         return None
 
-    # Two independent checks, each with its own one-shot retry — a
-    # response could conceivably clear one and fail the other, so they
+    # Three independent checks, each with its own one-shot retry — a
+    # response could conceivably clear some and fail others, so they
     # aren't combined into a single retry pass.
     for scan_fn, label in (
         (scan_for_confidence_escalation, "confidence-escalation"),
         (scan_evidence_significance_for_reader_framing, "reader-framing"),
+        (scan_relationship_established_for_contradiction, "relationship-established-contradiction"),
     ):
         violations = scan_fn(response)
         if not violations:
@@ -537,6 +866,21 @@ def interrogate_story(
     # instruction not to change the declared shape. This strips any
     # such stray key at the boundary instead, so a persisted
     # interrogation record only ever carries the real §3 fields.
+    # _dict_field(response, ...) throughout this block, NOT direct
+    # indexing or a bare .get(key, {})/.get(key) or {} -- two real,
+    # separately-confirmed malformed-response shapes: (1) a top-level
+    # key the schema requires can be missing entirely despite forced
+    # tool-use (confirmed live: 2 of 36 real calls in one measurement
+    # session), which a raw response["confirmation"]-style index turns
+    # into an uncaught KeyError; (2) a present key can hold the WRONG
+    # TYPE -- a plain string instead of a dict (confirmed live: 1 of 24
+    # real calls in a later validation session), which neither
+    # response.get(key, {}) nor response.get(key) or {} catches, since
+    # the key IS present and a non-empty string is truthy. _dict_field
+    # treats both as the same honest empty shape -- never a crash,
+    # rather than the same graceful None every OTHER documented failure
+    # path here already returns (API error, persisted language-rule
+    # violation).
     return {
         "interrogation_version": INTERROGATION_VERSION,
         "change": input_contract["change"],
@@ -544,16 +888,17 @@ def interrogate_story(
         "challenge": {
             "alternate_explanations": [
                 {k: alt.get(k) for k in ("explanation", "evidence", "test", "result", "status")}
-                for alt in response["challenge"]["alternate_explanations"]
+                for alt in _dict_field(response, "challenge").get("alternate_explanations") or []
             ],
         },
         "confirmation": {
-            k: response["confirmation"].get(k)
+            k: _dict_field(response, "confirmation").get(k)
             for k in ("supporting_signals", "contradicting_signals", "market_reaction")
         },
         "judgment": {
-            k: response["judgment"].get(k)
+            k: _dict_field(response, "judgment").get(k)
             for k in ("what_we_know", "what_we_dont_know", "evidence_significance")
         },
         "signal_verdict": response.get("signal_verdict"),
+        "relationship_established": response.get("relationship_established"),
     }

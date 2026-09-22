@@ -17,14 +17,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "newsletter"))
 
+import story_interrogation as si
 from story_interrogation import (
     INTERROGATION_TOOL_SCHEMA,
     READER_FRAMING_LANGUAGE,
+    RELATIONSHIP_NOT_ESTABLISHED_LANGUAGE,
     SYSTEM_PROMPT,
+    _dict_field,
     _entity_display_name,
     build_interrogation_input,
+    interrogate_story,
     scan_evidence_significance_for_reader_framing,
     scan_for_confidence_escalation,
+    scan_relationship_established_for_contradiction,
 )
 
 
@@ -209,6 +214,220 @@ if __name__ == "__main__":
     results.append(check(
         "the system prompt states the hard V1 data-access boundary (no beat reporting/press conferences/quotes)",
         "beat reporting" in SYSTEM_PROMPT and "press conferences" in SYSTEM_PROMPT,
+    ))
+
+    # --- Real bug fix: a malformed response missing a required top-level
+    # key must degrade gracefully, not crash with an uncaught KeyError
+    # (confirmed live: 2 of 36 real calls in one measurement session hit
+    # exactly this before the fix). Mocked call_claude_with_tool -- this
+    # tests the reshaping code path itself, not a real live call. ---
+    malformed_response = {
+        "challenge": {"alternate_explanations": []},
+        # "confirmation" key entirely absent -- the real observed shape
+        "judgment": {"what_we_know": "x", "what_we_dont_know": "y", "evidence_significance": "z"},
+        "signal_verdict": "UNRESOLVED",
+    }
+    orig_call = si.call_claude_with_tool
+    si.call_claude_with_tool = lambda *a, **kw: malformed_response
+    try:
+        result = interrogate_story(
+            {"intelligence_family": "nfl_picks", "entity": {"type": "player", "player_id": "P1"},
+             "headline": "h", "hero_metric": None, "time_window": None, "sample_size": None,
+             "supporting_evidence": None, "related_players": []},
+            "fake-key",
+        )
+    finally:
+        si.call_claude_with_tool = orig_call
+    results.append(check(
+        "a response missing the 'confirmation' key entirely degrades to a real object with confirmation.* "
+        "all None, not an uncaught KeyError propagating out of interrogate_story()",
+        result is not None
+        and result["confirmation"] == {"supporting_signals": None, "contradicting_signals": None, "market_reaction": None}
+        and result["signal_verdict"] == "UNRESOLVED",
+    ))
+
+    # --- relationship_established: schema declares it, reshaping passes
+    # it through untouched, for both a real True and a real False value,
+    # and stays honestly None when the model omits it (e.g. a SURVIVES/
+    # FAILS response, where it's not applicable). ---
+    prop = INTERROGATION_TOOL_SCHEMA["input_schema"]["properties"]["relationship_established"]
+    results.append(check(
+        "schema declares relationship_established as a nullable boolean, required as a key "
+        "(present, honestly null when not applicable -- same convention as every other field here)",
+        prop["type"] == ["boolean", "null"]
+        and "relationship_established" in INTERROGATION_TOOL_SCHEMA["input_schema"]["required"],
+    ))
+    for value in (True, False, None):
+        resp = {
+            "challenge": {"alternate_explanations": []},
+            "confirmation": {"supporting_signals": "a", "contradicting_signals": "b", "market_reaction": "c"},
+            "judgment": {"what_we_know": "x", "what_we_dont_know": "y", "evidence_significance": "z"},
+            "signal_verdict": "UNRESOLVED",
+            "relationship_established": value,
+        }
+        si.call_claude_with_tool = lambda *a, **kw: resp
+        try:
+            result = interrogate_story(
+                {"intelligence_family": "nfl_picks", "entity": {"type": "player", "player_id": "P1"},
+                 "headline": "h", "hero_metric": None, "time_window": None, "sample_size": None,
+                 "supporting_evidence": None, "related_players": []},
+                "fake-key",
+            )
+        finally:
+            si.call_claude_with_tool = orig_call
+        results.append(check(
+            f"relationship_established={value!r} passes through interrogate_story()'s reshaping unchanged",
+            result is not None and result["relationship_established"] is value,
+        ))
+
+    # ============================================================
+    # Fix 1 -- relationship_established/evidence_significance
+    # consistency scan. Fixtures are the two REAL contradiction cases
+    # from the validation session (verbatim evidence_significance text),
+    # not synthetic examples.
+    # ============================================================
+    REAL_CASE_036637 = (
+        "The input does not establish a coherent signal of change — five of six metrics sit close to "
+        "a neutral midpoint with no baseline for comparison, and the one standout metric (situation) "
+        "lacks any explanatory data. The oscillating, non-directional odds history neither reinforces "
+        "nor undermines a specific directional claim, since no single directional claim is being made "
+        "by the scored numbers themselves. Overall, the evidence available is too thin and internally "
+        "ambiguous to treat this as an established shift in either direction."
+    )
+    REAL_CASE_037263 = (
+        "The interrogation does not add independent support for the detected signal. The near-uniform "
+        "mid-range values across most metrics do not by themselves indicate a real, differentiated "
+        "change, and the one large divergence (season-long heat) has no explanation available in the "
+        "data."
+    )
+    CLEAN_ESTABLISHED_CASE = (
+        "The internal split between the situation score and the other five scores is real and visible "
+        "in the raw magnitudes, but the input does not supply the context needed to explain it or "
+        "establish whether it reflects a durable pattern rather than a single-week reading."
+    )
+
+    def _resp_with_sig(established, sig_text):
+        return {
+            "relationship_established": established,
+            "judgment": {"what_we_know": "x", "what_we_dont_know": "y", "evidence_significance": sig_text},
+        }
+
+    results.append(check(
+        "consistency scan: catches the real 00-0036637 case (established=True, prose says 'too thin "
+        "and internally ambiguous... in either direction')",
+        len(scan_relationship_established_for_contradiction(_resp_with_sig(True, REAL_CASE_036637))) > 0,
+    ))
+    results.append(check(
+        "consistency scan: catches the real 00-0037263 case (established=True, prose says 'do not by "
+        "themselves indicate a real, differentiated change')",
+        len(scan_relationship_established_for_contradiction(_resp_with_sig(True, REAL_CASE_037263))) > 0,
+    ))
+    results.append(check(
+        "consistency scan: a genuinely consistent established=True case (prose says the split 'is real "
+        "and visible in the raw magnitudes') produces NO violation -- not a blanket penalty on every "
+        "hedge-shaped sentence",
+        scan_relationship_established_for_contradiction(_resp_with_sig(True, CLEAN_ESTABLISHED_CASE)) == [],
+    ))
+    results.append(check(
+        "consistency scan: scoped to established=True only -- the SAME contradiction-shaped prose "
+        "produces NO violation when established is False (a False value already means 'not established', "
+        "so this specific mismatch can't occur there)",
+        scan_relationship_established_for_contradiction(_resp_with_sig(False, REAL_CASE_036637)) == []
+        and scan_relationship_established_for_contradiction(_resp_with_sig(None, REAL_CASE_036637)) == [],
+    ))
+
+    # End-to-end: a first response that violates the new scan gets
+    # retried once, same mechanism as the other two scans; a clean
+    # second response is accepted.
+    violating_then_clean = [
+        {
+            "challenge": {"alternate_explanations": []},
+            "confirmation": {"supporting_signals": "a", "contradicting_signals": "b", "market_reaction": "c"},
+            "judgment": {"what_we_know": "x", "what_we_dont_know": "y", "evidence_significance": REAL_CASE_036637},
+            "signal_verdict": "UNRESOLVED",
+            "relationship_established": True,
+        },
+        {
+            "challenge": {"alternate_explanations": []},
+            "confirmation": {"supporting_signals": "a", "contradicting_signals": "b", "market_reaction": "c"},
+            "judgment": {"what_we_know": "x", "what_we_dont_know": "y", "evidence_significance": CLEAN_ESTABLISHED_CASE},
+            "signal_verdict": "UNRESOLVED",
+            "relationship_established": True,
+        },
+    ]
+    call_log = []
+
+    def fake_call_with_retry(*a, **kw):
+        call_log.append(1)
+        return violating_then_clean[len(call_log) - 1]
+
+    si.call_claude_with_tool = fake_call_with_retry
+    try:
+        result = interrogate_story(
+            {"intelligence_family": "nfl_picks", "entity": {"type": "player", "player_id": "P1"},
+             "headline": "h", "hero_metric": None, "time_window": None, "sample_size": None,
+             "supporting_evidence": None, "related_players": []},
+            "fake-key",
+        )
+    finally:
+        si.call_claude_with_tool = orig_call
+    results.append(check(
+        "end-to-end: a violating first response triggers exactly one retry (2 real calls total), and "
+        "the clean retried response is accepted",
+        len(call_log) == 2 and result is not None and result["judgment"]["evidence_significance"] == CLEAN_ESTABLISHED_CASE,
+    ))
+
+    # ============================================================
+    # Fix 2 -- _dict_field: wrong-type (string, not dict) crash guard.
+    # ============================================================
+    results.append(check(
+        "_dict_field: a genuine dict value passes through unchanged",
+        _dict_field({"challenge": {"alternate_explanations": [1, 2]}}, "challenge") == {"alternate_explanations": [1, 2]},
+    ))
+    results.append(check(
+        "_dict_field: a missing key degrades to {} honestly",
+        _dict_field({}, "challenge") == {},
+    ))
+    results.append(check(
+        "_dict_field: a present-but-WRONG-TYPE value (the real observed bug -- a plain string instead "
+        "of a dict) degrades to {} instead of crashing",
+        _dict_field({"challenge": "not a dict"}, "challenge") == {},
+    ))
+
+    string_valued_response = {
+        "challenge": "oops a string",
+        "confirmation": "also a string",
+        "judgment": "also also a string",
+        "signal_verdict": "UNRESOLVED",
+        "relationship_established": None,
+    }
+    results.append(check(
+        "scan_for_confidence_escalation does not crash when challenge/confirmation/judgment are strings",
+        scan_for_confidence_escalation(string_valued_response) == [],
+    ))
+    results.append(check(
+        "scan_evidence_significance_for_reader_framing does not crash on the same malformed shape",
+        scan_evidence_significance_for_reader_framing(string_valued_response) == [],
+    ))
+
+    si.call_claude_with_tool = lambda *a, **kw: string_valued_response
+    try:
+        result = interrogate_story(
+            {"intelligence_family": "nfl_picks", "entity": {"type": "player", "player_id": "P1"},
+             "headline": "h", "hero_metric": None, "time_window": None, "sample_size": None,
+             "supporting_evidence": None, "related_players": []},
+            "fake-key",
+        )
+    finally:
+        si.call_claude_with_tool = orig_call
+    results.append(check(
+        "end-to-end: a response with challenge/confirmation/judgment all wrong-typed (strings, not "
+        "dicts -- the real observed AttributeError case) degrades to a real object with everything "
+        "honestly None, not an uncaught AttributeError",
+        result is not None
+        and result["challenge"] == {"alternate_explanations": []}
+        and result["confirmation"] == {"supporting_signals": None, "contradicting_signals": None, "market_reaction": None}
+        and result["judgment"] == {"what_we_know": None, "what_we_dont_know": None, "evidence_significance": None},
     ))
 
     print()
