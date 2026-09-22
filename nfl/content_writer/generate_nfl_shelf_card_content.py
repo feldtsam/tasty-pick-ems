@@ -71,6 +71,24 @@ from editorial_lenses import citable_fields_for_lens, resolve_editorial_lens  # 
 
 WRITER_TYPE = "shelf_card"
 
+
+class CandidateGatedOut(Exception):
+    """
+    Raised by generate_nfl_shelf_card_draft() when find_tension()
+    returns None -- this candidate's real signal_verdict is FAILS or
+    UNRESOLVED (see nfl_tension.py's own STOP GATE). Deliberately a
+    DIFFERENT exception type from anything else this function can raise
+    (a real API failure, a validation crash) -- those mean "the bespoke
+    write attempt failed, fall back to this placement's deterministic
+    content." This means "Interrogation actively excluded this
+    candidate -- no card, no deterministic fallback either, this
+    placement's row is skipped entirely." The caller (curate_home_
+    shelves.shape_content_draft_rows) must catch this separately from a
+    generic Exception and skip the row, never conflating "gated out" (a
+    resource/evidence decision already made) with "this attempt failed"
+    (a transient generation problem to degrade gracefully from).
+    """
+
 # First clause up to a comma/dash/period, capped at 6 words -- a simple,
 # deterministic proxy for "the angle this headline opens with", not an
 # NLP model. Good enough for its one real job: giving the NEXT call in
@@ -280,24 +298,41 @@ def generate_nfl_shelf_card_draft(
 
     `interrogation_result`: the CANDIDATE-level Interrogation result
     (story_interrogation.interrogate_story()'s own output — signal_
-    verdict/challenge/confirmation/judgment) already computed ONCE for
-    this player+event by curate_home_shelves._interrogate_unique_
-    candidates(), before shape_content_draft_rows' own per-placement
-    loop ever calls this function. PLUMBING ONLY in this pass — passed
-    straight to _tension_block/find_tension by NEITHER (tension below
-    still runs exactly as it did before this parameter existed, same
-    call, same two arguments), and kept on the return value under
+    verdict/challenge/confirmation/judgment — wrapped in Pass 3/4's own
+    three-state {"interrogation_status": ..., "result": ...} shape)
+    already computed ONCE for this player+event by curate_home_shelves.
+    _interrogate_unique_candidates(), before shape_content_draft_rows'
+    own per-placement loop ever calls this function. Passed straight
+    through to find_tension() as its own third argument, which may gate
+    this candidate out entirely (signal_verdict FAILS/UNRESOLVED) --
+    see CandidateGatedOut above for what that means for THIS function's
+    own return contract. kept on the return value under
     _interrogation_result purely for inspection/debugging/QA, same
     "storable, inspectable" treatment _editorial_lens/_tension already
-    get. A later pass, not this one, is what makes find_tension() (or
-    this function's own prompt-building) actually READ signal_verdict —
-    seeing it reach this call site correctly is this pass's whole job.
+    get, whenever a real (non-gated) return happens.
+
+    Raises CandidateGatedOut instead of returning, when find_tension()
+    itself returns None for this candidate -- no draft dict, no partial
+    content, the caller must skip this placement's row entirely (see
+    that exception's own docstring for why this is a distinct case from
+    every other exception this function can raise). The new descriptive
+    Tension Object fields this gate produces (story_mode/information_
+    value/reader_question_type/allowed_claim_strength) are computed and
+    stored on `_tension` for every non-gated return, but NOT yet read by
+    build_system_prompt/_tension_block -- that's a distinct, later step,
+    same "plumbing first, consumption later" pattern this parameter
+    itself already followed for one pass before this one.
     """
     candidate = build_nfl_writer_candidate(row)
     lens = resolve_editorial_lens(shelf, candidate)
     scoped_fields = citable_fields_for_lens(lens)
     source_facts = flatten_source_facts(candidate, scoped_fields)
-    tension = find_tension(candidate, lens)
+    tension = find_tension(candidate, lens, interrogation_result)
+    if tension is None:
+        raise CandidateGatedOut(
+            f"player_id={candidate.get('player_id')!r} shelf={shelf!r}: "
+            f"signal_verdict gated this candidate out (FAILS/UNRESOLVED) -- no card"
+        )
 
     system_prompt = build_system_prompt(
         shelf, confidence_band, lens, tension, avoid_headlines=avoid_headlines, avoid_opening_phrases=avoid_opening_phrases,

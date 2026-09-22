@@ -80,7 +80,7 @@ if __name__ == "__main__":
     tension = find_tension(CANDIDATE, lens)
     prompt = build_system_prompt("ATTD +300-499", "developing_angle", lens, tension)
     r.append(check("prompt includes the FIND THE TENSION block header", "FIND THE TENSION" in prompt))
-    r.append(check("prompt states the real detected tension type", f"Type: {tension['type']}" in prompt))
+    r.append(check("prompt states the real detected tension type", f"Type: {tension['tension_type']}" in prompt))
     r.append(check("prompt carries the real editorial_claim through", tension["editorial_claim"] in prompt))
     r.append(check("thin-evidence tension tells the model to hedge, not hide it", "THINLY supported" in prompt))
     r.append(check("prompt states the field-narration hard rule explicitly", "field aloud in prose" in prompt))

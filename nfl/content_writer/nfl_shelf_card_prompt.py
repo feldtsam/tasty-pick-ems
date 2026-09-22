@@ -101,7 +101,7 @@ def _tension_block(tension: dict) -> str:
 
     return f"""
 FIND THE TENSION — the analysis stage already did this work; your job is to translate it, not re-derive it or second-guess it:
-  Type: {tension['type']}
+  Type: {tension['tension_type']}
   Primary signal: {tension['primary_signal']}{counter_line}
   Editorial claim: {tension['editorial_claim']}
   Suggested angle: {tension['story_angle']}
