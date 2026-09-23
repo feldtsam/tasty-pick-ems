@@ -35,6 +35,7 @@ from team_tendencies import (
     _score_fourth_down_aggressiveness,
     _score_pace,
     _score_redzone_play_calling,
+    _trend_delta,
     _weekly_percentile,
 )
 
@@ -470,6 +471,46 @@ if __name__ == "__main__":
         f"signals within the SAME family (2025 season only) -- redzone={real_dist['rz']}, fourth_down={real_dist['fd']}, "
         f"pace={real_dist['pace']} -- confirming this formula's real behavior isn't uniform even within one family",
         all(sum(d.values()) > 0 for d in real_dist.values()),
+    ))
+
+    # ============================================================
+    # Off-by-one regression guard -- a team with EXACTLY 2 real
+    # reconciled weeks must land in "thin" (games_played=2), not below
+    # it. Direct regression test for the real bug this session's
+    # Editorial Intelligence investigation found and fixed in this
+    # file's own copy of _trend_delta: games_played used to be raw
+    # 0-indexed cumcount(), so a team's own real SECOND reconciled week
+    # read as games_played=1 and missed thin_games_played_min=2 by
+    # exactly one -- with only 2 real reconciled weeks on file (the real
+    # 2026 Week 2 state this was traced against), this made all three
+    # Coaching Trends detectors produce zero stories regardless of any
+    # real signal, the same mechanism as defensive_trends.py's identical
+    # bug. Synthetic, not real-pbp-dependent, so this doesn't need
+    # network access the way the rest of this file does: the real
+    # backfill never has a team with EXACTLY 2 games on file, so this
+    # exact boundary can only be exercised directly.
+    # ============================================================
+    two_week_team = pd.DataFrame({
+        "team": ["KC", "KC"],
+        "season": [2099, 2099],
+        "week": [1, 2],
+        "redzone_run_tendency_last1": [40.0, 55.0],
+        "redzone_run_tendency_last3": [40.0, 47.5],
+        "redzone_run_tendency_season_avg": [40.0, 47.5],
+    })
+    two_week_trend = _trend_delta(two_week_team, "redzone_run_tendency", CONFIG)
+    wk1_maturity, wk2_maturity = two_week_trend["_methodology_maturity"].tolist()
+    wk1_window, wk2_window = two_week_trend["_trend_window"].tolist()
+    wk2_delta = two_week_trend["_delta"].iloc[1]
+    results.append(check(
+        f"a team's own FIRST reconciled week (games_played=1) still correctly produces no trend at all "
+        f"(got maturity={wk1_maturity!r}, window={wk1_window})",
+        pd.isna(wk1_maturity) and pd.isna(wk1_window),
+    ))
+    results.append(check(
+        f"a team's own SECOND reconciled week (games_played=2) now correctly lands in 'thin', not below it -- "
+        f"the exact off-by-one this fix closes (got maturity={wk2_maturity!r}, window={wk2_window}, delta={wk2_delta})",
+        wk2_maturity == "thin" and wk2_window == 1.0 and pd.notna(wk2_delta),
     ))
 
     print()

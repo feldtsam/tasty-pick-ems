@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 
-from defensive_trends import CONFIG, _methodology_for_games_played, build_defensive_trends_stories
+from defensive_trends import CONFIG, _methodology_for_games_played, _trend_delta, build_defensive_trends_stories
 from intelligence_schema import STORY_FIELDS
 
 WEEKLY_PATH = Path(__file__).resolve().parent / "scripts" / "player_redzone_weekly.csv"
@@ -114,10 +114,15 @@ if __name__ == "__main__":
     results.append(check("threshold + structural sample-size guarantee (against each story's OWN window) holds across every real season/week in the backfill", all_weeks_ok))
     results.append(check("no QB entity ever appears (defensive_matchup_vulnerability's own position scope is RB/WR/TE)", "QB" not in all_position_groups))
     results.append(check(
-        f"minimum real sample_size observed across the whole backfill is now as low as 3 (a real window=1 'thin' "
-        f"story, games_played=2) -- confirms the dynamic window actually produces early output, not just a config "
-        f"change with no real effect (got {min_sample_size}, maturity distribution {maturity_counts})",
-        min_sample_size == 3 and maturity_counts["thin"] > 0,
+        f"minimum real sample_size observed across the whole backfill is now structurally >= 2, never 0 or 1 -- "
+        f"games_played=2 stories are now POSSIBLE (the games_played off-by-one this session's Editorial "
+        f"Intelligence investigation found and fixed: games_played used to be 0-indexed cumcount(), so a defense's "
+        f"real 2nd week read as games_played=1 and missed thin_games_played_min=2 by one), though whether a real "
+        f"games_played=2 story actually appears in THIS backfill also depends on that week's own delta clearing "
+        f"trend_threshold -- a separate, real magnitude gate this fix doesn't touch (the boundary-condition test "
+        f"below proves games_played=2 reaches 'thin' directly, independent of whether the real backfill data "
+        f"happens to be large enough at that exact point) (got {min_sample_size}, maturity distribution {maturity_counts})",
+        min_sample_size >= 2 and maturity_counts["thin"] > 0,
     ))
 
     # ============================================================
@@ -142,6 +147,48 @@ if __name__ == "__main__":
         f"_methodology_for_games_played matches the approved schedule at every named boundary "
         f"(games_played=[0,1,2,3,4,8,9,20] -> window/maturity={list(zip(schedule['_trend_window'].tolist(), schedule['_methodology_maturity'].tolist()))})",
         schedule_ok,
+    ))
+
+    # ============================================================
+    # Off-by-one regression guard -- a defense with EXACTLY 2 real
+    # reconciled weeks must land in "thin" (games_played=2), not below
+    # it. Direct regression test for the real bug this session's
+    # Editorial Intelligence investigation found and fixed: games_played
+    # used to be raw 0-indexed cumcount(), so a defense's own real
+    # SECOND reconciled week read as games_played=1 and missed
+    # thin_games_played_min=2 by exactly one -- with only 2 real
+    # reconciled weeks on file (the real 2026 Week 2 state this was
+    # traced against), this made Defensive Trends produce zero stories
+    # regardless of any real signal. Exercises _trend_delta directly
+    # (not build_defensive_trends_stories' own pool filter) so this
+    # isolates the games_played computation itself from the trend_
+    # threshold gate. Synthetic, not backfill-dependent: the real
+    # historical CSV never has a defense with EXACTLY 2 games on file
+    # (every real season there already has 17+ weeks), so this exact
+    # boundary can only be exercised directly, not found in real data.
+    # ============================================================
+    two_week_defense = pd.DataFrame({
+        "defteam": ["KC", "KC"],
+        "position_group": ["RB", "RB"],
+        "season": [2099, 2099],
+        "week": [1, 2],
+        "defensive_matchup_vulnerability_last1": [40.0, 55.0],
+        "defensive_matchup_vulnerability_last3": [40.0, 47.5],
+        "defensive_matchup_vulnerability_season_avg": [40.0, 47.5],
+    })
+    two_week_trend = _trend_delta(two_week_defense, CONFIG)
+    wk1_maturity, wk2_maturity = two_week_trend["_methodology_maturity"].tolist()
+    wk1_window, wk2_window = two_week_trend["_trend_window"].tolist()
+    wk2_delta = two_week_trend["_delta"].iloc[1]
+    results.append(check(
+        f"a defense's own FIRST reconciled week (games_played=1) still correctly produces no trend at all "
+        f"(got maturity={wk1_maturity!r}, window={wk1_window})",
+        pd.isna(wk1_maturity) and pd.isna(wk1_window),
+    ))
+    results.append(check(
+        f"a defense's own SECOND reconciled week (games_played=2) now correctly lands in 'thin', not below it -- "
+        f"the exact off-by-one this fix closes (got maturity={wk2_maturity!r}, window={wk2_window}, delta={wk2_delta})",
+        wk2_maturity == "thin" and wk2_window == 1.0 and pd.notna(wk2_delta),
     ))
 
     real_thin = [s for s in all_backfill_stories if s["methodology_maturity"] == "thin"]

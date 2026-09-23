@@ -270,11 +270,16 @@ def _methodology_for_games_played(games_played: pd.Series, config: dict) -> pd.D
     uniformly across all three Coaching Trends detectors (redzone/
     fourth-down/pace) — confirmed intentional, not per-detector tuning.
 
-    games_played 0-1: no window (None/NaN). games_played 2-3: window=1,
-    "thin". games_played 4-8: window=3, "developing". games_played >8:
-    window=3, "confirmed". Only ever selects window 1 or 3 — add_
-    rolling_windows never computes _last2/_last4, so this schedule is
-    deliberately built to never ask for a column that doesn't exist.
+    games_played is 1-indexed (cumcount()+1, a real count of games
+    played) -- see _trend_delta's own docstring for the real off-by-one
+    this used to have when it passed the raw 0-indexed value in here.
+
+    games_played 1: no window (None/NaN) -- a single real game alone.
+    games_played 2-3: window=1, "thin". games_played 4-8: window=3,
+    "developing". games_played >8: window=3, "confirmed". Only ever
+    selects window 1 or 3 — add_rolling_windows never computes _last2/
+    _last4, so this schedule is deliberately built to never ask for a
+    column that doesn't exist.
 
     Returns a DataFrame with "_trend_window" (float, NaN where no trend
     applies) and "_methodology_maturity" (object, None where no trend
@@ -320,14 +325,25 @@ def _trend_delta(team_week: pd.DataFrame, score_col: str, config: dict) -> pd.Da
     games_played 2-3 > window 1; developing/confirmed: games_played >=4
     > window 3).
 
+    GAMES_PLAYED IS 1-INDEXED (cumcount() + 1) -- fixed off-by-one, not
+    the original design, same real bug and same fix as defensive_
+    trends.py's identical copy of this function (see that file's own
+    docstring for the full real-data confirmation: with only 2
+    reconciled weeks on file, the raw 0-indexed value never reached
+    thin_games_played_min=2, so Coaching Trends produced zero stories
+    even with real, usable trend data present).
+
     Returns a DataFrame with "_delta", "_trend_window" (the actual
     window used for this row), "_methodology_maturity", and
-    "_games_played_0indexed" (the exact value the schedule was
+    "_games_played" (the exact 1-indexed value the schedule was
     evaluated against, returned rather than left for the caller to
     recompute, so persisted methodology.games_played can never drift
-    from what actually decided the maturity tier).
+    from what actually decided the maturity tier — genuinely needed
+    here, unlike defensive_trends.py: redzone/fourth-down have no
+    separately-computed games-played column of their own to fall back
+    on the way that file's sample_size does).
     """
-    games_played = team_week.groupby(["team", "season"]).cumcount()
+    games_played = team_week.groupby(["team", "season"]).cumcount() + 1
     schedule = _methodology_for_games_played(games_played, config)
 
     last1 = team_week[f"{score_col}_last1"]
@@ -342,7 +358,7 @@ def _trend_delta(team_week: pd.DataFrame, score_col: str, config: dict) -> pd.Da
         "_delta": delta,
         "_trend_window": schedule["_trend_window"],
         "_methodology_maturity": schedule["_methodology_maturity"],
-        "_games_played_0indexed": games_played,
+        "_games_played": games_played,
     })
 
 
@@ -402,7 +418,7 @@ def _score_redzone_play_calling(team_week: pd.DataFrame, config: dict) -> pd.Dat
     tw["_delta"] = trend["_delta"]
     tw["_trend_window"] = trend["_trend_window"]
     tw["_methodology_maturity"] = trend["_methodology_maturity"]
-    tw["_games_played_0indexed"] = trend["_games_played_0indexed"]
+    tw["_games_played"] = trend["_games_played"]
     return tw
 
 
@@ -451,7 +467,7 @@ def _score_fourth_down_aggressiveness(team_week: pd.DataFrame, config: dict) -> 
     tw["_delta"] = trend["_delta"]
     tw["_trend_window"] = trend["_trend_window"]
     tw["_methodology_maturity"] = trend["_methodology_maturity"]
-    tw["_games_played_0indexed"] = trend["_games_played_0indexed"]
+    tw["_games_played"] = trend["_games_played"]
     return tw
 
 
@@ -520,7 +536,7 @@ def _score_pace(team_week: pd.DataFrame, config: dict) -> pd.DataFrame:
     tw["_delta"] = trend["_delta"]
     tw["_trend_window"] = trend["_trend_window"]
     tw["_methodology_maturity"] = trend["_methodology_maturity"]
-    tw["_games_played_0indexed"] = trend["_games_played_0indexed"]
+    tw["_games_played"] = trend["_games_played"]
     return tw
 
 
@@ -1072,7 +1088,7 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
         story["methodology"] = {
             "trend_window_games": int(row["_trend_window"]),
             "baseline_type": "expanding_season_mean",
-            "games_played": int(row["_games_played_0indexed"]),
+            "games_played": int(row["_games_played"]),
             "methodology_version": "team_tendencies_v1",
         }
         story["methodology_maturity"] = row["_methodology_maturity"]
@@ -1141,7 +1157,7 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
         story["methodology"] = {
             "trend_window_games": int(row["_trend_window"]),
             "baseline_type": "expanding_season_mean",
-            "games_played": int(row["_games_played_0indexed"]),
+            "games_played": int(row["_games_played"]),
             "methodology_version": "team_tendencies_v1",
         }
         story["methodology_maturity"] = row["_methodology_maturity"]
@@ -1210,17 +1226,19 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
         story["eps"] = None
         # Dynamic trend-window methodology metadata -- see build_redzone_
         # play_calling_stories' own identical field for the full
-        # reasoning. NOTE: methodology.games_played uses
-        # _games_played_0indexed (the exact value the maturity schedule
-        # was evaluated against), deliberately NOT this function's own
-        # pre-existing _games_played (+1-indexed, used for completeness/
-        # thin-hedging above -- untouched, out of scope for this change)
-        # -- the two answer different questions and shouldn't be
-        # conflated even though they're numerically one apart.
+        # reasoning. FORMERLY genuinely two different columns here
+        # (_games_played_0indexed, 0-indexed, vs. this function's own
+        # _games_played above, 1-indexed) that happened to describe the
+        # same real quantity one apart -- that gap was the off-by-one
+        # fixed in _trend_delta's own docstring, not an intentional
+        # distinction. Both are the identical 1-indexed cumcount()+1
+        # over ("team", "season") now, so this reads row["_games_played"]
+        # the same column sample_size above already reads, genuinely
+        # redundant with (not different from) that computation now.
         story["methodology"] = {
             "trend_window_games": int(row["_trend_window"]),
             "baseline_type": "expanding_season_mean",
-            "games_played": int(row["_games_played_0indexed"]),
+            "games_played": int(row["_games_played"]),
             "methodology_version": "team_tendencies_v1",
         }
         story["methodology_maturity"] = row["_methodology_maturity"]

@@ -207,13 +207,16 @@ def _defense_weekly(weekly: pd.DataFrame) -> pd.DataFrame:
 def _methodology_for_games_played(games_played: pd.Series, config: dict) -> pd.DataFrame:
     """
     Dynamic trend_window + methodology_maturity schedule, keyed strictly
-    on games_played (the same 0-indexed cumcount() value _trend_delta
-    already computes) — never on NFL week number, since a bye breaks the
-    week<->games_played equivalence and this schedule has to stay
-    correct regardless of a defense's bye-week position.
+    on games_played (the same 1-indexed cumcount()+1 value _trend_delta
+    computes — a real count of games played, not a raw index; see that
+    function's own docstring for the real off-by-one this used to have
+    when it passed the raw 0-indexed value in here instead) — never on
+    NFL week number, since a bye breaks the week<->games_played
+    equivalence and this schedule has to stay correct regardless of a
+    defense's bye-week position.
 
-    games_played 0-1: no window at all (None/NaN) -- no real trend to
-      report yet, same as today's pre-existing behavior for these rows.
+    games_played 1: no window at all (None/NaN) -- a single real game
+      alone has no real trend to compare against.
     games_played 2-3: window=1, "thin" -- a real but genuinely thin
       single-game comparison.
     games_played 4-8: window=3, "developing" -- the same window=3
@@ -272,13 +275,34 @@ def _trend_delta(defense_weekly: pd.DataFrame, config: dict) -> pd.DataFrame:
     window invariant this function has always enforced, now checked
     per row instead of once for the whole frame.
 
+    GAMES_PLAYED IS 1-INDEXED (cumcount() + 1) -- fixed off-by-one, not
+    the original design: this used to pass raw 0-indexed cumcount()
+    straight into _methodology_for_games_played, so a group's real
+    SECOND reconciled week (cumcount=1) read as games_played=1 and fell
+    into the "no window at all" tier meant for a single real game,
+    pushing the whole schedule one real week later than thin_games_
+    played_min=2/developing_games_played_min=4/confirmed_games_played_
+    min=9 actually name. Confirmed via real week-2 2026 data (Editorial
+    Intelligence investigation): with only 2 reconciled weeks on file,
+    every defteam/position_group's max real cumcount was 1, so the
+    "thin" tier (needs >=2) could never fire and Defensive Trends
+    produced zero stories even though real, usable trend data existed.
+    Now matches _games_played elsewhere in this module (role_changes.py's
+    own _games_played(), same "1-indexed for human-readable display"
+    convention) -- there is no longer a second, differently-indexed
+    "games played" concept in this file.
+
     Returns a DataFrame with "_delta", "_trend_window" (the actual
     window used for this row), and "_methodology_maturity" — the
     latter two needed downstream both for the methodology metadata
     attached to the story and for the narrative text that used to
-    hardcode "last {trend_window} games".
+    hardcode "last {trend_window} games". Does NOT return games_played
+    itself: now that it's 1-indexed (see above), it's byte-identical to
+    build_defensive_trends_stories' own dw["_games_played"] (same
+    groupby, same +1) — that pre-existing column is what methodology.
+    games_played reads from, not a value threaded back out of here.
     """
-    games_played = defense_weekly.groupby(["defteam", "position_group", "season"]).cumcount()
+    games_played = defense_weekly.groupby(["defteam", "position_group", "season"]).cumcount() + 1
     schedule = _methodology_for_games_played(games_played, config)
 
     last1 = defense_weekly["defensive_matchup_vulnerability_last1"]
@@ -293,16 +317,6 @@ def _trend_delta(defense_weekly: pd.DataFrame, config: dict) -> pd.DataFrame:
         "_delta": delta,
         "_trend_window": schedule["_trend_window"],
         "_methodology_maturity": schedule["_methodology_maturity"],
-        # The exact 0-indexed games_played value the schedule above was
-        # evaluated against -- returned (not recomputed by the caller)
-        # so the persisted methodology.games_played field is guaranteed
-        # to use the SAME number the maturity tier was actually decided
-        # from, never the pre-existing +1 "games played so far" display
-        # convention _games_played uses elsewhere in this module (that
-        # field answers a different, human-display question -- "how
-        # many games has this defense played" -- not "what value did
-        # the maturity schedule key off").
-        "_games_played_0indexed": games_played,
     })
 
 
@@ -564,7 +578,6 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
     dw["_delta"] = trend["_delta"]
     dw["_trend_window"] = trend["_trend_window"]
     dw["_methodology_maturity"] = trend["_methodology_maturity"]
-    dw["_games_played_0indexed"] = trend["_games_played_0indexed"]
 
     pool = dw[
         (dw["season"] == season) & (dw["week"] == week) & dw["_delta"].notna()
@@ -649,7 +662,7 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
         story["methodology"] = {
             "trend_window_games": int(row["_trend_window"]),
             "baseline_type": "expanding_season_mean",
-            "games_played": int(row["_games_played_0indexed"]),
+            "games_played": int(row["_games_played"]),
             "methodology_version": "defensive_trends_v1",
         }
         story["methodology_maturity"] = row["_methodology_maturity"]
