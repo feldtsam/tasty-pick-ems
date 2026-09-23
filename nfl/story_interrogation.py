@@ -301,7 +301,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "newsletter"))
 
-from card_writer_common import call_claude_with_tool  # noqa: E402
+from card_writer_common import call_claude_with_tool, system_blocks  # noqa: E402
 from evidence_validator import CONFIDENCE_ESCALATING_LANGUAGE  # noqa: E402
 
 INTERROGATION_VERSION = "v1_structured_data"
@@ -568,6 +568,14 @@ guardrail, applied one level deeper.
   flourishes, no attempt to sound clever or engaging. This is an internal
   evidence record, not reader-facing copy."""
 
+# PROMPT CACHING -- this module's SYSTEM_PROMPT is a frozen module constant
+# with no per-call interpolation at all, so the whole thing is the cached
+# prefix: one block, one cache_control breakpoint, and the tool schema ahead
+# of it caches too (tools render before system). Built once here rather than
+# per call so every call site below sends byte-identical bytes.
+CACHED_SYSTEM_BLOCKS = system_blocks(SYSTEM_PROMPT)
+
+
 INTERROGATION_TOOL_SCHEMA = {
     "name": "record_story_interrogation",
     "description": "Records the challenge, confirmation, and judgment sections of a Story Interrogation for one NFL Intelligence Story Object.",
@@ -825,7 +833,7 @@ def interrogate_story(
     user_prompt = json.dumps(input_contract)
 
     try:
-        response = call_claude_with_tool(api_key, SYSTEM_PROMPT, user_prompt, INTERROGATION_TOOL_SCHEMA, max_tokens=MAX_TOKENS)
+        response = call_claude_with_tool(api_key, CACHED_SYSTEM_BLOCKS, user_prompt, INTERROGATION_TOOL_SCHEMA, max_tokens=MAX_TOKENS)
     except ValueError as e:
         print(f"[story_interrogation] API call failed: {e!r}", flush=True)
         return None
@@ -844,7 +852,7 @@ def interrogate_story(
         print(f"[story_interrogation] {label} violation(s), retrying once: {violations}", flush=True)
         try:
             response = call_claude_with_tool(
-                api_key, SYSTEM_PROMPT, _retry_prompt(input_contract, violations), INTERROGATION_TOOL_SCHEMA,
+                api_key, CACHED_SYSTEM_BLOCKS, _retry_prompt(input_contract, violations), INTERROGATION_TOOL_SCHEMA,
                 max_tokens=MAX_TOKENS,
             )
         except ValueError as e:

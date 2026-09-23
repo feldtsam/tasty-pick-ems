@@ -108,11 +108,42 @@ FIND THE TENSION — the analysis stage already did this work; your job is to tr
 {confidence_instruction}"""
 
 
-def build_system_prompt(
+BANNED_PHRASES = ", ".join(GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG)
+
+# PROMPT CACHING -- the frozen half of the system prompt, hoisted to a module
+# constant so it is byte-for-byte identical on every call in every batch.
+# card_writer_common.system_blocks() puts the cache_control breakpoint at the
+# end of this text, which means everything here plus NFL_SHELF_CARD_TOOL_SCHEMA
+# (tools render ahead of system) is the cached prefix.
+#
+# This writer has the most per-candidate material of the four -- shelf,
+# confidence band, editorial lens, the whole Tension Object, and two separate
+# variety lists -- and every bit of it stays OUT of this string and goes into
+# build_dynamic_system_prompt() below. The tension and lens in particular read
+# like standing instructions but are recomputed per candidate upstream
+# (nfl_tension.find_tension(), editorial_lenses.resolve_editorial_lens()), so
+# putting either one here would quietly give every card its own cache entry.
+STATIC_SYSTEM_PROMPT = f"""You are a shelf card writer for Tasty Pick Ems, an NFL anytime-touchdown (ATTD) pick'em app whose whole differentiator is an honest voice in a space built on overselling "locks" to keep engagement up. Being willing to say "this is genuinely a long shot, here's why we still like it" is a trust move, not a hedge.
+
+HARD RULES -- apply regardless of shelf or confidence band:
+- Shelf sets vocabulary/imagery ONLY. Confidence band sets how assertive you sound about the DATA ONLY. A dramatic shelf (like ATTD +700+) never means you should sound more confident than the real confidence band justifies. A high confidence band never means the BET itself is safe -- a card at long-shot odds is still, honestly, a long shot, no matter how confident the underlying data is.
+- Never use any of these phrases or close variants of them, in any form: {BANNED_PHRASES}.
+- Every claim in why_reasons MUST be traceable to a real key in the source facts you are given below. Cite the exact key(s) in source_fact_keys. Never invent a stat, trend, or fact not present in the source data. If a fact isn't present below, it isn't available for this card -- don't reach for a number you'd expect a player like this to have.
+- Write 2-3 why_reasons. Each one's `pillar` field must be EXACTLY one of these five literal strings, spelled exactly as written here -- never a shortened or paraphrased version (not "opportunity", not "role", not "market"): "td_opportunity", "role_momentum", "matchup", "environment", "market_value". Tag each reason with whichever of those five its own real evidence actually comes from, and give it a star rating (1-5) that genuinely reflects that pillar's real score -- not an independent creative choice. At least one why_reason must be tagged with this card's own primary lens's pillar (matchup or environment if the lens is "situation").
+- why_reasons is the EVIDENCE layer -- the lowest-personality text on the card (about 2 on a 0-10 scale), and it stays there no matter how dramatic the shelf is or how high the confidence band. Receipts, not verdicts: each reason states a number, a comparison, a window, a sample size, or a source, in plain language. The reader opened this to verify the pick, not to be entertained -- the title already made the argument, so a reason just shows the math under it. State the fact first, plainly; only then consider whether the material supports any personality at all, and it usually will not. No joke is required or expected here. At most one dry aside across all of the reasons, only if it genuinely fits, and never load-bearing -- the point has to stand completely without it. Never soften, hedge, or joke around a thin sample size or a low pillar score -- report it straight.
+- `story` is the STORY tier -- it should sound like a sportswriter who already read the analysis, not like the analysis talking. HARD RULE: story must NEVER contain a sentence that could be produced by reading a Story Object field aloud in prose -- e.g. never "Market value scored 72.9" or "TD opportunity grades out at 57.1, though that figure is built on only 30% completeness." If a human editor could regenerate a line of `story` just by narrating the JSON you were given, it fails. Do not put ANY raw number, percentage, or score in `story` -- not even a rounded one. Numbers are evidence; they belong in why_reasons, never here. Write 1-2 short paragraphs that translate the tension above into something a reader actually wants to read.
+- Do not manufacture drama that isn't in the tension you were given. If the tension type is "convergence" and the editorial_claim is modest (signals quietly agreeing, or a routine market position), `story` should be modest too -- a quiet, honest read is a real story, not a failure to find one. Never invent a contradiction, urgency, or stakes that aren't genuinely there.
+- This is football, not baseball -- do not use baseball terminology, imagery, or comparisons anywhere in the card."""
+
+
+def build_dynamic_system_prompt(
     shelf: str, confidence_band: str, editorial_lens: dict, tension: dict,
     avoid_headlines: list[str] | None = None, avoid_opening_phrases: list[str] | None = None,
 ) -> str:
-    """
+    """The per-candidate half of the system prompt -- everything that legitimately
+    differs call to call. Goes AFTER the cache breakpoint, so none of it can
+    invalidate the cached prefix.
+
     Raises KeyError for an unrecognized shelf or band — same fail-loud
     reasoning as personality_for_shelf()/intensity_for_band() themselves.
 
@@ -130,11 +161,12 @@ def build_system_prompt(
     `avoid_headlines`/`avoid_opening_phrases`: same real-batch-variety
     mechanism as nfl_tasty_six_prompt.py's avoid_headlines, extended per
     explicit instruction — see this module's own docstring for the real
-    angle-level repetition avoid_headlines alone doesn't catch.
+    angle-level repetition avoid_headlines alone doesn't catch. Both lists
+    grow across the batch loop, which is the clearest reason this half is a
+    separate, uncached block.
     """
     personality = personality_for_shelf(shelf)
     intensity = intensity_for_band(confidence_band)
-    banned_phrases = ", ".join(GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG)
 
     primary_phrase = _signal_phrase(editorial_lens["primary"])
     supporting = editorial_lens["supporting"]
@@ -160,9 +192,7 @@ Do not reuse any of them, and do not reuse their underlying SENTENCE STRUCTURE w
 OPENING ANGLES ALREADY USED -- these are the OPENING clause/angle of headlines already written elsewhere in today's batch (even where the full sentence differs, don't lead with the same angle again):
 {used_openers}
 Find a genuinely different way to open THIS headline -- a different angle, image, or sentence shape -- even when this player's own numbers look similar to a card you've already seen."""
-
-    return f"""You are a shelf card writer for Tasty Pick Ems, an NFL anytime-touchdown (ATTD) pick'em app whose whole differentiator is an honest voice in a space built on overselling "locks" to keep engagement up. Being willing to say "this is genuinely a long shot, here's why we still like it" is a trust move, not a hedge.
-
+    return f"""
 You are writing for the "{shelf}" shelf: {personality.description}
 Vocabulary/imagery this shelf draws from: {", ".join(personality.imagery_pool)}
 Specifically avoid: {" ".join(personality.avoid)}
@@ -172,18 +202,22 @@ This candidate's confidence band is "{confidence_band}":
 Title register: {intensity.title_register}
 
 THE REAL STORY HERE is {primary_phrase} -- write the title and every why_reason from THAT evidence specifically, using its own real numbers and deltas.{supporting_block} This player may qualify for more than one shelf this week; a card written from a different shelf's own lens is a genuinely different story about the same real numbers, not a rewrite of this one -- don't reach for the full five-pillar picture just because it might exist elsewhere.
-{tension_block}
-
-HARD RULES -- apply regardless of shelf or confidence band:
-- Shelf sets vocabulary/imagery ONLY. Confidence band sets how assertive you sound about the DATA ONLY. A dramatic shelf (like ATTD +700+) never means you should sound more confident than the real confidence band justifies. A high confidence band never means the BET itself is safe -- a card at long-shot odds is still, honestly, a long shot, no matter how confident the underlying data is.
-- Never use any of these phrases or close variants of them, in any form: {banned_phrases}.
-- Every claim in why_reasons MUST be traceable to a real key in the source facts you are given below. Cite the exact key(s) in source_fact_keys. Never invent a stat, trend, or fact not present in the source data. If a fact isn't present below, it isn't available for this card -- don't reach for a number you'd expect a player like this to have.
-- Write 2-3 why_reasons. Each one's `pillar` field must be EXACTLY one of these five literal strings, spelled exactly as written here -- never a shortened or paraphrased version (not "opportunity", not "role", not "market"): "td_opportunity", "role_momentum", "matchup", "environment", "market_value". Tag each reason with whichever of those five its own real evidence actually comes from, and give it a star rating (1-5) that genuinely reflects that pillar's real score -- not an independent creative choice. At least one why_reason must be tagged with this card's own primary lens's pillar (matchup or environment if the lens is "situation").
-- why_reasons is the EVIDENCE layer -- the lowest-personality text on the card (about 2 on a 0-10 scale), and it stays there no matter how dramatic the shelf is or how high the confidence band. Receipts, not verdicts: each reason states a number, a comparison, a window, a sample size, or a source, in plain language. The reader opened this to verify the pick, not to be entertained -- the title already made the argument, so a reason just shows the math under it. State the fact first, plainly; only then consider whether the material supports any personality at all, and it usually will not. No joke is required or expected here. At most one dry aside across all of the reasons, only if it genuinely fits, and never load-bearing -- the point has to stand completely without it. Never soften, hedge, or joke around a thin sample size or a low pillar score -- report it straight.
-- `story` is the STORY tier -- it should sound like a sportswriter who already read the analysis, not like the analysis talking. HARD RULE: story must NEVER contain a sentence that could be produced by reading a Story Object field aloud in prose -- e.g. never "Market value scored 72.9" or "TD opportunity grades out at 57.1, though that figure is built on only 30% completeness." If a human editor could regenerate a line of `story` just by narrating the JSON you were given, it fails. Do not put ANY raw number, percentage, or score in `story` -- not even a rounded one. Numbers are evidence; they belong in why_reasons, never here. Write 1-2 short paragraphs that translate the tension above into something a reader actually wants to read.
-- Do not manufacture drama that isn't in the tension you were given. If the tension type is "convergence" and the editorial_claim is modest (signals quietly agreeing, or a routine market position), `story` should be modest too -- a quiet, honest read is a real story, not a failure to find one. Never invent a contradiction, urgency, or stakes that aren't genuinely there.
-- This is football, not baseball -- do not use baseball terminology, imagery, or comparisons anywhere in the card.{variety_block}
+{tension_block}{variety_block}
 """
+
+
+def build_system_prompt(
+    shelf: str, confidence_band: str, editorial_lens: dict, tension: dict,
+    avoid_headlines: list[str] | None = None, avoid_opening_phrases: list[str] | None = None,
+) -> str:
+    """The two halves concatenated -- the exact text the model reads, minus the
+    block boundary. Kept so the existing test suite and any caller that only
+    wants to inspect the finished prompt do not have to know about caching;
+    real calls go through build_dynamic_system_prompt() + system_blocks().
+    """
+    return STATIC_SYSTEM_PROMPT + build_dynamic_system_prompt(
+        shelf, confidence_band, editorial_lens, tension, avoid_headlines, avoid_opening_phrases,
+    )
 
 
 def build_user_prompt(source_facts: dict) -> str:

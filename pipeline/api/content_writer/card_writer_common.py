@@ -823,7 +823,52 @@ MAX_TOKENS = 1024
 REQUEST_TIMEOUT_SECONDS = 60
 
 
-def call_claude_with_tool(api_key: str, system_prompt: str, user_prompt: str, tool_schema: dict) -> dict:
+# ---------------------------------------------------------------------------
+# Prompt caching — the static/dynamic system-prompt split.
+#
+# Prompt caching is a PREFIX match: the cache key is the exact bytes of the
+# rendered prompt up to the cache_control breakpoint, and the render order is
+# tools -> system -> messages. One changed byte anywhere before the breakpoint
+# invalidates it. So the frozen half of a system prompt has to physically come
+# FIRST, with every per-candidate detail after it.
+#
+# system_blocks() is that split, made explicit at every call site. `static`
+# must be byte-for-byte identical on every call — no dates, no IDs, no shelf
+# name, no confidence band, and above all no avoid_headlines (that list GROWS
+# on every call within a batch, so anything downstream of it can never be
+# reused). `dynamic` is everything else, and carries no breakpoint.
+#
+# Callers that still pass a bare string get NO breakpoint and no caching, on
+# purpose: a cache write costs 1.25x base input price, so silently caching a
+# prompt that turns out to vary per call would make things more expensive, not
+# less. Opting in is a visible edit.
+# ---------------------------------------------------------------------------
+
+
+def system_blocks(static: str, dynamic: str = "") -> list:
+    """The system field as content blocks, with a cache_control breakpoint at
+    the end of `static`.
+
+    The breakpoint on the last static block caches the tool schema TOO (tools
+    render ahead of system), which is what makes these prompts clear the
+    model's minimum cacheable prefix — see this module's MODEL_NAME and the
+    note in call_claude_with_tool's docstring.
+
+    `dynamic` is returned as its own uncached block. An empty `dynamic` means
+    the whole system prompt is frozen (eps.py, story_interrogation.py, the
+    weekly editor agent) and the call is a single cached block.
+    """
+    blocks = [{
+        "type": "text",
+        "text": static,
+        "cache_control": {"type": "ephemeral"},
+    }]
+    if dynamic:
+        blocks.append({"type": "text", "text": dynamic})
+    return blocks
+
+
+def call_claude_with_tool(api_key: str, system_prompt, user_prompt: str, tool_schema: dict) -> dict:
     """
     One real Claude API call, forced tool-use against the given
     tool_schema — structured output enforced by the API itself, never
@@ -833,6 +878,23 @@ def call_claude_with_tool(api_key: str, system_prompt: str, user_prompt: str, to
     a real bug found and fixed 2026-08-04). Raises ValueError if the model
     response somehow has no tool_use block for the requested tool —
     shouldn't happen with tool_choice forced, but not assumed.
+
+    PROMPT CACHING: `system_prompt` is either a plain string (no caching —
+    every token billed at full input price on every call) or the list of
+    content blocks system_blocks() builds, where the frozen half carries a
+    cache_control breakpoint. Both shapes are passed to the API unchanged;
+    this function does not add, move, or infer a breakpoint, because whether a
+    given prompt is actually stable is knowable only at the call site.
+
+    The cached prefix is tools + system up to the breakpoint, and it has to
+    clear the model's minimum cacheable length or the API silently caches
+    nothing (no error — just cache_creation_input_tokens=0). Measured against
+    the real count_tokens endpoint for MODEL_NAME (claude-sonnet-5, 1024-token
+    minimum): the Tasty Six static system prompt is 960 tokens on its own and
+    1988 with TASTY_SIX_TOOL_SCHEMA ahead of it, the shelf card 961 and 1895.
+    Both clear the minimum ONLY because the tool schema counts toward the
+    prefix. Re-measure before trimming a static prompt or a tool schema —
+    dropping under 1024 would turn caching off silently rather than loudly.
     """
     response = requests.post(
         ANTHROPIC_API_URL,
@@ -854,6 +916,28 @@ def call_claude_with_tool(api_key: str, system_prompt: str, user_prompt: str, to
     if response.status_code >= 400:
         raise ValueError(f"Claude API returned {response.status_code}: {response.text}")
     data = response.json()
+
+    # PROMPT CACHING VERIFICATION. cache_creation_input_tokens is what this
+    # call WROTE into the cache; cache_read_input_tokens is what it READ back
+    # from a previous call's write. Across one batch the healthy shape is a
+    # nonzero creation on the first call and a nonzero read on every call
+    # after it. Both reading zero on every call means the prefix is being
+    # invalidated somewhere (see system_blocks() above) or is shorter than the
+    # model's minimum cacheable length — neither of which the API reports as
+    # an error, which is exactly why these two numbers are logged rather than
+    # assumed. Defaulted to 0, not None: the fields are absent entirely on a
+    # response with no cache_control in the request, and "0" is the honest
+    # reading of that, not missing data. Matches the log line the NFL copy of
+    # this module already emits, so one batch reads the same either side.
+    usage = data.get("usage") or {}
+    print(
+        f"[call_claude_with_tool] tool={tool_schema.get('name', 'unknown_tool')} "
+        f"input_tokens={usage.get('input_tokens')} "
+        f"output_tokens={usage.get('output_tokens')} "
+        f"cache_creation_input_tokens={usage.get('cache_creation_input_tokens', 0)} "
+        f"cache_read_input_tokens={usage.get('cache_read_input_tokens', 0)}",
+        flush=True,
+    )
 
     for block in data.get("content", []):
         if block.get("type") == "tool_use" and block.get("name") == tool_schema["name"]:

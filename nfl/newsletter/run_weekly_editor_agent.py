@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
 
-from card_writer_common import call_claude_with_tool  # noqa: E402
+from card_writer_common import call_claude_with_tool, system_blocks  # noqa: E402
 
 PROMPT_PATH = Path(__file__).resolve().parent / "weekly_editor_agent_prompt_v2.md"
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixture_v2.json"
@@ -159,7 +159,12 @@ def build_candidate_pool_input(fixtures: list) -> str:
 
 
 def run_weekly_editor_agent(fixtures: list, api_key: str) -> dict:
-    system_prompt = PROMPT_PATH.read_text()
+    # PROMPT CACHING: this prompt is a checked-in markdown file with no
+    # per-call interpolation, so the whole system prompt is the cached prefix
+    # -- one block, one cache_control breakpoint, tool schema cached with it.
+    # Re-read per call as before; the file's bytes are what the cache keys on,
+    # and they only change when someone edits the prompt (which SHOULD miss).
+    system_prompt = system_blocks(PROMPT_PATH.read_text())
     user_prompt = build_candidate_pool_input(fixtures)
     return call_claude_with_tool(api_key, system_prompt, user_prompt, WEEKLY_BRIEF_TOOL_SCHEMA, max_tokens=MAX_TOKENS)
 

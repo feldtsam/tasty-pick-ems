@@ -37,6 +37,7 @@ from card_writer_common import (  # noqa: E402
     STAR_PILLAR_SCORE_KEYS,
     TOP_LEVEL_CITABLE_FIELDS,
     call_claude_with_tool,
+    system_blocks,
     flatten_source_facts,
     mlb_tolerance_for_key,
     validate_citations,
@@ -44,13 +45,17 @@ from card_writer_common import (  # noqa: E402
     validate_star_consistency,
 )
 from principles import confidence_band_for_score  # noqa: E402
-from shelf_card_prompt import build_system_prompt, build_user_prompt  # noqa: E402
+from shelf_card_prompt import (  # noqa: E402
+    STATIC_SYSTEM_PROMPT,
+    build_dynamic_system_prompt,
+    build_user_prompt,
+)
 from shelf_card_writer_schema import SHELF_CARD_TOOL_SCHEMA, validate_schema_shape  # noqa: E402
 
 WRITER_TYPE = "shelf_card"
 
 
-def call_claude_for_shelf_card(api_key: str, system_prompt: str, user_prompt: str) -> dict:
+def call_claude_for_shelf_card(api_key: str, system_prompt, user_prompt: str) -> dict:
     """Thin, named wrapper around the shared call_claude_with_tool() --
     same shape as generate_tasty_six_content.py's equivalent entry point."""
     return call_claude_with_tool(api_key, system_prompt, user_prompt, SHELF_CARD_TOOL_SCHEMA)
@@ -137,13 +142,19 @@ def generate_shelf_card_draft(
     source_facts = flatten_source_facts(
         candidate, TOP_LEVEL_CITABLE_FIELDS, ("pillar_detail",), RECENT_FORM_CITABLE_FIELDS, RECENT_FORM_SKIP_FIELDS,
     )
-    system_prompt = build_system_prompt(shelf, confidence_band, avoid_headlines=avoid_headlines)
+    # PROMPT CACHING: the system prompt goes to the API as two blocks, not one
+    # string -- STATIC_SYSTEM_PROMPT (frozen, carries the cache_control
+    # breakpoint) followed by this per-candidate tail. See system_blocks() in
+    # card_writer_common.py for why the order is load-bearing.
+    dynamic_system_prompt = build_dynamic_system_prompt(shelf, confidence_band, avoid_headlines=avoid_headlines)
     user_prompt = build_user_prompt(source_facts)
 
     if debug_inject_violation_instruction:
-        system_prompt += f"\n\nFOR THIS GENERATION ONLY, additionally: {debug_inject_violation_instruction}"
+        dynamic_system_prompt += f"\n\nFOR THIS GENERATION ONLY, additionally: {debug_inject_violation_instruction}"
 
-    output = call_claude_for_shelf_card(anthropic_api_key, system_prompt, user_prompt)
+    output = call_claude_for_shelf_card(
+        anthropic_api_key, system_blocks(STATIC_SYSTEM_PROMPT, dynamic_system_prompt), user_prompt,
+    )
     issues = run_all_validators(output, source_facts, candidate)
 
     return {

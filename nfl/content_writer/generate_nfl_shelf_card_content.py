@@ -48,6 +48,7 @@ from banned_language import find_banned_phrases  # noqa: E402 -- reused unmodifi
 from card_writer_common import (  # noqa: E402
     MODEL_NAME,
     call_claude_with_tool,
+    system_blocks,
     flatten_source_facts,
     validate_citations,
     validate_numeric_grounding,
@@ -62,7 +63,11 @@ from nfl_writer_common import (  # noqa: E402
     nfl_tolerance_for_key,
     validate_pillar_field_consistency,
 )
-from nfl_shelf_card_prompt import build_system_prompt, build_user_prompt  # noqa: E402
+from nfl_shelf_card_prompt import (  # noqa: E402
+    STATIC_SYSTEM_PROMPT,
+    build_dynamic_system_prompt,
+    build_user_prompt,
+)
 from nfl_shelf_card_writer_schema import NFL_SHELF_CARD_TOOL_SCHEMA, validate_schema_shape  # noqa: E402
 from nfl_tension import find_tension  # noqa: E402
 
@@ -116,7 +121,7 @@ def opening_phrase(title: str) -> str:
     return " ".join(words[:6])
 
 
-def call_claude_for_nfl_shelf_card(api_key: str, system_prompt: str, user_prompt: str) -> dict:
+def call_claude_for_nfl_shelf_card(api_key: str, system_prompt, user_prompt: str) -> dict:
     """Thin, named wrapper around the shared call_claude_with_tool() --
     same shape as every other writer's own entry point in this pipeline.
 
@@ -334,15 +339,22 @@ def generate_nfl_shelf_card_draft(
             f"signal_verdict gated this candidate out (FAILS/UNRESOLVED) -- no card"
         )
 
-    system_prompt = build_system_prompt(
+    # PROMPT CACHING: the system prompt goes to the API as two blocks, not one
+    # string -- STATIC_SYSTEM_PROMPT (frozen, carries the cache_control
+    # breakpoint) followed by this per-candidate tail, which is where the lens,
+    # the tension, and both variety lists live. See system_blocks() in
+    # card_writer_common.py for why the order is load-bearing.
+    dynamic_system_prompt = build_dynamic_system_prompt(
         shelf, confidence_band, lens, tension, avoid_headlines=avoid_headlines, avoid_opening_phrases=avoid_opening_phrases,
     )
     user_prompt = build_user_prompt(source_facts)
 
     if debug_inject_violation_instruction:
-        system_prompt += f"\n\nFOR THIS GENERATION ONLY, additionally: {debug_inject_violation_instruction}"
+        dynamic_system_prompt += f"\n\nFOR THIS GENERATION ONLY, additionally: {debug_inject_violation_instruction}"
 
-    output = call_claude_for_nfl_shelf_card(anthropic_api_key, system_prompt, user_prompt)
+    output = call_claude_for_nfl_shelf_card(
+        anthropic_api_key, system_blocks(STATIC_SYSTEM_PROMPT, dynamic_system_prompt), user_prompt,
+    )
     issues = run_all_validators(output, source_facts)
     title = output.get("title")
 

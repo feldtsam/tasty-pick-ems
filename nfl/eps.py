@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "newsletter"))
 
-from card_writer_common import call_claude_with_tool  # noqa: E402
+from card_writer_common import call_claude_with_tool, system_blocks  # noqa: E402
 from evidence_validator import CONFIDENCE_ESCALATING_LANGUAGE  # noqa: E402
 
 EPS_VERSION = "v1"
@@ -306,6 +306,14 @@ to score higher.
 - Plain, direct, unembellished language. No hedging filler, no rhetorical
   flourish. This is an internal scoring record, not reader-facing copy."""
 
+# PROMPT CACHING -- this module's SYSTEM_PROMPT is a frozen module constant
+# with no per-call interpolation at all, so the whole thing is the cached
+# prefix: one block, one cache_control breakpoint, and the tool schema ahead
+# of it caches too (tools render before system). Built once here rather than
+# per call so every call site below sends byte-identical bytes.
+CACHED_SYSTEM_BLOCKS = system_blocks(SYSTEM_PROMPT)
+
+
 EPS_SEMANTIC_TOOL_SCHEMA = {
     "name": "record_eps_semantic_scores",
     "description": "Records Significance, Betting Relevance, Novelty, and Story Tension scores for one NFL Intelligence Story Object.",
@@ -464,7 +472,7 @@ def _score_semantic_dimensions(
 
     try:
         response = call_claude_with_tool(
-            api_key, SYSTEM_PROMPT, user_prompt, EPS_SEMANTIC_TOOL_SCHEMA, max_tokens=MAX_TOKENS,
+            api_key, CACHED_SYSTEM_BLOCKS, user_prompt, EPS_SEMANTIC_TOOL_SCHEMA, max_tokens=MAX_TOKENS,
         )
     except ValueError as e:
         print(f"[eps] semantic scoring API call failed: {e!r}", flush=True)
@@ -474,7 +482,7 @@ def _score_semantic_dimensions(
         print(f"[eps] malformed semantic response shape (a dimension wasn't a real {{score, rationale}} object), retrying once: {response!r}", flush=True)
         try:
             response = call_claude_with_tool(
-                api_key, SYSTEM_PROMPT, user_prompt, EPS_SEMANTIC_TOOL_SCHEMA, max_tokens=MAX_TOKENS,
+                api_key, CACHED_SYSTEM_BLOCKS, user_prompt, EPS_SEMANTIC_TOOL_SCHEMA, max_tokens=MAX_TOKENS,
             )
         except ValueError as e:
             print(f"[eps] retry API call failed: {e!r}", flush=True)
@@ -488,7 +496,7 @@ def _score_semantic_dimensions(
         print(f"[eps] confidence-escalation violation(s), retrying once: {violations}", flush=True)
         try:
             response = call_claude_with_tool(
-                api_key, SYSTEM_PROMPT, _retry_prompt(input_contract, violations), EPS_SEMANTIC_TOOL_SCHEMA,
+                api_key, CACHED_SYSTEM_BLOCKS, _retry_prompt(input_contract, violations), EPS_SEMANTIC_TOOL_SCHEMA,
                 max_tokens=MAX_TOKENS,
             )
         except ValueError as e:
