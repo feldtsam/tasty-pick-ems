@@ -1432,24 +1432,28 @@ def _interrogate_unique_candidates(
     be redundant, not a second real source, so prior_history is left
     honestly unpopulated rather than duplicated for its own sake.
 
-    OPEN QUESTION, NOT RESOLVED, CONFIRMED DORMANT — shelves_to_process
-    (api/index.py) can split ONE logical curation run across two
-    separate HTTP invocations, each calling shape_content_draft_rows
-    (and therefore this function) fresh, with no shared state between
-    them. This function's own dedup is correct WITHIN one call, but has
-    no cross-call memory — if shelves_to_process is ever activated, this
-    function would re-run its full grouping + Pass 3 selection +
-    interrogate_story() calls independently in EACH split call, over
-    the same candidate population each time (full duplication, not
-    partial overlap), with a real risk of the same candidate getting two
-    independently-generated, potentially-divergent signal_verdicts
-    across the two calls. See the full write-up and the two named
-    remediation approaches (not yet decided between, not implemented) in
-    api/index.py's own shelves_to_process docstring. Confirmed dormant
-    as of this writing (no caller anywhere sets shelves_to_process) —
-    does not block this function's own current behavior or Pass 4's
-    concurrency work, both of which correctly target today's real,
-    single-invocation call pattern.
+    OPEN QUESTION, DESIGN DECIDED (NOT IMPLEMENTED), CONFIRMED DORMANT
+    — shelves_to_process (api/index.py) can split ONE logical curation
+    run across two separate HTTP invocations, each calling shape_
+    content_draft_rows (and therefore this function) fresh, with no
+    shared state between them. This function's own dedup is correct
+    WITHIN one call, but has no cross-call memory — if shelves_to_
+    process is ever activated, this function would re-run its full
+    grouping + Pass 3 selection + interrogate_story() calls
+    independently in EACH split call, over the same candidate
+    population each time (full duplication, not partial overlap), with
+    a real risk of the same candidate getting two independently-
+    generated, potentially-divergent signal_verdicts across the two
+    calls. See the full write-up, the FUTURE SPLIT-EXECUTION INVARIANT,
+    and the decided (not yet implemented) precompute-step design in
+    api/index.py's own shelves_to_process docstring (decided 2026-09-23:
+    a dedicated precompute step, not a read-through cache — see that
+    block for why single-flight/claim semantics were investigated and
+    rejected as unnecessary complexity). Confirmed dormant as of this
+    writing (re-confirmed 2026-09-23; no caller anywhere sets shelves_
+    to_process) — does not block this function's own current behavior
+    or Pass 4's concurrency work, both of which correctly target
+    today's real, single-invocation call pattern.
 
     Pass 3 SELECTION GATE, before any Interrogation call is made: not
     every unique candidate is interrogated. config["interrogation_top_

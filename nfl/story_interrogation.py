@@ -304,7 +304,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "newsletter"))
 from card_writer_common import call_claude_with_tool, system_blocks  # noqa: E402
 from evidence_validator import CONFIDENCE_ESCALATING_LANGUAGE  # noqa: E402
 
-INTERROGATION_VERSION = "v1_structured_data"
+# Bumped from "v1_structured_data" (2026-09) -- real, substantive changes
+# to this schema/contract had shipped without ever bumping this: tension-
+# type-aware market_reaction weighting (divergence constitutive/
+# contradiction incidental), the relationship_established field itself
+# (a real schema addition, not just a reasoning change) plus its STOP-
+# gate wiring in nfl_tension.py, and the consistency-check/_dict_field
+# type-guard fixes. Confirmed via grep before bumping: no real code
+# anywhere compares against this string's exact value (only present as
+# representative fixture data in newsletter/'s own test fixtures, never
+# gated on) -- safe to change. Bump this again on the next real prompt/
+# schema change; this string existing is only useful if it's actually
+# kept current, which it wasn't from v1 through everything above.
+INTERROGATION_VERSION = "v2_relationship_established"
 
 # card_writer_common.MAX_TOKENS (1024, its own module default) truncates
 # a real Story Interrogation response before `judgment` -- confirmed

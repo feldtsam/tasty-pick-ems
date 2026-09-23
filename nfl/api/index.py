@@ -1012,12 +1012,13 @@ def curate_and_write_drafts_endpoint():
     processes in one call, byte-identical to this endpoint's behavior
     before this fix existed.
 
-    OPEN QUESTION, NOT RESOLVED — shelves_to_process and candidate-level
-    Interrogation duplication: flagged here deliberately, same rigor as
-    story_interrogation.py's own open questions (the all-WEAKENED+FAILS
-    gap, the market_data=None gap), not silently assumed safe. CONFIRMED
-    DORMANT as of this writing — a real investigation (Pass 3.5) grepped
-    every .py/.md/.ts/.sh/.json file in both repos and found no caller
+    OPEN QUESTION, DESIGN DECIDED (NOT IMPLEMENTED) — shelves_to_process
+    and candidate-level Interrogation duplication: flagged here
+    deliberately, same rigor as story_interrogation.py's own open
+    questions (the all-WEAKENED+FAILS gap, the market_data=None gap),
+    not silently assumed safe. CONFIRMED DORMANT as of this writing (re-
+    confirmed 2026-09-23, this exact investigation) — grepped every
+    .py/.md/.ts/.sh/.json file in both repos and found no caller
     anywhere that ever sets shelves_to_process; this endpoint's own
     "eventual Make.com Part 3" language above confirms the intended
     caller hasn't shipped yet. Because it's dormant, it is NOT currently
@@ -1055,25 +1056,74 @@ def curate_and_write_drafts_endpoint():
     2.1 closed at the shelf-iteration-order layer, reappearing here at
     the HTTP-request-partitioning layer instead.
 
-    REQUIRED FIX BEFORE ACTIVATION, not yet decided between, NOT
-    implemented here: candidate-truth computation (_interrogate_unique_
-    candidates()'s grouping + Pass 3 selection + interrogate_story()
-    calls) must execute exactly ONCE per logical curation run and be
-    durably shared across both split calls, never re-run inside each
-    one independently. Two named approaches:
-      (a) a dedicated, always-single, non-split step that computes the
-          candidate truth package once and persists it somewhere both
-          split calls can read (a new interim store, or an existing one
-          reused for this), or
-      (b) restructure shelves_to_process so it scopes ONLY the
-          placement/writer phase, never the candidate phase — the
-          already-computed candidate truth package gets threaded in as
-          an argument instead of recomputed.
-    This must be resolved before shelves_to_process is ever wired into
-    real Make.com automation — not before Pass 4, since nothing today
-    exercises this path, and re-checked (this block re-read, not just
-    assumed still true) before that wiring happens, in case a caller
-    appears without this block being updated first.
+    FUTURE SPLIT-EXECUTION INVARIANT, decided 2026-09-23, NOT
+    implemented (no real caller exists yet; shelves_to_process remains
+    confirmed dormant as of this same investigation): before activating
+    multi-call shelves_to_process curation, candidate-level Interrogation
+    must be extracted into a single precompute step that runs once per
+    logical curation execution. Both downstream shelf-processing calls
+    consume the resulting candidate-level Interrogation artifacts and
+    must NOT independently call interrogate_story().
+
+    RECOMMENDED SHAPE, investigated and decided between two real
+    options, not just picked: a dedicated precompute step — NOT a read-
+    through cache with single-flight/claim semantics. The read-through
+    alternative was investigated and rejected as unnecessary complexity:
+    two split HTTP calls can genuinely execute concurrently (nothing in
+    this codebase or the Vercel platform serializes them), so a plain
+    check-then-insert cache reproduces this exact bug one layer down —
+    correct single-flight needs a real INSERT-only claim row with a
+    UNIQUE-constraint conflict check BEFORE calling the LLM, plus a
+    staleness/timeout fallback for an abandoned claim (the winner's
+    process dying mid-interrogation) — a genuinely new class of
+    complexity this codebase has never needed (every real write route
+    today uses plain upsert-on-conflict, which dedupes ROWS, not
+    concurrent LLM CALLS). A dedicated precompute step sidesteps the
+    race entirely by construction: exactly one writer, ever, so there is
+    nothing to claim or arbitrate. Intended flow:
+
+        Logical NFL curation run
+                  |
+            Candidate selection
+                  |
+          Interrogation precompute
+              ONCE / candidate
+                  |
+        Persist candidate truth artifacts
+                  |
+              +---+---+
+              |       |
+        Shelf call A  Shelf call B
+              |       |
+          Tension     Tension
+          Eyebrow     Eyebrow
+              |       |
+          Cards       Cards
+
+    Two design findings to carry forward when this is implemented:
+      - FRESHNESS: persisted Interrogation results must be tied to the
+        relevant evidence snapshot/hash (_shelf_neutral_candidate_
+        evidence() output + the market_data payload + INTERROGATION_
+        VERSION), never treated as permanent weekly truth. A TTL is the
+        wrong tool here — it answers "is this recent," not "is this
+        still true."
+      - VERSIONING: INTERROGATION_VERSION must actually invalidate
+        results when the Interrogation contract/prompt materially
+        changes — this requires real discipline (bump on every
+        substantive prompt/schema change), which was NOT reliably
+        followed from this constant's introduction through the tension-
+        type-aware market-weighting revision and the relationship_
+        established addition — see story_interrogation.py's own
+        INTERROGATION_VERSION, bumped 2026-09-23 specifically to close
+        that gap (was "v1_structured_data", unchanged through both of
+        those real schema/contract changes; now "v2_relationship_
+        established").
+
+    Do NOT activate split shelf execution until this precompute step
+    exists. Re-checked (this block re-read, not just assumed still
+    true) before shelves_to_process is ever wired into real Make.com
+    automation, in case a caller appears without this block being
+    updated first.
     """
     # TIMING INSTRUMENTATION -- shelf_card_llm_top_n scaling investigation
     # (see CONFIG["shelf_card_llm_top_n"]'s own comment for the real
