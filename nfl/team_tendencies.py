@@ -1019,9 +1019,22 @@ def _evidence_classification_for_row(completeness: float, confidence: float, con
     return "limited"
 
 
-def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
-    """One story per team whose red-zone run/pass tendency clears the structural volume gate AND the trend materiality threshold."""
-    tw = _score_redzone_play_calling(aggregate_redzone_play_calling(pbp), config)
+def build_redzone_play_calling_stories(
+    pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG, _team_week: pd.DataFrame = None,
+) -> list:
+    """
+    One story per team whose red-zone run/pass tendency clears the
+    structural volume gate AND the trend materiality threshold.
+
+    _team_week: INTERNAL, optional -- an already-scored tw frame (same
+    shape _score_redzone_play_calling(aggregate_redzone_play_calling(pbp),
+    config) produces), for build_team_tendencies_stories' own real single-
+    pass diagnostics need (see that function's own docstring). Every real
+    external caller omits this (None, the default) and gets the exact
+    same behavior as before this param existed -- pbp is still aggregated
+    and scored fresh right here in that case, nothing changes for them.
+    """
+    tw = _team_week if _team_week is not None else _score_redzone_play_calling(aggregate_redzone_play_calling(pbp), config)
     pool = tw[
         (tw["season"] == season) & (tw["week"] == week) & tw["_qualified"] & tw["_delta"].notna()
         & (tw["_delta"].abs() >= config["redzone_trend_threshold"])
@@ -1097,9 +1110,18 @@ def build_redzone_play_calling_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, 
     return stories
 
 
-def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
-    """One story per team whose 4th-down aggressiveness clears the structural volume gate AND the trend materiality threshold."""
-    tw = _score_fourth_down_aggressiveness(aggregate_fourth_down_aggressiveness(pbp, config), config)
+def build_fourth_down_aggressiveness_stories(
+    pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG, _team_week: pd.DataFrame = None,
+) -> list:
+    """
+    One story per team whose 4th-down aggressiveness clears the
+    structural volume gate AND the trend materiality threshold.
+
+    _team_week: INTERNAL, optional -- see build_redzone_play_calling_
+    stories' own identical param for the full reasoning. Every real
+    external caller omits this and is unaffected.
+    """
+    tw = _team_week if _team_week is not None else _score_fourth_down_aggressiveness(aggregate_fourth_down_aggressiveness(pbp, config), config)
     pool = tw[
         (tw["season"] == season) & (tw["week"] == week) & tw["_qualified"] & tw["_delta"].notna()
         & (tw["_delta"].abs() >= config["fourth_down_trend_threshold"])
@@ -1166,14 +1188,23 @@ def build_fourth_down_aggressiveness_stories(pbp: pd.DataFrame, weekly: pd.DataF
     return stories
 
 
-def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
+def build_pace_stories(
+    pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG, _team_week: pd.DataFrame = None,
+) -> list:
     """
     One story per team whose pace trend clears the materiality
     threshold — NO structural volume gate (per the approved
     investigation), just the games_played mask already inside _trend_
     delta plus hedged language for a still-thin season.
+
+    _team_week: INTERNAL, optional -- see build_redzone_play_calling_
+    stories' own identical param for the full reasoning. Every real
+    external caller omits this and is unaffected. Copied (not mutated
+    in place) before adding _games_played, so a caller reusing the same
+    frame object for its own diagnostics never sees this function's own
+    added column leak back onto it.
     """
-    tw = _score_pace(aggregate_pace(pbp), config)
+    tw = (_team_week if _team_week is not None else _score_pace(aggregate_pace(pbp), config)).copy()
     tw["_games_played"] = tw.groupby(["team", "season"]).cumcount() + 1
     pool = tw[
         (tw["season"] == season) & (tw["week"] == week) & tw["_delta"].notna()
@@ -1247,10 +1278,65 @@ def build_pace_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, wee
     return stories
 
 
-def build_team_tendencies_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
-    """All three Coaching Trends detectors combined into one feed for a given week."""
-    return (
-        build_redzone_play_calling_stories(pbp, weekly, season, week, config)
-        + build_fourth_down_aggressiveness_stories(pbp, weekly, season, week, config)
-        + build_pace_stories(pbp, weekly, season, week, config)
-    )
+def build_team_tendencies_stories(pbp: pd.DataFrame, weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> tuple:
+    """
+    All three Coaching Trends detectors combined into one feed for a
+    given week.
+
+    Returns (stories, diagnostics) -- same shape as defensive_trends.
+    build_defensive_trends_stories() and market_intelligence.
+    build_deviation_stories(), added for the same real reason (Editorial
+    Intelligence investigation, 2026-09): a games_played gate clearing
+    and a trend_threshold gate not clearing both look identical from the
+    outside as stories_generated=0. diagnostics = {"pool_after_games_
+    played_gate": N, "pool_after_trend_threshold": M} -- COMBINED across
+    all three detectors (redzone/fourth-down/pace), not broken out per
+    detector.
+
+    SINGLE REAL PASS, not a second recomputation -- measured directly
+    against real 2025 pbp (Editorial Intelligence investigation,
+    2026-09): a first version of this function called each detector's
+    own build_*_stories() (which internally aggregates+scores pbp fresh)
+    AND separately re-ran aggregate_*/_score_* a second time purely for
+    diagnostics -- a real, measured ~1.2s marginal cost (roughly
+    doubling this function's own real runtime), not negligible on real
+    per-request pbp volume. Each detector's own aggregate_*/_score_* now
+    runs exactly ONCE here; the resulting already-scored frame is passed
+    into that detector's own build_*_stories() via its new, optional
+    _team_week param (every other real caller omits this and is
+    completely unaffected -- see that param's own docstring on each of
+    the three functions) AND used directly below to derive diagnostics
+    from the SAME real computation the stories themselves came from, not
+    a second, independently-derived count that could drift from it.
+
+    Each detector's own real pool filter is mirrored exactly here, not
+    approximated: redzone/fourth-down both gate on _qualified (their own
+    structural volume floor) ahead of games_played; pace deliberately
+    has no _qualified gate in its own pool (see build_pace_stories' own
+    real finding on this), so it's excluded here too, same as there.
+    """
+    rz_tw = _score_redzone_play_calling(aggregate_redzone_play_calling(pbp), config)
+    fd_tw = _score_fourth_down_aggressiveness(aggregate_fourth_down_aggressiveness(pbp, config), config)
+    pace_tw = _score_pace(aggregate_pace(pbp), config)
+
+    rz_stories = build_redzone_play_calling_stories(pbp, weekly, season, week, config, _team_week=rz_tw)
+    fd_stories = build_fourth_down_aggressiveness_stories(pbp, weekly, season, week, config, _team_week=fd_tw)
+    pace_stories = build_pace_stories(pbp, weekly, season, week, config, _team_week=pace_tw)
+
+    rz_scope = rz_tw[(rz_tw["season"] == season) & (rz_tw["week"] == week) & rz_tw["_qualified"]]
+    rz_after_gpg = rz_scope[rz_scope["_delta"].notna()]
+    rz_after_tt = rz_after_gpg[rz_after_gpg["_delta"].abs() >= config["redzone_trend_threshold"]]
+
+    fd_scope = fd_tw[(fd_tw["season"] == season) & (fd_tw["week"] == week) & fd_tw["_qualified"]]
+    fd_after_gpg = fd_scope[fd_scope["_delta"].notna()]
+    fd_after_tt = fd_after_gpg[fd_after_gpg["_delta"].abs() >= config["fourth_down_trend_threshold"]]
+
+    pace_scope = pace_tw[(pace_tw["season"] == season) & (pace_tw["week"] == week)]
+    pace_after_gpg = pace_scope[pace_scope["_delta"].notna()]
+    pace_after_tt = pace_after_gpg[pace_after_gpg["_delta"].abs() >= config["pace_trend_threshold"]]
+
+    diagnostics = {
+        "pool_after_games_played_gate": len(rz_after_gpg) + len(fd_after_gpg) + len(pace_after_gpg),
+        "pool_after_trend_threshold": len(rz_after_tt) + len(fd_after_tt) + len(pace_after_tt),
+    }
+    return rz_stories + fd_stories + pace_stories, diagnostics

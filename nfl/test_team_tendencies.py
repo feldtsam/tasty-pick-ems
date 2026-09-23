@@ -207,13 +207,20 @@ if __name__ == "__main__":
     # ============================================================
     # Combined feed wrapper.
     # ============================================================
-    combined = build_team_tendencies_stories(pbp2025, weekly, 2025, 15)
+    combined, combined_diag = build_team_tendencies_stories(pbp2025, weekly, 2025, 15)
     separate = (
         build_redzone_play_calling_stories(pbp2025, weekly, 2025, 15)
         + build_fourth_down_aggressiveness_stories(pbp2025, weekly, 2025, 15)
         + build_pace_stories(pbp2025, weekly, 2025, 15)
     )
     results.append(check("build_team_tendencies_stories combines all three detectors' real output for a week", len(combined) == len(separate) and len(combined) > 0))
+    results.append(check(
+        f"combined diagnostics: pool_after_trend_threshold matches the real combined story count exactly, "
+        f"pool_after_games_played_gate is >= that (games_played gate is strictly earlier than trend_threshold) "
+        f"(got {combined_diag})",
+        combined_diag["pool_after_trend_threshold"] == len(combined)
+        and combined_diag["pool_after_games_played_gate"] >= combined_diag["pool_after_trend_threshold"],
+    ))
 
     # ============================================================
     # Structural gates (red-zone, fourth-down) actually block thin
