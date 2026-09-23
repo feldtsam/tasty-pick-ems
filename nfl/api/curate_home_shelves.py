@@ -243,6 +243,32 @@ CONFIG = {
     # 6, deliberately: a little headroom above the previous effective
     # ceiling, not just a revert.
     "shelf_card_llm_top_n": 8,
+    # Writer-loop concurrency (runtime ceiling fix, 2026-09) -- see
+    # shape_content_draft_rows' own docstring, WRITER-LOOP CONCURRENCY,
+    # for the full real-data investigation and math this came out of.
+    # Real 6-call timing sample of generate_nfl_shelf_card_draft()
+    # against real 2025 data: mean=10.66s, range 7.98-14.01s. At real
+    # worst-case volume (7 shelves x shelf_card_llm_top_n regular + up to
+    # 7 Tasty Six picks = 63 calls): waves of 12 -> ceil(63/12)=6 waves,
+    # 64.0s (mean-based) to 84.1s (observed-max-based) -- fits real
+    # margin under the ~81s writer-loop budget implied by targeting
+    # ~200s combined with Interrogation's own real ~119s. Same honest
+    # caveat as interrogation_max_concurrency's own comment: no wave
+    # size makes the genuine worst case (every call in a wave hitting
+    # its own 60s REQUEST_TIMEOUT_SECONDS ceiling) safe on its own --
+    # 6 waves x 60s = 360s, over Vercel's full 300s ceiling by itself.
+    # Waves protect the expected case; writer_loop_deadline_seconds
+    # below is the real backstop against a genuine pile-up.
+    "shelf_card_wave_size": 12,
+    # Elapsed-time guard (from run_start, threaded down from api/
+    # index.py's own top-of-request time.monotonic() call) -- checked
+    # before EVERY wave, never mid-wave (a dispatched wave always
+    # finishes). Once tripped, no further waves launch; every remaining
+    # candidate falls back to its own deterministic content, same as a
+    # real LLM failure. 240, not 300 (Vercel's own maxDuration): real
+    # margin for the write-to-Lovable step and everything else after
+    # this function returns, which this guard has no visibility into.
+    "writer_loop_deadline_seconds": 240,
     # Proposal 2, approved, PROVISIONAL — needs real-data validation
     # once the season is live. NOT enforced yet — see module docstring.
     "sticky_margin": 20.0,
@@ -1595,14 +1621,131 @@ def _interrogate_unique_candidates(
     return results
 
 
+def _run_writer_llm_for_plan(
+    plan: dict, avoid_headlines_snapshot: list, avoid_opening_phrases_snapshot: list, anthropic_api_key: str,
+) -> dict:
+    """
+    One real writer-draft call (Tasty Six or regular shelf card,
+    per plan["llm_kind"]), fully isolated -- NEVER raises, same
+    discipline as _interrogate_one_candidate, so one real ThreadPool
+    worker's failure can never cancel or corrupt any other's in-flight
+    call in the same wave. Called from shape_content_draft_rows' own
+    PASS 2 (see that function's own docstring, WRITER-LOOP CONCURRENCY).
+
+    Returns {"outcome": "success", ...draft fields...} on a real,
+    well-formed draft; {"outcome": "gated_out", "error": repr(e)} on
+    nfl_tension's own STOP-gate signal (regular rows only -- Tasty Six's
+    own writer never raises CandidateGatedOut, matching today's real,
+    existing asymmetry, not something this change invents); or
+    {"outcome": "fallback", "error": repr(e)} on any other real failure
+    (API error, rate limit, malformed response) -- the caller degrades
+    to this plan's own precomputed deterministic content, same real
+    resilience discipline the old sequential loop already had.
+    """
+    r = plan["r"]
+    full_row = plan["full_row"]
+    if plan["llm_kind"] == "tasty_six":
+        try:
+            draft = generate_nfl_tasty_six_draft(
+                full_row.to_dict(), r["home_shelf"], plan["llm_band"], anthropic_api_key,
+                avoid_headlines=avoid_headlines_snapshot,
+            )
+        except Exception as e:
+            return {"outcome": "fallback", "error": repr(e)}
+        return {
+            "outcome": "success",
+            "title": draft.get("title"),
+            "editorial_sentence": draft.get("editorial_sentence"),
+            "why_reasons": _llm_why_reasons_for_write(draft.get("why_reasons")),
+            "confidence_band": draft.get("confidence_band"),
+            "model_name": draft.get("model_name"),
+            "validation_passed": bool(draft.get("validation_passed", True)),
+            "validation_issues": draft.get("validation_issues") or [],
+        }
+    # "regular"
+    try:
+        draft = generate_nfl_shelf_card_draft(
+            full_row.to_dict(), r["home_shelf"], plan["confidence_band"], anthropic_api_key,
+            avoid_headlines=avoid_headlines_snapshot, avoid_opening_phrases=avoid_opening_phrases_snapshot,
+            interrogation_result=plan["interrogation_result"],
+        )
+    except CandidateGatedOut as e:
+        return {"outcome": "gated_out", "error": repr(e)}
+    except Exception as e:
+        return {"outcome": "fallback", "error": repr(e)}
+    return {
+        "outcome": "success",
+        "title": draft.get("title"),
+        "story_text": draft.get("story"),
+        "why_reasons": _llm_why_reasons_for_write(draft.get("why_reasons")),
+        "confidence_band": draft.get("confidence_band"),
+        "model_name": draft.get("model_name"),
+        "validation_passed": bool(draft.get("validation_passed", True)),
+        "validation_issues": draft.get("validation_issues") or [],
+        "opening_phrase": draft.get("opening_phrase"),
+    }
+
+
 def shape_content_draft_rows(
     capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int,
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
     history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None, config: dict = CONFIG,
     shelves_to_process: list = None, avoid_headlines: list = None, avoid_opening_phrases: list = None,
-    price_history_by_player: dict = None,
+    price_history_by_player: dict = None, run_start: float = None,
 ) -> dict:
     """
+    WRITER-LOOP CONCURRENCY (runtime ceiling fix, 2026-09) -- the real,
+    measured problem this closes: every Tasty Six/regular-row LLM draft
+    call used to run sequentially, one blocking call at a time, in the
+    same loop that shapes every other field. A real production run
+    timed out at Vercel's 300s ceiling mid-generation (confirmed via
+    Vercel's own logs), and a real 6-call timing sample of generate_nfl_
+    shelf_card_draft() against real 2025 data came back mean=10.66s,
+    range 7.98-14.01s -- at the real worst-case volume (7 shelves x
+    shelf_card_llm_top_n=8 regular + up to 7 Tasty Six picks, one per
+    shelf = 63 real calls), fully sequential that's ~11 real minutes,
+    nowhere close to fitting.
+
+    Real LLM calls now run in WAVES of config["shelf_card_wave_size"]
+    (ThreadPoolExecutor, same bounded-concurrency shape Pass 4's
+    Interrogation dispatch already uses), not all 63 at once and not one
+    at a time. Waves run SEQUENTIALLY relative to each other, deliberately
+    -- the real cross-batch variety mechanism (generated_titles/
+    generated_opening_phrases, fed into avoid_headlines/avoid_opening_
+    phrases) needs every prior wave's real titles before the next wave's
+    calls are submitted, so each wave sees everything generated so far;
+    calls WITHIN one wave do not see each other's in-flight output (a
+    real, accepted narrowing of that guarantee, not a full loss of it).
+    Tasty Six and regular rows are NOT split into separate phases -- they
+    stay interleaved in their existing natural row order and share one
+    wave sequence, unchanged from today's single loop's own ordering.
+
+    DETERMINISM: which candidates get a real LLM call, what deterministic
+    fallback content exists if one fails, and the FINAL row order are all
+    decided during a first, sequential, non-LLM pass (below) — completely
+    independent of which real network call happens to finish first. Wave
+    results are written back by candidate index, then both the cross-
+    batch state (generated_titles/opening_phrases) and the final `rows`
+    list are built by iterating that fixed index order — the exact same
+    "never let completion order decide anything real" discipline Pass
+    4's own future_to_key mapping already established for Interrogation.
+
+    TIME GUARD: run_start (time.monotonic() at the top of the owning HTTP
+    request, threaded down from api/index.py) is optional — omit it (the
+    default) and no guard applies, unchanged from before this parameter
+    existed. When provided, elapsed time is checked before EVERY wave
+    (never mid-wave — a wave already dispatched always finishes); once
+    elapsed >= config["writer_loop_deadline_seconds"], no further waves
+    launch. Every candidate in an unlaunched wave falls back to this
+    row's OWN deterministic content — same fallback content, same code
+    path, as a real LLM call that raised — never a missing/blank row and
+    never the STOP-gate's own no-row-at-all treatment (that's reserved
+    for a real signal_verdict FAILS/UNRESOLVED, an epistemic decision;
+    running out of time is a resource one). Reported back via this
+    function's own return dict (writer_loop_time_guard_triggered/
+    llm_calls_completed/llm_calls_skipped) so a caller can report a real,
+    visible partial-completion count rather than an unexplained short
+    batch.
     One dict per (surviving-the-cap) player-shelf placement, shaped to
     match the REAL nfl_content_drafts write schema exactly — confirmed
     directly against the live route's own Zod schema (a real, earlier
@@ -1792,7 +1935,10 @@ def shape_content_draft_rows(
     seed.
     """
     if len(capped_assignments) == 0:
-        return {"rows": [], "generated_titles": list(avoid_headlines or []), "generated_opening_phrases": list(avoid_opening_phrases or [])}
+        return {
+            "rows": [], "generated_titles": list(avoid_headlines or []), "generated_opening_phrases": list(avoid_opening_phrases or []),
+            "writer_loop_time_guard_triggered": False, "writer_loop_llm_calls_completed": 0, "writer_loop_llm_calls_skipped": 0,
+        }
     tasty_lookup = {shelf: (row["player_id"] if row is not None else None) for shelf, row in tasty_six.items()}
 
     weekly_lookup = {}
@@ -1818,7 +1964,6 @@ def shape_content_draft_rows(
         price_history_by_player=price_history_by_player,
     )
 
-    rows = []
     # REAL CROSS-BATCH VARIETY STATE (NFL Content Generation V1, Part 1)
     # -- grown across EVERY row in this one curation run, Tasty Six and
     # regular cards alike, and fed back into every subsequent real LLM
@@ -1829,10 +1974,19 @@ def shape_content_draft_rows(
     # just as easily as two regular cards' can, and they're generated in
     # the same batch either way. Titles only (not why_reasons prose),
     # same real scope MLB's own content_draft_generation_live.py already
-    # established this pattern at.
+    # established this pattern at. Now grown once PER WAVE, not once per
+    # row -- see this function's own docstring, WRITER-LOOP CONCURRENCY.
     generated_titles = list(avoid_headlines or [])
     generated_opening_phrases = list(avoid_opening_phrases or [])
 
+    # PASS 1 -- sequential, no LLM calls: every field that doesn't depend
+    # on a real draft call, plus which candidates need one and what each
+    # one's own deterministic fallback is if that call fails or the time
+    # guard skips it. Builds row_plans in the SAME row order the old
+    # single loop iterated in -- that order is what both PASS 2's wave
+    # slicing and PASS 3's final row order key off, never LLM completion
+    # order.
+    row_plans = []
     for _, r in capped_assignments[~capped_assignments["capped"]].iterrows():
         if shelves_to_process is not None and r["home_shelf"] not in shelves_to_process:
             continue
@@ -1884,23 +2038,6 @@ def shape_content_draft_rows(
             else:
                 interrogation_result = interrogation_by_candidate[interrogation_key]
 
-        title = editorial_sentence = None
-        # Editorial Voice Spec, "Find the Tension" addition -- the real
-        # Story-tier field generate_nfl_shelf_card_draft() now returns as
-        # draft["story"]. Named `story_text` here, NOT `story`, to avoid
-        # colliding with this function's own PRE-EXISTING `story` local
-        # (the _story_for_row() templated dict two lines below, unrelated
-        # and much older -- headline/why_this_hits/role_signals). The
-        # write-row's own JSON key stays "story" (see rows.append below);
-        # only this Python identifier is renamed to keep both real,
-        # unrelated things distinct in the same function scope.
-        story_text = None
-        why_reasons = []
-        writer_type = "shelf_card"
-        model_name = None
-        validation_passed = True
-        validation_issues = []
-
         story = _story_for_row(full_row, r["home_shelf"]) if full_row is not None else None
         why_this_hits = story["why_this_hits"] if story is not None else None
         role_signals = story["role_signals"] if story is not None else []
@@ -1926,172 +2063,226 @@ def shape_content_draft_rows(
             else {"archetype": "GENERIC", "position_variant": None, "confidence": None}
         )
 
+        plan = {
+            "r": r, "full_row": full_row, "is_tasty_six": is_tasty_six, "event_id": event_id,
+            "team": team, "opponent": opponent, "matchup": matchup, "kickoff_utc": kickoff_utc,
+            "interrogation_result": interrogation_result, "story": story, "why_this_hits": why_this_hits,
+            "role_signals": role_signals, "td_opportunity_trend": td_opportunity_trend, "section_title": section_title,
+            "archetype_result": archetype_result,
+            "writer_type": "tasty_six" if is_tasty_six else "shelf_card",
+            "confidence_band": None, "title": None, "editorial_sentence": None, "story_text": None,
+            "why_reasons": [], "model_name": None, "validation_passed": True, "validation_issues": [],
+            "gated_out": False, "needs_llm": False, "llm_kind": None, "llm_band": None,
+            "fallback_title": None, "fallback_why_reasons": [],
+        }
+
         if is_tasty_six:
-            writer_type = "tasty_six"
             # REQUIRED, non-null real string on every written row (found
             # directly against the live schema) — computed even when no
             # real LLM content ends up generated below, so a Tasty Six
             # row missing content (no anthropic_api_key, or a tpe_score
             # outside the real gated range) still has a real band, not a
             # blocker for review-queue display. Overwritten by the real
-            # draft's own confidence_band below when a real call happens.
-            confidence_band = nfl_regular_row_confidence_band_for_score(
+            # draft's own confidence_band when a real call succeeds.
+            plan["confidence_band"] = nfl_regular_row_confidence_band_for_score(
                 full_row.get("tpe_score") if full_row is not None else None,
             )
             if full_row is not None and anthropic_api_key:
                 band = nfl_confidence_band_for_score(full_row.get("tpe_score"))
                 if band is not None:
                     # REAL RESILIENCE FIX (NFL Content Generation V1, Part
-                    # 1) -- confirmed, previously-flagged gap (see this
-                    # function's own module docstring history): a Claude
-                    # API failure, rate limit, or malformed response for
-                    # ONE Tasty Six pick used to raise straight out of
-                    # this loop and abort curation for the ENTIRE week,
-                    # including every other shelf's already-successful
-                    # rows. Now caught and degraded to this row's own
-                    # deterministic content instead -- one bad LLM call
-                    # never sinks the whole real batch, matching MLB's own
-                    # content_draft_generation_live.py's per-candidate
-                    # try/except discipline. avoid_headlines is threaded
-                    # through here too -- previously never passed at all
-                    # despite generate_nfl_tasty_six_draft() already
-                    # supporting it, a real, live gap this fix also closes.
-                    try:
-                        draft = generate_nfl_tasty_six_draft(
-                            full_row.to_dict(), r["home_shelf"], band, anthropic_api_key,
-                            avoid_headlines=generated_titles,
-                        )
-                    except Exception as e:
-                        print(
-                            f"[shape_content_draft_rows] tasty_six LLM generation failed for "
-                            f"player_id={r['player_id']!r} shelf={r['home_shelf']!r}: {e!r} -- "
-                            f"falling back to this row's deterministic content instead",
-                            flush=True,
-                        )
-                        title = story["headline"] if story is not None else None
-                        why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story) if story is not None else []
-                    else:
-                        title = draft.get("title")
-                        editorial_sentence = draft.get("editorial_sentence")
-                        why_reasons = _llm_why_reasons_for_write(draft.get("why_reasons"))
-                        confidence_band = draft.get("confidence_band") or confidence_band
-                        model_name = draft.get("model_name")
-                        validation_passed = bool(draft.get("validation_passed", True))
-                        validation_issues = draft.get("validation_issues") or []
+                    # 1) -- a Claude API failure, rate limit, or malformed
+                    # response for ONE Tasty Six pick used to raise straight
+                    # out of the old loop and abort curation for the ENTIRE
+                    # week. Degrades to this row's own deterministic content
+                    # instead -- one bad LLM call never sinks the batch.
+                    plan["needs_llm"] = True
+                    plan["llm_kind"] = "tasty_six"
+                    plan["llm_band"] = band
+                    plan["fallback_title"] = story["headline"] if story is not None else None
+                    plan["fallback_why_reasons"] = _deterministic_why_reasons(full_row, r["home_shelf"], story) if story is not None else []
+                # band is None (tpe_score outside the real gated range):
+                # title/why_reasons stay honestly None/[] -- same as today,
+                # NOT the deterministic template (that's a real, existing
+                # asymmetry with the regular-row branch below, preserved
+                # exactly, not normalized away by this change).
         elif full_row is not None:
-            confidence_band = nfl_regular_row_confidence_band_for_score(full_row.get("tpe_score"))
+            plan["confidence_band"] = nfl_regular_row_confidence_band_for_score(full_row.get("tpe_score"))
             # r["rank"] <= shelf_card_llm_top_n: only the top-displayed
-            # players on this shelf get a real, sequential Claude call —
-            # see CONFIG["shelf_card_llm_top_n"]'s own comment for the
-            # real incident (a 5-minute Vercel timeout) this closes.
-            # Everyone else takes the exact SAME branch as "no
-            # anthropic_api_key at all" below, not a new code path —
-            # the deterministic template is already real, grounded
+            # players on this shelf get a real Claude call — see CONFIG
+            # ["shelf_card_llm_top_n"]'s own comment for the real incident
+            # (a 5-minute Vercel timeout) this closes. Everyone else takes
+            # the exact SAME branch as "no anthropic_api_key at all" below
+            # -- the deterministic template is already real, grounded
             # content, just not bespoke prose.
             if anthropic_api_key and r["rank"] <= config["shelf_card_llm_top_n"]:
-                # Same per-row resilience discipline as the Tasty Six
-                # branch above -- a bad Claude call for one regular card
-                # (of which there are many more per batch than Tasty Six
-                # picks) degrades to THIS row's own existing deterministic
-                # template, never the whole week's curation run.
-                try:
-                    draft = generate_nfl_shelf_card_draft(
-                        full_row.to_dict(), r["home_shelf"], confidence_band, anthropic_api_key,
-                        avoid_headlines=generated_titles, avoid_opening_phrases=generated_opening_phrases,
-                        interrogation_result=interrogation_result,
-                    )
-                except CandidateGatedOut as e:
-                    # signal_verdict FAILS/UNRESOLVED for this candidate
-                    # (nfl_tension.find_tension's own STOP GATE) -- NOT a
-                    # generation failure to fall back from. This placement
-                    # gets no row at all: no bespoke content, no
-                    # deterministic template either. No backfill/promotion
-                    # of the next-ranked candidate to fill the gap --
-                    # explicitly out of scope for this pass; a shelf
-                    # simply displays fewer real cards when this fires.
-                    # Logged loudly so a gated-out placement is visible in
-                    # QA, never a silent gap.
-                    verdict = None
-                    if interrogation_result and interrogation_result.get("interrogation_status") == "complete":
-                        verdict = (interrogation_result.get("result") or {}).get("signal_verdict")
-                    print(
-                        f"[shape_content_draft_rows] SKIPPING row -- player_id={r['player_id']!r} "
-                        f"shelf={r['home_shelf']!r} gated out by signal_verdict={verdict!r}: {e!r}",
-                        flush=True,
-                    )
-                    continue
-                except Exception as e:
-                    print(
-                        f"[shape_content_draft_rows] shelf_card LLM generation failed for "
-                        f"player_id={r['player_id']!r} shelf={r['home_shelf']!r}: {e!r} -- "
-                        f"falling back to this row's deterministic content instead",
-                        flush=True,
-                    )
-                    draft = None
-                if draft is not None:
-                    title = draft.get("title")
-                    story_text = draft.get("story")
-                    why_reasons = _llm_why_reasons_for_write(draft.get("why_reasons"))
-                    confidence_band = draft.get("confidence_band") or confidence_band
-                    model_name = draft.get("model_name")
-                    validation_passed = bool(draft.get("validation_passed", True))
-                    validation_issues = draft.get("validation_issues") or []
-                    if draft.get("opening_phrase"):
-                        generated_opening_phrases.append(draft["opening_phrase"])
-                else:
-                    title = story["headline"]
-                    why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
-                    # story_text stays None -- the deterministic template
-                    # (Part A) has no Tension Object behind it, so there is
-                    # no real Story-tier text to fall back to here. Honest
-                    # None, not why_this_hits repurposed as a stand-in (see
-                    # this task's own module docstring on why why_this_hits
-                    # is evidence-tier, not story-tier, by design).
+                plan["needs_llm"] = True
+                plan["llm_kind"] = "regular"
+                plan["fallback_title"] = story["headline"]
+                plan["fallback_why_reasons"] = _deterministic_why_reasons(full_row, r["home_shelf"], story)
             else:
-                title = story["headline"]
-                why_reasons = _deterministic_why_reasons(full_row, r["home_shelf"], story)
+                plan["title"] = story["headline"]
+                plan["why_reasons"] = _deterministic_why_reasons(full_row, r["home_shelf"], story)
         else:
-            confidence_band = nfl_regular_row_confidence_band_for_score(None)
+            plan["confidence_band"] = nfl_regular_row_confidence_band_for_score(None)
 
-        if title:
-            generated_titles.append(title)
+        row_plans.append(plan)
 
+    # PASS 2 -- WAVES of real LLM calls, bounded concurrency within a
+    # wave, sequential across waves (see this function's own docstring,
+    # WRITER-LOOP CONCURRENCY / TIME GUARD, for the full reasoning).
+    llm_plan_indices = [i for i, p in enumerate(row_plans) if p["needs_llm"]]
+    wave_size = max(1, config["shelf_card_wave_size"])
+    deadline_seconds = config["writer_loop_deadline_seconds"]
+    time_guard_triggered = False
+    llm_calls_completed = 0
+    llm_calls_skipped = 0
+
+    for wave_start in range(0, len(llm_plan_indices), wave_size):
+        if run_start is not None and deadline_seconds is not None and (time.monotonic() - run_start) >= deadline_seconds:
+            time_guard_triggered = True
+            llm_calls_skipped += len(llm_plan_indices) - wave_start
+            print(
+                f"[shape_content_draft_rows] TIME GUARD: {time.monotonic() - run_start:.1f}s elapsed >= "
+                f"{deadline_seconds}s -- stopping before the wave starting at LLM call {wave_start}/"
+                f"{len(llm_plan_indices)}; {len(llm_plan_indices) - wave_start} remaining candidate(s) "
+                f"fall back to deterministic content, every draft already completed is kept.",
+                flush=True,
+            )
+            break
+
+        wave_indices = llm_plan_indices[wave_start: wave_start + wave_size]
+        # Frozen for this whole wave -- every call in it sees the exact
+        # same avoid_headlines/avoid_opening_phrases snapshot, real titles
+        # generated by calls still in flight alongside it are not visible
+        # until the NEXT wave. Real, accepted narrowing of the variety
+        # guarantee, not a full loss of it -- see this function's own
+        # docstring.
+        avoid_headlines_snapshot = list(generated_titles)
+        avoid_opening_phrases_snapshot = list(generated_opening_phrases)
+
+        wave_results = {}
+        with ThreadPoolExecutor(max_workers=max(1, len(wave_indices))) as executor:
+            future_to_idx = {
+                executor.submit(
+                    _run_writer_llm_for_plan, row_plans[idx], avoid_headlines_snapshot,
+                    avoid_opening_phrases_snapshot, anthropic_api_key,
+                ): idx
+                for idx in wave_indices
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    wave_results[idx] = future.result()
+                except Exception as e:
+                    # Defense in depth -- _run_writer_llm_for_plan is
+                    # designed to never raise, same discipline as Pass 4's
+                    # own _interrogate_one_candidate.
+                    wave_results[idx] = {"outcome": "fallback", "error": repr(e)}
+
+        # Deterministic reassembly -- THIS wave's own results are folded
+        # back in original row order, never completion order, both for
+        # writing each plan's outcome and for growing generated_titles/
+        # generated_opening_phrases (what the NEXT wave will see).
+        for idx in wave_indices:
+            plan = row_plans[idx]
+            result = wave_results.get(idx, {"outcome": "fallback", "error": "missing wave result"})
+            outcome = result["outcome"]
+            r = plan["r"]
+            if outcome == "gated_out":
+                # signal_verdict FAILS/UNRESOLVED for this candidate
+                # (nfl_tension.find_tension's own STOP GATE) -- NOT a
+                # generation failure to fall back from. This placement
+                # gets no row at all in PASS 3: no bespoke content, no
+                # deterministic template either. No backfill/promotion of
+                # the next-ranked candidate to fill the gap -- explicitly
+                # out of scope; a shelf simply displays fewer real cards.
+                plan["gated_out"] = True
+                verdict = None
+                ir = plan["interrogation_result"]
+                if ir and ir.get("interrogation_status") == "complete":
+                    verdict = (ir.get("result") or {}).get("signal_verdict")
+                print(
+                    f"[shape_content_draft_rows] SKIPPING row -- player_id={r['player_id']!r} "
+                    f"shelf={r['home_shelf']!r} gated out by signal_verdict={verdict!r}: {result.get('error')!r}",
+                    flush=True,
+                )
+            elif outcome == "fallback":
+                label = "tasty_six" if plan["llm_kind"] == "tasty_six" else "shelf_card"
+                print(
+                    f"[shape_content_draft_rows] {label} LLM generation failed for "
+                    f"player_id={r['player_id']!r} shelf={r['home_shelf']!r}: {result.get('error')!r} -- "
+                    f"falling back to this row's deterministic content instead",
+                    flush=True,
+                )
+                plan["title"] = plan["fallback_title"]
+                plan["why_reasons"] = plan["fallback_why_reasons"]
+                # story_text/editorial_sentence stay None -- the
+                # deterministic template has no Tension Object / Tasty Six
+                # draft behind it, so there is no real content to fall
+                # back to for those two fields specifically.
+            else:  # "success"
+                plan["title"] = result.get("title")
+                plan["why_reasons"] = result.get("why_reasons") or []
+                plan["confidence_band"] = result.get("confidence_band") or plan["confidence_band"]
+                plan["model_name"] = result.get("model_name")
+                plan["validation_passed"] = result.get("validation_passed", True)
+                plan["validation_issues"] = result.get("validation_issues") or []
+                if plan["llm_kind"] == "tasty_six":
+                    plan["editorial_sentence"] = result.get("editorial_sentence")
+                else:
+                    plan["story_text"] = result.get("story_text")
+                    if result.get("opening_phrase"):
+                        generated_opening_phrases.append(result["opening_phrase"])
+            llm_calls_completed += 1
+            if plan["title"]:
+                generated_titles.append(plan["title"])
+
+    # PASS 3 -- sequential, cheap: build the final rows in the SAME
+    # original row order row_plans was built in, regardless of which
+    # wave (or which call within a wave) any given plan's real content
+    # came from.
+    rows = []
+    for plan in row_plans:
+        if plan["gated_out"]:
+            continue
+        r = plan["r"]
+        full_row = plan["full_row"]
         rows.append({
             "player_id": r["player_id"],
-            "event_id": event_id,
+            "event_id": plan["event_id"],
             # Serialization boundary: persist the frontend's snake_case slug
             # (isShelfId / NflShelfId), not the internal Title-Case name.
             # Division strings pass through unchanged. See SHELF_SLUG.
             "shelf": _shelf_slug(r["home_shelf"]),
-            "writer_type": writer_type,
-            "is_tasty_six": is_tasty_six,
+            "writer_type": plan["writer_type"],
+            "is_tasty_six": plan["is_tasty_six"],
             "rank": int(r["rank"]),
             "player_name": r["player_name"],
-            "team": team,
-            "opponent": opponent,
-            "matchup": matchup,
+            "team": plan["team"],
+            "opponent": plan["opponent"],
+            "matchup": plan["matchup"],
             "odds": r.get("consensus_price_american"),
-            "kickoff_utc": kickoff_utc,
+            "kickoff_utc": plan["kickoff_utc"],
             "season": season,
             "week": week,
-            "title": title,
-            "editorial_sentence": editorial_sentence,
+            "title": plan["title"],
+            "editorial_sentence": plan["editorial_sentence"],
             # Editorial Voice Spec, "Find the Tension" addition -- the real
-            # Story-tier text (see the story_text local's own comment
-            # above for why this Python identifier differs from the JSON
-            # key). None whenever this row fell back to the deterministic
-            # template (no LLM call made, or one failed) -- honest
-            # absence, not why_this_hits or editorial_sentence repurposed.
-            "story": story_text,
-            "why_reasons": why_reasons,
-            "confidence_band": confidence_band,
-            "why_this_hits": why_this_hits,
-            "td_opportunity_trend": td_opportunity_trend,
-            "role_signals": role_signals,
-            "section_title": section_title,
-            "model_name": model_name,
-            "validation_passed": validation_passed,
-            "validation_issues": validation_issues,
+            # Story-tier text. None whenever this row fell back to the
+            # deterministic template (no LLM call made, or one failed) --
+            # honest absence, not why_this_hits or editorial_sentence
+            # repurposed.
+            "story": plan["story_text"],
+            "why_reasons": plan["why_reasons"],
+            "confidence_band": plan["confidence_band"],
+            "why_this_hits": plan["why_this_hits"],
+            "td_opportunity_trend": plan["td_opportunity_trend"],
+            "role_signals": plan["role_signals"],
+            "section_title": plan["section_title"],
+            "model_name": plan["model_name"],
+            "validation_passed": plan["validation_passed"],
+            "validation_issues": plan["validation_issues"],
             "review_status": "pending_review",
             # Already computed upstream (scoring.score_evidence_quality) --
             # pulled straight through, same full_row.get(...) pattern as
@@ -2122,10 +2313,15 @@ def shape_content_draft_rows(
             ),
             # NFL Phase D, Part 1 -- straight through from archetype_result
             # above (resolve_archetype()'s own output, untouched here).
-            "archetype": archetype_result["archetype"],
-            "position_variant": archetype_result["position_variant"],
+            "archetype": plan["archetype_result"]["archetype"],
+            "position_variant": plan["archetype_result"]["position_variant"],
         })
-    return {"rows": rows, "generated_titles": generated_titles, "generated_opening_phrases": generated_opening_phrases}
+    return {
+        "rows": rows, "generated_titles": generated_titles, "generated_opening_phrases": generated_opening_phrases,
+        "writer_loop_time_guard_triggered": time_guard_triggered,
+        "writer_loop_llm_calls_completed": llm_calls_completed,
+        "writer_loop_llm_calls_skipped": llm_calls_skipped,
+    }
 
 
 def shape_around_the_league_draft_rows(
@@ -2288,6 +2484,7 @@ def curate_nfl_shelves(
     schedules: pd.DataFrame = None, anthropic_api_key: str = None, prior_assignments: dict = None,
     history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None,
     shelves_to_process: list = None, avoid_headlines: list = None, avoid_opening_phrases: list = None,
+    run_start: float = None,
 ) -> dict:
     """
     The full pipeline: eligibility -> home-shelf assignment (real
@@ -2375,7 +2572,7 @@ def curate_nfl_shelves(
         capped, tasty_six, season, week, weekly=weekly, schedules=schedules, anthropic_api_key=anthropic_api_key,
         history_weekly=history_weekly, pbp=pbp, config=config,
         shelves_to_process=shelves_to_process, avoid_headlines=avoid_headlines,
-        avoid_opening_phrases=avoid_opening_phrases,
+        avoid_opening_phrases=avoid_opening_phrases, run_start=run_start,
     )
     shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
     division_cards = build_around_the_league(weekly, config=shelves_config, history_weekly=history_weekly)
@@ -2391,6 +2588,9 @@ def curate_nfl_shelves(
         "around_the_league_rows": around_the_league_rows,
         "generated_titles": shaped["generated_titles"],
         "generated_opening_phrases": shaped["generated_opening_phrases"],
+        "writer_loop_time_guard_triggered": shaped["writer_loop_time_guard_triggered"],
+        "writer_loop_llm_calls_completed": shaped["writer_loop_llm_calls_completed"],
+        "writer_loop_llm_calls_skipped": shaped["writer_loop_llm_calls_skipped"],
     }
 
 

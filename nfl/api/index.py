@@ -90,6 +90,7 @@ import pandas as pd
 import requests
 
 from curate_home_shelves import (
+    CONFIG as CURATE_HOME_SHELVES_CONFIG,
     _SLUG_TO_SHELF,
     build_prior_state_with_walkback,
     compute_stale_approved_targets,
@@ -1357,7 +1358,7 @@ def curate_and_write_drafts_endpoint():
             weekly, season, week, schedules=schedules, anthropic_api_key=anthropic_api_key, pbp=pbp,
             prior_assignments=prior_assignments,
             shelves_to_process=shelves_to_process, avoid_headlines=avoid_headlines_seed,
-            avoid_opening_phrases=avoid_opening_phrases_seed,
+            avoid_opening_phrases=avoid_opening_phrases_seed, run_start=run_start,
         )
     except Exception as e:
         print(f"[curate-and-write-drafts] season={season} week={week} status=error error={e!r}", flush=True)
@@ -1555,6 +1556,25 @@ def curate_and_write_drafts_endpoint():
         "around_the_league": {
             "rows_curated": len(result["around_the_league_rows"]),
             "by_division": around_the_league_counts,
+        },
+        # Writer-loop concurrency (runtime ceiling fix, 2026-09) -- see
+        # curate_home_shelves.shape_content_draft_rows' own docstring,
+        # WRITER-LOOP CONCURRENCY / TIME GUARD. time_guard_triggered=True
+        # means real drafts are complete and written for llm_calls_
+        # completed candidates; llm_calls_skipped candidates got their
+        # own deterministic fallback content instead of a real LLM call
+        # because the ~240s elapsed-time guard tripped before their wave
+        # could launch -- still a real 200, still real written rows, just
+        # fewer bespoke ones than a full run would produce. Still 200
+        # (never a distinct status code for this -- a partial writer
+        # batch is not a request failure, same "keep the Make router's
+        # existing 200/4xx/500 compatibility" reasoning as everywhere
+        # else in this endpoint's own response).
+        "writer_loop": {
+            "time_guard_triggered": result["writer_loop_time_guard_triggered"],
+            "llm_calls_completed": result["writer_loop_llm_calls_completed"],
+            "llm_calls_skipped": result["writer_loop_llm_calls_skipped"],
+            "wave_size": CURATE_HOME_SHELVES_CONFIG["shelf_card_wave_size"],
         },
         # Two-call split: echoes what THIS call was scoped to (None when
         # unscoped, unchanged single-call behavior), and this call's own
