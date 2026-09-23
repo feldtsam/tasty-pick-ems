@@ -43,8 +43,15 @@ if __name__ == "__main__":
     # ============================================================
     # Real Week 15 2025 stories — the flagship NYJ collapse week.
     # ============================================================
-    wk15 = build_defensive_trends_stories(weekly, 2025, 15)
+    wk15, wk15_diag = build_defensive_trends_stories(weekly, 2025, 15)
     results.append(check(f"Week 15 2025 produces a real, non-trivial set of stories (got {len(wk15)})", 1 <= len(wk15) <= 20))
+    results.append(check(
+        f"Week 15 2025 diagnostics: pool_after_trend_threshold matches the real story count exactly, "
+        f"pool_after_games_played_gate is >= that (games_played gate is strictly earlier than trend_threshold) "
+        f"(got {wk15_diag})",
+        wk15_diag["pool_after_trend_threshold"] == len(wk15)
+        and wk15_diag["pool_after_games_played_gate"] >= wk15_diag["pool_after_trend_threshold"],
+    ))
 
     by_entity = {(s["entity"]["team"], s["entity"]["position_group"]): s for s in wk15}
     nyj_rb = by_entity.get(("NYJ", "RB"))
@@ -103,7 +110,7 @@ if __name__ == "__main__":
     maturity_counts = {"thin": 0, "developing": 0, "confirmed": 0}
     all_backfill_stories = []
     for (season, week), _ in weekly.groupby(["season", "week"]):
-        wk_stories = build_defensive_trends_stories(weekly, season, week)
+        wk_stories, _ = build_defensive_trends_stories(weekly, season, week)
         all_backfill_stories.extend(wk_stories)
         for st in wk_stories:
             all_position_groups.add(st["entity"]["position_group"])
@@ -286,7 +293,8 @@ if __name__ == "__main__":
     mismatches = 0
     total_specific = 0
     for (season, week), _ in weekly.groupby(["season", "week"]):
-        for st in build_defensive_trends_stories(weekly, season, week):
+        wk_stories_only, _ = build_defensive_trends_stories(weekly, season, week)
+        for st in wk_stories_only:
             specific = [e for e in st["supporting_evidence"] if "red-zone TDs/game over the last 3 games" in e]
             if not specific:
                 continue
@@ -317,7 +325,8 @@ if __name__ == "__main__":
     # ============================================================
     all_v2_stories = []
     for (season, week), _ in weekly.groupby(["season", "week"]):
-        all_v2_stories += build_defensive_trends_stories(weekly, season, week)
+        wk_v2_stories, _ = build_defensive_trends_stories(weekly, season, week)
+        all_v2_stories += wk_v2_stories
 
     results.append(check(
         f"signal_direction is framed from the real bettor-opportunity perspective across every real story "
@@ -382,7 +391,8 @@ if __name__ == "__main__":
         real_classification_dist["strong"] == len(all_v2_stories) and real_classification_dist["moderate"] == 0 and real_classification_dist["limited"] == 0,
     ))
 
-    nyj_rb_18 = next((st for st in build_defensive_trends_stories(weekly, 2025, 18) if st["entity"]["team"] == "NYJ" and st["entity"]["position_group"] == "RB"), None)
+    wk18_stories, _ = build_defensive_trends_stories(weekly, 2025, 18)
+    nyj_rb_18 = next((st for st in wk18_stories if st["entity"]["team"] == "NYJ" and st["entity"]["position_group"] == "RB"), None)
     if nyj_rb_18:
         results.append(check(
             f"real NYJ RB week 18: hero_metric populated with a real before/after TD-rate pair, after > before matching growing-vulnerability (got {nyj_rb_18['hero_metric']})",

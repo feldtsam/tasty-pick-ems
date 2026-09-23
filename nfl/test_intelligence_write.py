@@ -261,7 +261,7 @@ if __name__ == "__main__":
         real_history = {}
         real_flags = []
         for week in range(15, 19):
-            stories = build_defensive_trends_stories(weekly, 2025, week)
+            stories, _ = build_defensive_trends_stories(weekly, 2025, week)
             nyj_rb = [s for s in stories if s["entity"].get("team") == "NYJ" and s["entity"].get("position_group") == "RB"]
             result = process_family("defensive_trends", nyj_rb, real_history, 2025, week, lifecycle_eligible=True)
             real_history = result["updated_history"]

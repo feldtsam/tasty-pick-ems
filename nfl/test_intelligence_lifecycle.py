@@ -236,7 +236,7 @@ if __name__ == "__main__":
         real_rows = {}
         print("\nReal NYJ RB defensive_trends lifecycle progression, 2025 season:")
         for week in range(1, 19):
-            stories = build_defensive_trends_stories(weekly, 2025, week)
+            stories, _ = build_defensive_trends_stories(weekly, 2025, week)
             nyj_rb = [s for s in stories if s["entity"].get("team") == "NYJ" and s["entity"].get("position_group") == "RB"]
             result = apply_lifecycle(nyj_rb, real_history, "defensive_trends", 2025, week)
             real_history = result["updated_history"]

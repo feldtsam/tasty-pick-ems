@@ -563,7 +563,7 @@ def _evidence_classification_for_row(completeness: float, confidence: float, con
     return "limited"
 
 
-def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
+def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> tuple:
     """
     weekly: the full multi-week player_redzone_weekly table (scoring.
     score_situation's own output, any number of seasons/weeks) — needs
@@ -571,6 +571,23 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
     role_changes.py's games_played. season/week: the target week to
     generate stories for. One story per (defteam, position_group) whose
     trend clears config["trend_threshold"] as of that week.
+
+    Returns (stories, diagnostics) -- same shape as market_intelligence.
+    build_deviation_stories(), added specifically so a real zero-story
+    week is never left unexplained (Editorial Intelligence investigation,
+    2026-09): a games_played gate clearing (real trend data exists) and a
+    trend_threshold gate not clearing (real trend data exists but isn't
+    material enough) both looked identical from the outside as
+    stories_generated=0, and telling them apart used to require re-
+    deriving this exact pool computation by hand. diagnostics =
+    {"pool_after_games_played_gate": count of real (defteam,
+    position_group) rows in scope this week with a real, non-NaN trend
+    delta (i.e. games_played cleared thin_games_played_min), "pool_
+    after_trend_threshold": that same count further narrowed to |delta|
+    >= config["trend_threshold"] -- the actual final pool, same number as
+    len(stories)}. Both counts come from the SAME real pool computation
+    below, staged rather than combined into one filter, not a second,
+    separately-derived count that could drift from what actually ran.
     """
     dw = _defense_weekly(weekly)
     dw["_games_played"] = dw.groupby(["defteam", "position_group", "season"]).cumcount() + 1
@@ -579,10 +596,13 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
     dw["_trend_window"] = trend["_trend_window"]
     dw["_methodology_maturity"] = trend["_methodology_maturity"]
 
-    pool = dw[
-        (dw["season"] == season) & (dw["week"] == week) & dw["_delta"].notna()
-        & (dw["_delta"].abs() >= config["trend_threshold"])
-    ].copy()
+    week_scope = dw[(dw["season"] == season) & (dw["week"] == week)]
+    after_games_played_gate = week_scope[week_scope["_delta"].notna()]
+    pool = after_games_played_gate[after_games_played_gate["_delta"].abs() >= config["trend_threshold"]].copy()
+    diagnostics = {
+        "pool_after_games_played_gate": len(after_games_played_gate),
+        "pool_after_trend_threshold": len(pool),
+    }
 
     stories = []
     for _, row in pool.iterrows():
@@ -668,4 +688,4 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
         story["methodology_maturity"] = row["_methodology_maturity"]
         stories.append(story)
 
-    return stories
+    return stories, diagnostics
