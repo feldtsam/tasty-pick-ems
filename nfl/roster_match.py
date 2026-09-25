@@ -22,6 +22,44 @@ _PUNCT_RE = re.compile(r"[.']")
 _WS_RE = re.compile(r"\s+")
 
 
+# Feed name -> roster name, both already normalised. Nickname differences
+# that normalisation cannot and should not solve, because folding them by
+# rule would merge real players.
+#
+# Every entry was confirmed individually against the 2026 roster by surname
+# plus the event's two teams, and each resolved to exactly one RB/WR/TE:
+#
+#   Drew Ogletree    -> Andrew Ogletree   TE  IND
+#   Joshua Palmer    -> Josh Palmer       WR  BUF
+#   Zonovan Knight   -> Bam Knight        RB  ARI
+#   Hollywood Brown  -> Marquise Brown    WR  PHI
+#
+# DELIBERATELY NOT HERE: "James Jordan". The feed sends it for an ARI @ SF
+# event and there is no Jordan at RB/WR/TE on either team; the only two in
+# the league are Brevin and Jawhar, both HOU. Nothing in the data resolves
+# it, so it stays unmatched rather than guessed.
+#
+# One direction only: applied to the FEED name, never the roster name, so
+# an alias can only ever redirect a lookup, never rewrite the roster.
+_FEED_NAME_ALIASES = {
+    "drew ogletree": "andrew ogletree",
+    "joshua palmer": "josh palmer",
+    "zonovan knight": "bam knight",
+    "hollywood brown": "marquise brown",
+}
+
+
+def feed_name_key(name) -> str:
+    """
+    The normalised key to look a FEED name up by: normalisation, then the
+    alias map. Kept separate from normalize_player_name so the roster side
+    stays a pure normalisation -- aliases redirect a lookup, they never
+    rewrite what the roster says a player is called.
+    """
+    key = normalize_player_name(name)
+    return _FEED_NAME_ALIASES.get(key, key)
+
+
 def normalize_player_name(name) -> str:
     """
     A name reduced to what both sources agree on: lowercase, no periods or
@@ -151,7 +189,8 @@ def match_player_names(
             continue
 
         # PASS 2 -- normalised, over the same pool, same team filter.
-        norm_name = normalize_player_name(name)
+        # feed_name_key applies the alias map on top of normalisation.
+        norm_name = feed_name_key(name)
         norm_in_scope = [
             r for r in norm_roster.get(norm_name, []) if r["team"] in teams
         ] if norm_name else []

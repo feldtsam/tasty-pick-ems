@@ -17,7 +17,12 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from market_value import _is_dst_outcome, _non_player_outcome  # noqa: E402
-from roster_match import match_player_names, normalize_player_name  # noqa: E402
+from roster_match import (  # noqa: E402
+    _FEED_NAME_ALIASES,
+    feed_name_key,
+    match_player_names,
+    normalize_player_name,
+)
 
 
 def check(label, ok):
@@ -158,6 +163,51 @@ if __name__ == "__main__":
     results.append(check(
         "reason: nothing is filed as rookie_or_new any more",
         "rookie_or_new" not in set(u["match_issue_type"]),
+    ))
+
+    # ---------------- the alias map, one check per entry ----------------
+    alias_cases = [
+        ("Drew Ogletree",   "Andrew Ogletree", "TE", "IND", "id-ogletree"),
+        ("Joshua Palmer",   "Josh Palmer",     "WR", "BUF", "id-palmer"),
+        ("Zonovan Knight",  "Bam Knight",      "RB", "ARI", "id-knight"),
+        ("Hollywood Brown", "Marquise Brown",  "WR", "PHI", "id-brown"),
+    ]
+    for feed, roster_name, pos, team, pid in alias_cases:
+        r = roster((roster_name, pos, team, pid),
+                   # a same-surname decoy on the OTHER candidate team, so each
+                   # case proves the alias resolved it and not the team filter
+                   (f"Decoy {roster_name.split()[-1]}", "RB", "XXX", "id-decoy"))
+        m, u = run(rows((feed, {team, "XXX"})), r)
+        results.append(check(
+            f"alias: '{feed}' resolves to '{roster_name}' ({pos} {team}) -- a nickname "
+            f"normalisation cannot reach",
+            len(m) == 1 and m.iloc[0]["player_id"] == pid and len(u) == 0,
+        ))
+
+    results.append(check(
+        "alias: James Jordan is deliberately absent -- no Jordan at RB/WR/TE on either of "
+        "its event's teams, so it stays unmatched rather than guessed",
+        feed_name_key("James Jordan") == "james jordan"
+        and "james jordan" not in _FEED_NAME_ALIASES,
+    ))
+    results.append(check(
+        "alias: the map is exactly the four confirmed entries, so a fifth cannot be added "
+        "without a test failing here first",
+        set(_FEED_NAME_ALIASES) == {"drew ogletree", "joshua palmer",
+                                    "zonovan knight", "hollywood brown"},
+    ))
+    results.append(check(
+        "alias: one direction only -- aliases apply to the FEED name, never the roster, so "
+        "a roster entry is never rewritten by one",
+        normalize_player_name("Drew Ogletree") == "drew ogletree"
+        and feed_name_key("Drew Ogletree") == "andrew ogletree",
+    ))
+    r = roster(("Andrew Ogletree", "TE", "IND", "id-a"), ("Drew Ogletree", "TE", "IND", "id-b"))
+    m, u = run(rows(("Drew Ogletree", {"IND", "HOU"})), r)
+    results.append(check(
+        "alias: an EXACT roster match still wins over the alias -- if a real 'Drew Ogletree' "
+        "existed alongside 'Andrew Ogletree', pass 1 takes him",
+        len(m) == 1 and m.iloc[0]["player_id"] == "id-b",
     ))
 
     # ---------------- non-player outcomes ----------------
