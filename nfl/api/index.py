@@ -1134,6 +1134,13 @@ def curate_and_write_drafts_endpoint():
     # completion below, not on the early-exit paths (locked/404/error),
     # since those never reach the real Claude-call loop this is measuring.
     run_start = time.monotonic()
+    # PER-STAGE TIMERS. Reported on every run, not just preview_only: the run
+    # that needs a breakdown is the one that hits the 300s ceiling, and that
+    # one never returns a preview response at all. Seconds, rounded to 2dp.
+    stage_seconds: dict = {}
+
+    def _stage(name: str, started: float) -> None:
+        stage_seconds[name] = round(time.monotonic() - started, 2)
 
     auth_error = check_pipeline_secret()
     if auth_error:
@@ -1257,7 +1264,9 @@ def curate_and_write_drafts_endpoint():
             secret_for_read = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
             if not secret_for_read:
                 return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+            _t = time.monotonic()
             weekly = stub_week_snapshot(season, week, secret_for_read)
+            _stage("stub_read", _t)
     except Exception as e:
         print(f"[curate-and-write-drafts] season={season} week={week} stub_read_failed error={e!r}", flush=True)
         return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
@@ -1287,14 +1296,19 @@ def curate_and_write_drafts_endpoint():
     try:
         if not mv_secret:
             raise RuntimeError("NFL_PIPELINE_WEBHOOK_SECRET not configured")
+        _t = time.monotonic()
         mv_snapshot = market_value_snapshot_for_curation(season, week, mv_secret)
+        _stage("price_read", _t)
     except Exception as e:
         print(f"[curate-and-write-drafts] season={season} week={week} market_value_read_failed "
               f"error={e!r} — proceeding on 3 pillars", flush=True)
         mv_snapshot = pd.DataFrame(columns=["player_id", "season", "week"] + CURATION_MARKET_VALUE_COLUMNS)
+        stage_seconds.setdefault("price_read", 0.0)
 
     mv_players_with_odds = int(mv_snapshot["consensus_price_american"].notna().sum()) if len(mv_snapshot) else 0
+    _t = time.monotonic()
     weekly = merge_market_value_and_rescore(weekly, mv_snapshot, CURATION_MARKET_VALUE_COLUMNS)
+    _stage("market_value_merge_and_scoring", _t)
     # completeness is 100 for a player with a live poll, NaN (from the
     # left merge) for one without — fill NaN with 0 so the mean reads as
     # a real pool-wide coverage %, not just the mean over covered rows.
@@ -1353,6 +1367,7 @@ def curate_and_write_drafts_endpoint():
     print(f"[curate-and-write-drafts] season={season} week={week} "
           f"prior_assignments_players={len(prior_assignments)}", flush=True)
 
+    _curate_start = time.monotonic()
     try:
         result = curate_nfl_shelves(
             weekly, season, week, schedules=schedules, anthropic_api_key=anthropic_api_key, pbp=pbp,
@@ -1374,6 +1389,19 @@ def curate_and_write_drafts_endpoint():
     # schema (see shape_around_the_league_draft_rows's own docstring), so
     # a plain concatenation is correct, not a special case needing its
     # own handling below.
+    # curate_nfl_shelves owns Interrogation, the writer loop and Around the
+    # League; it reports each one's own wall time. "curation_other" is what is
+    # left of the call after those three -- eligibility, shelf assignment, the
+    # cap, Tasty Six selection and row shaping.
+    _curate_total = round(time.monotonic() - _curate_start, 2)
+    _inner = result.get("stage_seconds") or {}
+    stage_seconds["interrogation"] = _inner.get("interrogation", 0.0)
+    stage_seconds["writer_loop"] = _inner.get("writer_loop", 0.0)
+    stage_seconds["around_the_league"] = _inner.get("around_the_league", 0.0)
+    stage_seconds["curation_other"] = round(
+        max(0.0, _curate_total - sum(_inner.get(k, 0.0) for k in
+            ("interrogation", "writer_loop", "around_the_league"))), 2)
+
     all_rows = _json_safe(result["content_draft_rows"] + result["around_the_league_rows"])
     preview_only = bool(data.get("preview_only"))
 
@@ -1430,7 +1458,9 @@ def curate_and_write_drafts_endpoint():
         if not secret:
             return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
         if rows_to_write:
+            _t = time.monotonic()
             forward_result = write_content_draft_rows(rows_to_write, secret)
+            _stage("write", _t)
 
         # STICKINESS STATE PERSIST (Phase D prerequisite) — write this
         # week's shelf_signal_history so NEXT week's build_prior_state_
@@ -1538,6 +1568,19 @@ def curate_and_write_drafts_endpoint():
         "preview_only": preview_only,
         "timing": {
             "total_elapsed_seconds": total_elapsed_seconds,
+            # Per stage, in execution order. Sums to slightly less than the
+            # total: request parsing, the re-run guard pre-flight and JSON
+            # serialisation sit outside any named stage.
+            "stages": stage_seconds,
+            "unaccounted_seconds": round(
+                max(0.0, total_elapsed_seconds - sum(stage_seconds.values())), 2),
+            # Interrogation is the dominant term and the one whose cost is not
+            # fixed: `waves` is ceil(selected / concurrency), each wave one
+            # Claude call deep, and `retries` is how many extra calls the
+            # bounded retry path spent on top of `candidates`.
+            "interrogation": result.get("interrogation_stats") or {},
+            "writer_loop_time_guard_triggered": result.get("writer_loop_time_guard_triggered"),
+            "deadline_seconds": CURATE_HOME_SHELVES_CONFIG.get("writer_loop_deadline_seconds"),
         },
         "market_value": {
             "price_history_rows": len(mv_snapshot),
