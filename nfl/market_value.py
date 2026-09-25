@@ -60,15 +60,54 @@ from roster_match import match_player_names
 ATTD_MARKET = "player_anytime_td"
 
 
-def _is_dst_outcome(player_name_raw: str) -> bool:
+# Entries in the player_anytime_td market that are not a person. They share
+# the market with real players and would never match seasonal_rosters.
+# Only what the feed has actually been seen to send, plus the one direct
+# rewording of the same outcome. "none" is deliberately NOT here: it was
+# never observed, and guessing at market strings risks swallowing a real
+# name.
+_MARKET_OUTCOME_NAMES = frozenset({"no scorer", "no touchdown scorer"})
+
+
+def _non_player_outcome(player_name_raw) -> str | None:
     """
-    Team defense/special-teams entries (e.g. "Seattle Seahawks D/ST")
-    share the same market as individual players — these aren't a player
-    at all and would never match seasonal_rosters. Handled as an
-    explicit, separate category (see parse_attd_event's is_dst column),
-    not folded into "unmatched".
+    Classify a market entry that is not a person, or None if it is one.
+
+    Returns "team_defense" or "market_outcome" -- the reason the row
+    carries downstream, so these stop being counted as failed player
+    matches.
+
+    REAL BUG THIS CLOSES: this used to test `.endswith("D/ST")` alone,
+    and the feed sends "Arizona Cardinals Defense". Every team defense
+    missed the check, flowed into the roster matcher, failed to match,
+    and was filed as "rookie_or_new" -- 28 of week 3's 43 unmatched
+    names were team defenses recorded as unidentified rookies. "No
+    Scorer", a real market outcome, was doing the same thing.
+
+    Both spellings are matched because the feed has been observed using
+    both forms, and a future one costing a real player's pricing is a
+    worse failure than an over-broad check here: nothing that ends in
+    "D/ST" or "Defense" is ever a rostered RB/WR/TE.
     """
-    return player_name_raw.strip().endswith("D/ST")
+    if not isinstance(player_name_raw, str):
+        return None
+    name = player_name_raw.strip()
+    if name.endswith("D/ST") or name.endswith("Defense") or name.endswith("D/ST)"):
+        return "team_defense"
+    if name.lower() in _MARKET_OUTCOME_NAMES:
+        return "market_outcome"
+    return None
+
+
+def _is_dst_outcome(player_name_raw) -> bool:
+    """
+    True for any market entry that is not a person -- team defenses and
+    non-player market outcomes alike. Kept under its original name and
+    boolean shape because parse_attd_event's `is_dst` column and
+    match_attd_players' filter both read it; _non_player_outcome carries
+    the reason.
+    """
+    return _non_player_outcome(player_name_raw) is not None
 
 
 def parse_attd_event(event: dict) -> pd.DataFrame:
@@ -100,6 +139,7 @@ def parse_attd_event(event: dict) -> pd.DataFrame:
                         "player_name_raw": player_name_raw,
                         "price": outcome.get("price"),
                         "is_dst": _is_dst_outcome(player_name_raw),
+                        "non_player_reason": _non_player_outcome(player_name_raw),
                     }
                 )
     return pd.DataFrame(rows)
@@ -124,6 +164,11 @@ def match_attd_players(
     _is_dst_outcome) — they're a known, explicitly-handled category, not
     a matching failure of any kind.
     """
+    # Non-player entries are excluded from MATCHING but not from the
+    # record: they come back in `unmatched` carrying their own honest
+    # reason ("team_defense" / "market_outcome") rather than being dropped
+    # or, as before, being counted as failed player matches.
+    non_players = parsed[parsed["is_dst"]].copy()
     parsed = parsed[~parsed["is_dst"]].copy()
 
     name_to_abbr = dict(zip(team_desc["team_name"], team_desc["team_abbr"]))
@@ -136,6 +181,12 @@ def match_attd_players(
     )
     matched = matched.drop(columns=["_candidate_teams"], errors="ignore")
     unmatched = unmatched.drop(columns=["_candidate_teams"], errors="ignore")
+
+    if len(non_players):
+        non_players["match_issue_type"] = non_players["non_player_reason"]
+        unmatched = pd.concat([unmatched, non_players], ignore_index=True)
+    for frame in (matched, unmatched):
+        frame.drop(columns=["non_player_reason"], errors="ignore", inplace=True)
     return matched, unmatched
 
 
@@ -313,7 +364,11 @@ PRICE_HISTORY_COLUMNS = [
     "team",  # nflverse abbreviation, nullable if unmatched
     "position_group",  # RB/WR/TE, nullable if unmatched
     "matched",  # bool
-    "match_issue_type",  # nullable: "rookie_or_new" / "team_mismatch"
+    "match_issue_type",  # nullable: see roster_match.match_player_names
+                         # (ambiguous_match / team_mismatch /
+                         # position_out_of_scope / not_on_roster) and
+                         # market_value._non_player_outcome
+                         # (team_defense / market_outcome)
     "n_books",
     "best_price",
     "best_book",

@@ -532,7 +532,7 @@ def _new_schema_depth_chart(
     used directly, same as the old schema, no name-matching needed for
     the vast majority. For the small slice missing it, falls back to
     roster_match.match_player_names — the same 3-way-classified matcher
-    (rookie_or_new / position_out_of_scope / team_mismatch)
+    (not_on_roster / position_out_of_scope / team_mismatch / ambiguous_match)
     market_value.py's match_attd_players uses — with the row's own `team`
     column (already an abbreviation) as its single candidate team. Unlike
     the old schema, pos_rank has NO tie-mass problem: spot-checked WR/RB/TE
