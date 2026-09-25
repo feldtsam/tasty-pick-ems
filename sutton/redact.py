@@ -33,8 +33,10 @@ from typing import Any
 
 __all__ = [
     "FREE_TEXT_FIELDS",
+    "ID_FIELDS",
     "REDACTED_UNPARSED",
     "fingerprint",
+    "redact_all",
     "redact_text",
     "redact_free_text",
 ]
@@ -44,6 +46,29 @@ REDACTED_UNPARSED = "[REDACTED:unparsed]"
 # Fields that are untrusted free text. Everything else in a normalized record
 # is a typed scalar produced by our own normalizer.
 FREE_TEXT_FIELDS = ("error_message", "detail")
+
+# SPEC.md: "except when the whole field is exactly a Make execution ID in an ID
+# field (ID fields are never free text)". This matters for raw Make payloads,
+# where redact_all() sweeps everything: a Make execution id IS a 32-char hex
+# run, and `imtId` embeds one, so redacting them would destroy the very key
+# that makes storage idempotent.
+ID_FIELDS = frozenset(
+    {
+        "id",
+        "imtId",
+        "execution_id",
+        "event_id",
+        "source_id",
+        "scenarioId",
+        "scenario_id",
+        "teamId",
+        "organizationId",
+        "authorId",
+        "replayOfExecutionId",
+        "hookId",
+        "deviceId",
+    }
+)
 
 
 def fingerprint(value: str) -> str:
@@ -142,6 +167,33 @@ def redact_free_text(obj: Any, fields: tuple[str, ...] = FREE_TEXT_FIELDS) -> An
             return [redact_free_text(v, fields) for v in obj]
         return obj
     except Exception:  # noqa: BLE001
+        return REDACTED_UNPARSED
+
+
+def redact_all(obj: Any, id_fields: frozenset[str] = ID_FIELDS) -> Any:
+    """Redact EVERY string in a structure, except values under an ID-named key.
+
+    For raw Make API payloads. `redact_free_text()` is not enough there: the
+    secret-bearing field is `error.message`, nested under `error`, not a
+    top-level `error_message`, and raw `detail` is an object rather than a
+    string. Rather than enumerate raw Make's shape -- which we do not control
+    and which can change -- this sweeps the whole tree.
+
+    Benign strings are unaffected: redact_text() only rewrites secret-shaped
+    substrings, so scenario names and timestamps pass through untouched.
+
+    Never raises.
+    """
+    try:
+        if isinstance(obj, dict):
+            return {
+                k: (v if k in id_fields else redact_all(v, id_fields))
+                for k, v in obj.items()
+            }
+        if isinstance(obj, list):
+            return [redact_all(v, id_fields) for v in obj]
+        return redact_text(obj)
+    except Exception:  # noqa: BLE001 - redaction must never break a run
         return REDACTED_UNPARSED
 
 

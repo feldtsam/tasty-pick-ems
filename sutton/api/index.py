@@ -38,12 +38,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flask import Flask, jsonify, request  # noqa: E402
 
+import normalize  # noqa: E402
 import radar  # noqa: E402
 import store  # noqa: E402
 from checks import CLASS_HARNESS, TIER_LOG, evaluate, should_deliver_escalation  # noqa: E402
 from interpret import interpret  # noqa: E402
 from packet import build_packet  # noqa: E402
-from redact import redact_free_text  # noqa: E402
+from redact import redact_all, redact_free_text  # noqa: E402
 from render import render_email  # noqa: E402
 from validate import validate_interpretation  # noqa: E402
 
@@ -92,6 +93,39 @@ def _harness_signal(signal_id: str, tier: str, facts: dict, reason: str | None =
     return sig
 
 
+def _is_raw_shape(payload) -> bool:
+    """Raw Make API payload, or the already-normalized one?
+
+    Structural only, and deliberately cheap: this runs BEFORE redaction, so it
+    must not read, copy or log any value. It looks at key presence, nothing
+    else. The collector sends `raw_scenarios` at the top level and `raw_logs`
+    per scenario; the normalized shape has neither.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if "raw_scenarios" in payload:
+        return True
+    for entry in payload.get("scenarios") or []:
+        if isinstance(entry, dict) and "raw_logs" in entry:
+            return True
+    return False
+
+
+def _validate_raw_input(payload) -> str | None:
+    """Only the envelope. Per-scenario problems are handled defensively by
+    normalize.normalize_raw_payload(), because one bad Make response must not
+    cost a whole collection."""
+    if not isinstance(payload, dict):
+        return "body must be a JSON object"
+    if payload.get("mode") not in VALID_MODES:
+        return f"mode must be one of {VALID_MODES}"
+    if not payload.get("collected_at"):
+        return "collected_at is required"
+    if not isinstance(payload.get("scenarios"), list) or not payload["scenarios"]:
+        return "scenarios must be a non-empty array"
+    return None
+
+
 def _validate_input(payload) -> str | None:
     if not isinstance(payload, dict):
         return "body must be a JSON object"
@@ -131,10 +165,19 @@ def sutton_run():
     if raw is None:
         return jsonify({"error": "body must be valid JSON"}), 400
 
-    payload = redact_free_text(raw)
+    # Shape detection is structural (key presence only) and reads no values,
+    # so it is safe to run before redaction.
+    is_raw = _is_raw_shape(raw)
+
+    # A raw Make payload needs the whole tree swept: the secret-bearing field
+    # is `error.message`, nested under `error`, and raw `detail` is an object,
+    # so redact_free_text()'s field list would miss both. redact_all() spares
+    # ID-named keys, because a Make execution id IS a 32-char hex run and
+    # redacting it would destroy the key that makes storage idempotent.
+    payload = redact_all(raw) if is_raw else redact_free_text(raw)
     del raw  # nothing downstream may reach the unredacted object
 
-    problem = _validate_input(payload)
+    problem = _validate_raw_input(payload) if is_raw else _validate_input(payload)
     if problem:
         return jsonify({"error": problem}), 400
 
@@ -142,6 +185,39 @@ def sutton_run():
     shadow = _shadow_enabled()
     harness_extra = []
     storage_ok = True
+
+    # --- STEP 1b: raw -> normalized, sharing build_fixture.py's logic -----
+    input_problems: list[dict] = []
+    if is_raw:
+        scenarios, input_problems = normalize.normalize_raw_payload(
+            payload, WATCHED_SCENARIOS
+        )
+        payload = {
+            "collected_at": payload["collected_at"],
+            "mode": mode,
+            "scenarios": scenarios,
+        }  # raw_scenarios is dropped here; it is large and nothing else needs it
+        for problem_row in input_problems:
+            harness_extra.append(
+                _harness_signal(
+                    "H_RAW_INPUT_PROBLEM",
+                    TIER_LOG,
+                    {
+                        "scenario_id": problem_row.get("scenario_id"),
+                        "reason": problem_row.get("reason"),
+                    },
+                    reason=problem_row.get("reason"),
+                )
+            )
+        if not payload["scenarios"]:
+            harness_extra.append(
+                _harness_signal(
+                    "H_RAW_INPUT_PROBLEM",
+                    TIER_LOG,
+                    {"scenario_id": None, "reason": "NO_USABLE_SCENARIOS"},
+                    reason="NO_USABLE_SCENARIOS",
+                )
+            )
 
     # --- STEP 2: store observations (idempotent upsert) -------------------
     observation_rows = store.shape_observations(payload)
@@ -314,6 +390,8 @@ def sutton_run():
                 {"signal_id": s["signal_id"], "scenario_id": s.get("scenario_id")}
                 for s in new_escalations
             ],
+            "input_shape": "raw" if is_raw else "normalized",
+            "input_problems": input_problems,
             "radar_window": evaluation.get("radar_window"),
             "observations_written": len(observation_rows),
             "incidents_written": len(incident_rows) if inc_ok else 0,

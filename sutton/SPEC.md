@@ -93,6 +93,43 @@ Make "Sutton Collector" scenario (every 2 hours)
 
 State (last collection time, recent escalations, and 8 days of stored observations) is fetched by Sutton from `sutton-state-read`. It is not part of the Make payload.
 
+### Raw input (v1.5)
+
+`/api/sutton-run` also accepts the Make API's own responses, so the collector
+scenario can forward them without an HTTP module doing field-by-field mapping:
+
+```json
+{
+  "collected_at": "ISO-8601",
+  "mode": "collect | daily_radar",
+  "raw_scenarios": "GET /api/v2/scenarios response",
+  "scenarios": [
+    { "scenario_id": 6186710, "raw_logs": "GET /api/v2/scenarios/<id>/logs response" }
+  ]
+}
+```
+
+Both fields take either a bare array or Make's wrapper object (`{"scenarios": […]}`,
+`{"scenarioLogs": […]}`). The shape is detected structurally: `raw_scenarios` at the
+top level, or `raw_logs` on any scenario entry. The normalized shape above still
+works unchanged.
+
+Three rules govern the raw path:
+
+- **Redaction runs first and sweeps everything.** `redact_all()` walks the whole
+  tree, because the secret-bearing field is `error.message`, not a top-level
+  `error_message`. Values under ID-named keys are spared; a Make execution id is a
+  32-hex run and redacting it would destroy the idempotency key.
+- **`raw_scenarios` is read for three fields only**: `name`, `isActive`,
+  `isPaused`. Nothing else in that response is evidence, and it carries a
+  blueprint per scenario.
+- **A watched id absent from `raw_scenarios` is inactive**, which routes it to I1.
+  A scenario Make no longer lists is a scenario that is not running.
+
+A scenario whose `raw_logs` is malformed or empty is skipped, recorded as a
+HARNESS_HEALTH LOG, and the other scenarios still run. One bad Make response must
+not cost a whole collection.
+
 ## Data realities (confirmed against real Make history, Sep 24)
 
 1. **The history API returns at most 50 rows per request, newest first, with no truncation signal.**
@@ -388,3 +425,9 @@ The replay found three rule-semantics problems, and all were fixed as one batch 
 
 - **L2 now counts distinct rescued failures, not rescue runs.** On the weekly Split 2, one Sep 15 failure produced 8 rescue runs over four days of fixing, which held L2 YELLOW for the whole replay. Repetition means automation needing a human again and again, not one fix taking several tries.
 - **L1 packet facts are built from the flagged runs.** The latest run is labeled unflagged when it isn't flagged, so the LLM can't present it as the evidence.
+
+## v1.5 changes (raw Make input)
+
+- **The endpoint accepts raw Make API responses** as well as the normalized shape. The collector scenario forwards what Make returns; Sutton does the mapping. See "Raw input (v1.5)".
+- **`normalize.py` is the single source of truth for that mapping**, imported by both `build_fixture.py` and `api/index.py`. The two used to hold separate copies, which meant the rules could be validated against one normalization and run against another.
+- **`redact_all()` sweeps the whole payload tree**, since raw Make nests the secret at `error.message`. ID fields are exempt.

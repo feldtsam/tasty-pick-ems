@@ -34,6 +34,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from normalize import (  # noqa: E402
+    derive_ended_at as _derive_ended_at,
+    is_execution as _is_execution,
+    normalize_event as _normalize_event,
+    normalize_execution as _normalize_execution,
+)
 from redact import redact_free_text  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -193,62 +199,11 @@ def verify_coverage(scenario_id: int, pages: list[dict]) -> list[str]:
 
 
 # --- step 3: normalize ----------------------------------------------------
-
-
-def _is_execution(row: dict) -> bool:
-    # SPEC.md "Data realities" #2: executions carry eventType EXECUTION_END and
-    # their `type` means run type; timeline events have no eventType and their
-    # `type` means the event kind. Never read `type` without this check.
-    return row.get("eventType") == "EXECUTION_END"
-
-
-def _derive_ended_at(started_at: str, duration_ms) -> str | None:
-    if not started_at or duration_ms is None:
-        return None
-    text = started_at[:-1] + "+00:00" if started_at.endswith("Z") else started_at
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return (dt + timedelta(milliseconds=duration_ms)).astimezone(timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
-
-
-def _normalize_execution(row: dict) -> dict:
-    error = row.get("error") or {}
-    cause = error.get("causeModule") or {}
-    started = row.get("timestamp")
-    return {
-        "execution_id": row.get("id"),
-        "started_at": started,
-        "ended_at": row.get("endedAt") or _derive_ended_at(started, row.get("duration")),
-        "ended_at_derived": row.get("endedAt") is None,
-        "duration_ms": row.get("duration"),
-        "status": row.get("status"),
-        "run_type": row.get("type"),
-        "error_name": error.get("name"),
-        "error_message": error.get("message"),
-        "cause_module": cause.get("name"),
-        "author_name": row.get("authorName"),
-    }
-
-
-def _normalize_event(row: dict) -> dict:
-    detail = row.get("detail") or {}
-    extra = {}
-    if "delay" in detail:
-        extra["delay_minutes"] = detail["delay"]
-    if "author" in detail and isinstance(detail["author"], dict):
-        extra["author"] = detail["author"].get("name")
-    return {
-        "event_id": str(row.get("id") or row.get("imtId")),
-        "at": row.get("timestamp"),
-        "event_type": row.get("type"),
-        "detail": detail.get("reason"),
-        "author_name": row.get("authorName"),
-        "extra": extra,
-    }
+#
+# The implementations live in normalize.py, which api/index.py also imports.
+# They used to be duplicated here; a drift between the two would mean the rules
+# were validated against one normalization and run in production against
+# another.
 
 
 def build() -> None:

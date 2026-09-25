@@ -13,10 +13,11 @@
 #
 # Only remove something here if api/index.py genuinely does not import it,
 # directly or transitively. As of this commit the function needs exactly:
-#   checks.py interpret.py packet.py radar.py redact.py render.py store.py
-#   validate.py
+#   checks.py interpret.py normalize.py packet.py radar.py redact.py render.py
+#   store.py validate.py
 # plus requirements.txt. radar.py joined that list when daily_radar mode began
-# replaying ticks and aggregating them, so it is no longer ignored here.
+# replaying ticks and aggregating them; normalize.py joined it when the endpoint
+# began accepting raw Make responses. Neither is ignored here.
 
 SPEC.md
 tests/

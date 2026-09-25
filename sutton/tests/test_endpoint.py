@@ -31,7 +31,9 @@ sys.path.insert(0, str(SUTTON))
 sys.path.insert(0, str(SUTTON / "api"))
 
 import index as endpoint  # noqa: E402
+import normalize  # noqa: E402
 import radar  # noqa: E402
+from replay import load_fixture  # noqa: E402
 import store  # noqa: E402
 from interpret import SYSTEM_PROMPT, interpret  # noqa: E402
 from packet import build_packet  # noqa: E402
@@ -966,3 +968,379 @@ def test_radar_green_window_stays_green_and_calls_no_llm(client, fake, monkeypat
     assert body["status"] == "GREEN"
     assert body["deliver_radar"] is True
     assert body["body"].startswith("SUTTON — GREEN")
+
+
+# =========================================================================
+# Step D: raw Make API payloads
+# =========================================================================
+
+WATCHED = (6186710, 6241867, 6152892, 6079077)
+
+
+def raw_execution_from(n):
+    """Invert normalize.normalize_execution(), so a fixture record can be
+    turned back into the raw Make row it came from."""
+    row = {
+        "eventType": "EXECUTION_END",
+        "id": n["execution_id"],
+        "timestamp": n["started_at"],
+        "duration": n["duration_ms"],
+        "status": n["status"],
+        "type": n["run_type"],
+        "authorName": n.get("author_name"),
+    }
+    if not n.get("ended_at_derived"):
+        row["endedAt"] = n["ended_at"]
+    if n.get("error_name"):
+        row["error"] = {
+            "name": n["error_name"],
+            "message": n.get("error_message"),
+            "causeModule": {"name": n.get("cause_module")},
+        }
+    return row
+
+
+def raw_event_from(n):
+    detail = {}
+    if n.get("detail"):
+        detail["reason"] = n["detail"]
+    extra = n.get("extra") or {}
+    if "delay_minutes" in extra:
+        detail["delay"] = extra["delay_minutes"]
+    if extra.get("author"):
+        detail["author"] = {"name": extra["author"]}
+    row = {
+        "id": n["event_id"],
+        "timestamp": n["at"],
+        "type": n["event_type"],
+        "authorName": n.get("author_name"),
+    }
+    if detail:
+        row["detail"] = detail
+    return row
+
+
+def raw_scenarios_list(ids=WATCHED, wrapper=False, omit=()):
+    rows = [
+        {
+            "id": sid,
+            "name": f"SYNTHETIC {sid}",
+            "isActive": True,
+            "isPaused": False,
+            # Fields the normalizer must ignore. The real response carries a
+            # whole blueprint per scenario and is large.
+            "blueprint": {"flow": [{"module": "http:MakeRequest"}]},
+            "scheduling": {"type": "indefinitely", "interval": 900},
+        }
+        for sid in ids
+        if sid not in omit
+    ]
+    return {"scenarios": rows} if wrapper else rows
+
+
+def raw_payload(per_scenario, *, collected_at="2026-09-25T12:00:00Z", mode="collect",
+                wrapper=False, omit_from_list=()):
+    return {
+        "collected_at": collected_at,
+        "mode": mode,
+        "raw_scenarios": raw_scenarios_list(wrapper=wrapper, omit=omit_from_list),
+        "scenarios": [
+            {
+                "scenario_id": sid,
+                "raw_logs": ({"scenarioLogs": rows} if wrapper else rows),
+            }
+            for sid, rows in per_scenario
+        ],
+    }
+
+
+def fixture_scenario(scenario_id):
+    return next(
+        s for s in load_fixture()["scenarios"] if s["scenario_id"] == scenario_id
+    )
+
+
+# --- round trip against the committed fixture ----------------------------
+
+
+@pytest.mark.parametrize("wrapper", [False, True], ids=["bare-array", "wrapped"])
+def test_d_raw_logs_round_trip_reproduces_the_fixture(wrapper):
+    """Real records from the committed fixture, inverted to raw Make shape and
+    normalized again, must come back identical. Both response shapes."""
+    picks = fixture_scenario(6186710)
+    rows = [raw_execution_from(e) for e in picks["executions"]]
+    rows += [raw_event_from(e) for e in picks["events"]]
+
+    payload = raw_payload([(6186710, rows)], wrapper=wrapper)
+    scenarios, problems = normalize.normalize_raw_payload(payload, WATCHED)
+
+    assert problems == [], f"unexpected problems: {problems}"
+    got = next(s for s in scenarios if s["scenario_id"] == 6186710)
+    assert got["executions"] == picks["executions"]
+    assert got["events"] == picks["events"]
+
+
+def test_d_both_wrapper_shapes_give_the_same_result():
+    picks = fixture_scenario(6186710)
+    rows = [raw_execution_from(e) for e in picks["executions"]]
+    bare, _ = normalize.normalize_raw_payload(raw_payload([(6186710, rows)]), WATCHED)
+    wrapped, _ = normalize.normalize_raw_payload(
+        raw_payload([(6186710, rows)], wrapper=True), WATCHED
+    )
+    assert bare == wrapped
+
+
+def test_d_unwrap_helpers_accept_both_shapes_and_reject_junk():
+    assert normalize.unwrap_logs([{"a": 1}]) == [{"a": 1}]
+    assert normalize.unwrap_logs({"scenarioLogs": [{"a": 1}]}) == [{"a": 1}]
+    assert normalize.unwrap_scenarios([{"id": 1}]) == [{"id": 1}]
+    assert normalize.unwrap_scenarios({"scenarios": [{"id": 1}]}) == [{"id": 1}]
+    for junk in (None, "a string", 17, {"wrong_key": []}):
+        assert normalize.unwrap_logs(junk) is None
+        assert normalize.unwrap_scenarios(junk) is None
+
+
+def test_d_execution_and_event_are_told_apart_by_event_type():
+    """SPEC.md #2: never read `type` without checking which shape it is."""
+    rows = [
+        {"eventType": "EXECUTION_END", "id": "x1", "timestamp": "2026-09-25T10:00:00Z",
+         "duration": 1000, "status": 1, "type": "auto"},
+        {"id": "e1", "timestamp": "2026-09-25T10:05:00Z", "type": "modify",
+         "detail": {"author": {"name": "Sam Feldt"}}},
+    ]
+    scenarios, _ = normalize.normalize_raw_payload(raw_payload([(6186710, rows)]), WATCHED)
+    got = next(s for s in scenarios if s["scenario_id"] == 6186710)
+    assert [e["execution_id"] for e in got["executions"]] == ["x1"]
+    assert got["executions"][0]["run_type"] == "auto"       # `type` = run type
+    assert [e["event_id"] for e in got["events"]] == ["e1"]
+    assert got["events"][0]["event_type"] == "modify"       # `type` = event kind
+    assert got["events"][0]["extra"]["author"] == "Sam Feldt"
+
+
+def test_d_ended_at_is_derived_when_make_omits_it():
+    rows = [{"eventType": "EXECUTION_END", "id": "x1",
+             "timestamp": "2026-09-25T10:00:00Z", "duration": 90_000,
+             "status": 1, "type": "auto"}]
+    scenarios, _ = normalize.normalize_raw_payload(raw_payload([(6186710, rows)]), WATCHED)
+    ex0 = next(s for s in scenarios if s["scenario_id"] == 6186710)["executions"][0]
+    assert ex0["ended_at"] == "2026-09-25T10:01:30Z"
+    assert ex0["ended_at_derived"] is True
+
+
+def test_d_scenario_id_comes_from_context_not_the_log_rows():
+    """SPEC.md #3: timeline events carry no scenarioId."""
+    rows = [{"id": "e1", "timestamp": "2026-09-25T10:00:00Z", "type": "warning",
+             "detail": {"reason": "All 9 attempts to reconnect the process failed"}}]
+    scenarios, _ = normalize.normalize_raw_payload(raw_payload([(6241867, rows)]), WATCHED)
+    got = next(s for s in scenarios if s["scenario_id"] == 6241867)
+    assert got["events"][0]["detail"].startswith("All 9 attempts")
+
+
+# --- redaction on the raw shape ------------------------------------------
+
+
+SECRET_SHAPED = (
+    "Invalid value for header 'X-Pipeline-Secret': "
+    "'0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'."
+)
+
+
+def test_d_raw_error_message_is_redacted_before_storage(client, fake, monkeypatch):
+    """The real Sep 11 shape, arriving raw. redact_free_text() would miss it:
+    the field is error.message, not a top-level error_message."""
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    rows = [
+        {"eventType": "EXECUTION_END", "id": "raw-fail-1",
+         "timestamp": "2026-09-25T10:00:00Z", "duration": 2000, "status": 3,
+         "type": "auto",
+         "error": {"name": "Error", "message": SECRET_SHAPED,
+                   "causeModule": {"name": "MakeRequest"}}},
+        {"eventType": "EXECUTION_END", "id": "raw-fail-2",
+         "timestamp": "2026-09-25T11:00:00Z", "duration": 2000, "status": 3,
+         "type": "auto",
+         "error": {"name": "Error", "message": SECRET_SHAPED,
+                   "causeModule": {"name": "MakeRequest"}}},
+    ]
+    body = post(client, raw_payload([(6186710, rows)])).get_json()
+    assert body["input_shape"] == "raw"
+
+    stored = " ".join(
+        str(r.get("error_message") or "") for r in fake.observations.values()
+    )
+    assert "[REDACTED:" in stored
+    assert not re.search(r"[0-9a-f]{32,}", stored)
+    assert "X-Pipeline-Secret" in stored, "the message shape survives, the value does not"
+
+    # And nowhere in the whole response either.
+    assert not re.search(r"[0-9a-f]{32,}", json.dumps(body))
+
+
+def test_d_redact_all_spares_id_fields():
+    """A Make execution id is a 32-char hex run. Redacting it would destroy
+    the key that makes storage idempotent."""
+    from redact import redact_all
+    exec_id = "1a2b3c4d5e6f708192a3b4c5d6e7f809"
+    out = redact_all({
+        "id": exec_id,
+        "imtId": f"1790262009956_{exec_id}",
+        "error": {"message": SECRET_SHAPED},
+        "name": "NFL Picks Daily Generation",
+    })
+    assert out["id"] == exec_id
+    assert out["imtId"] == f"1790262009956_{exec_id}"
+    assert out["name"] == "NFL Picks Daily Generation"      # benign text untouched
+    assert "[REDACTED:" in out["error"]["message"]
+    assert not re.search(r"[0-9a-f]{32,}", out["error"]["message"])
+
+
+def test_d_execution_ids_survive_the_endpoint_intact(client, fake, monkeypatch):
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    exec_id = "1a2b3c4d5e6f708192a3b4c5d6e7f809"
+    rows = [{"eventType": "EXECUTION_END", "id": exec_id,
+             "imtId": f"1790262009956_{exec_id}",
+             "timestamp": "2026-09-25T10:00:00Z", "duration": 1000,
+             "status": 1, "type": "auto"}]
+    post(client, raw_payload([(6186710, rows)]))
+    assert (6186710, "execution", exec_id) in fake.observations
+
+
+# --- a watched scenario missing from raw_scenarios -> I1 ------------------
+
+
+def test_d_scenario_missing_from_the_list_is_treated_as_inactive(client, fake, monkeypatch):
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    ok_rows = [{"eventType": "EXECUTION_END", "id": "ok-1",
+                "timestamp": "2026-09-25T10:00:00Z", "duration": 1000,
+                "status": 1, "type": "auto"}]
+    payload = raw_payload(
+        [(6186710, ok_rows), (6241867, ok_rows), (6152892, ok_rows)],
+        omit_from_list=(6079077,),
+    )
+    body = post(client, payload).get_json()
+
+    i1 = [s for s in body["signals"]
+          if s["signal_id"] == "I1_SCENARIO_DISABLED" and s["scenario_id"] == 6079077]
+    assert i1, "a watched scenario absent from the scenarios list must reach I1"
+    assert i1[0]["tier"] == "ESCALATE"
+    assert body["status"] == "RED"
+    assert any(p["reason"] == "MISSING_FROM_SCENARIOS_LIST" for p in body["input_problems"])
+
+
+def test_d_scenario_meta_marks_missing_ids_inactive():
+    meta, missing = normalize.scenario_meta(raw_scenarios_list(omit=(6079077,)), WATCHED)
+    assert missing == [6079077]
+    assert meta[6079077]["is_active"] is False
+    assert meta[6186710]["is_active"] is True
+    assert meta[6186710]["name"] == "SYNTHETIC 6186710"
+
+
+def test_d_scenario_meta_ignores_every_other_field():
+    meta, _ = normalize.scenario_meta(raw_scenarios_list(), WATCHED)
+    assert sorted(meta[6186710]) == ["is_active", "is_paused", "name"]
+
+
+# --- one malformed raw_logs must not block the others --------------------
+
+
+def test_d_one_malformed_raw_logs_does_not_block_the_others(client, fake, monkeypatch):
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    ok_rows = [{"eventType": "EXECUTION_END", "id": f"ok-{i}",
+                "timestamp": f"2026-09-25T1{i}:00:00Z", "duration": 1000,
+                "status": 1, "type": "auto"} for i in range(3)]
+    payload = raw_payload([(6186710, ok_rows), (6241867, ok_rows), (6152892, ok_rows)])
+    # Corrupt exactly one scenario's logs.
+    payload["scenarios"].append({"scenario_id": 6079077,
+                                 "raw_logs": {"unexpected": "shape"}})
+
+    resp = post(client, payload)
+    assert resp.status_code == 200
+    body = resp.get_json()
+
+    problems = {p["scenario_id"]: p["reason"] for p in body["input_problems"]}
+    assert problems.get(6079077) == "RAW_LOGS_MALFORMED"
+
+    stored = {sid for sid, _kind, _sid2 in fake.observations}
+    assert stored == {6186710, 6241867, 6152892}, "the other three still stored"
+    assert any(s["signal_id"] == "H_RAW_INPUT_PROBLEM" for s in body["signals"])
+    assert "HARNESS_HEALTH" in body["body"]
+
+
+@pytest.mark.parametrize(
+    "bad,reason",
+    [
+        ({"unexpected": "shape"}, "RAW_LOGS_MALFORMED"),
+        ("a string", "RAW_LOGS_MALFORMED"),
+        (None, "RAW_LOGS_MALFORMED"),
+        ([], "RAW_LOGS_EMPTY"),
+        ({"scenarioLogs": []}, "RAW_LOGS_EMPTY"),
+    ],
+)
+def test_d_malformed_shapes_are_named_not_raised(bad, reason):
+    payload = raw_payload([])
+    payload["scenarios"] = [{"scenario_id": 6186710, "raw_logs": bad}]
+    scenarios, problems = normalize.normalize_raw_payload(payload, WATCHED)
+    assert {"scenario_id": 6186710, "reason": reason} in problems
+    assert not any(s["scenario_id"] == 6186710 for s in scenarios)
+
+
+def test_d_all_four_malformed_still_returns_200(client, fake, monkeypatch):
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    payload = raw_payload([])
+    payload["scenarios"] = [{"scenario_id": sid, "raw_logs": {"bad": True}}
+                            for sid in WATCHED]
+    resp = post(client, payload)
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert len(body["input_problems"]) == 4
+    assert all(p["reason"] == "RAW_LOGS_MALFORMED" for p in body["input_problems"])
+    # Four per-scenario problems plus the NO_USABLE_SCENARIOS one.
+    assert len([s for s in body["signals"]
+                if s["signal_id"] == "H_RAW_INPUT_PROBLEM"]) == 5
+    assert "NO_USABLE_SCENARIOS" in body["body"]
+    assert body["status"] == "GREEN", "harness trouble never colours the TPE line"
+
+
+# --- the normalized path is untouched ------------------------------------
+
+
+def test_d_normalized_payload_is_still_detected_as_normalized(client, fake, monkeypatch):
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    body = post(client, failing_payload()).get_json()
+    assert body["input_shape"] == "normalized"
+    assert body["input_problems"] == []
+    assert body["status"] == "RED"
+
+
+def test_d_shape_detection_is_structural():
+    assert _shape(raw_payload([(6186710, [])])) is True
+    assert _shape(failing_payload()) is False
+    assert _shape({"scenarios": [{"scenario_id": 1, "raw_logs": []}]}) is True
+    assert _shape({"scenarios": [{"scenario_id": 1, "executions": []}]}) is False
+    assert _shape({"raw_scenarios": []}) is True
+    assert _shape(None) is False
+
+
+def _shape(payload):
+    return endpoint._is_raw_shape(payload)
+
+
+def test_d_raw_scenarios_is_dropped_before_storage(client, fake, monkeypatch):
+    """The scenarios response carries a blueprint per scenario. None of it is
+    evidence, and blueprints are exactly where plaintext secrets live."""
+    captured = {}
+
+    def capture(packet, **kwargs):
+        captured["packet"] = packet
+        return True, json.dumps(GOOD_OUTPUT), "claude-opus-5", None
+
+    monkeypatch.setattr(endpoint, "interpret", capture)
+    rows = [{"eventType": "EXECUTION_END", "id": "f1",
+             "timestamp": "2026-09-25T10:00:00Z", "duration": 1000,
+             "status": 3, "type": "auto", "error": {"name": "E"}}]
+    post(client, raw_payload([(6186710, rows)]))
+
+    blob = json.dumps(captured.get("packet", {})) + json.dumps(
+        list(fake.observations.values())
+    )
+    assert "blueprint" not in blob
+    assert "MakeRequest" not in blob or "cause_module" in blob
