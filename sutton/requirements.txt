@@ -1,0 +1,13 @@
+# Sutton V1 — the sutton/ Vercel project's only dependencies.
+#
+# Deliberately tiny. Sutton talks to exactly two things: the Anthropic API
+# and the three sutton-* Lovable routes. No pandas, no numpy, no Supabase
+# client, no Make SDK — it holds no Supabase key and no Make token, so there
+# is nothing for a heavier dependency to reach.
+#
+# Nothing here is imported from nfl/ or pipeline/; sutton/ is self-contained.
+
+flask==3.0.3          # api/index.py — same version nfl/ and pipeline/ pin
+requests==2.31.0      # store.py — the three signed sutton-* calls
+certifi==2024.8.30    # TLS roots for the above
+anthropic>=0.69,<2    # interpret.py — the single interpretation call

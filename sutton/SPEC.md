@@ -273,6 +273,12 @@ Recommendation: <recommended_investigation>
 **Routes (Lovable, HMAC with a new `SUTTON_WRITE_SECRET`):**
 - `sutton-observations-write`: upsert, ignoring duplicates
 - `sutton-incidents-write`: insert only
+**Signing contract (as built):**
+- Every route uses HMAC-SHA256 with `SUTTON_WRITE_SECRET`, hex, in the `X-Signature` header. A `sha256=` prefix is optional.
+- **POST routes** sign the exact raw request body bytes. Both POST routes accept a JSON array only.
+- **`sutton-state-read`** requires a `ts` query value in unix seconds and signs the string `ts=<n>`. It returns 401 when the signature fails, when `ts` is missing, or when `ts` is more than 300s from server time.
+- The migration is `drizzle/migrations/0011_create_sutton_tables.sql`. That's Lovable Cloud's current migration folder.
+
 - `sutton-state-read`: signed GET, returns:
   - `last_collection_at`
   - escalations emailed in the last 24h
