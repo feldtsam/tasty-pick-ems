@@ -420,11 +420,18 @@ def sutton_run_health_check():
     body = {
         "status": "ok",
         "usage": (
-            'POST /api/sutton-run with header X-Sutton-Secret and body '
-            '{"collected_at": ISO, "mode": "collect"|"daily_radar", "scenarios": [...]}. '
-            "Returns {status, shadow, deliver_escalation, deliver_radar, subject, body, "
-            "storage_ok, llm_ok}."
+            "POST /api/sutton-run with header X-Sutton-Secret. Body carries "
+            '"collected_at" (ISO) and "mode" ("collect"|"daily_radar"), plus '
+            "EITHER the normalized shape "
+            '({"scenarios": [{"scenario_id", "executions", "events"}]}) OR the raw '
+            "Make shape "
+            '({"raw_scenarios": <GET /scenarios>, "scenarios": [{"scenario_id", '
+            '"raw_logs": <GET /scenarios/<id>/logs>}]}). Raw fields take a bare array '
+            "or Make's wrapper object. Returns {status, shadow, deliver_escalation, "
+            "deliver_radar, subject, body, storage_ok, llm_ok, input_shape, "
+            "input_problems, radar_window, storage_detail}."
         ),
+        "accepts": ["normalized", "raw"],
         "watched_scenarios": list(WATCHED_SCENARIOS),
         "shadow": _shadow_enabled(),
         "env_configured": {
