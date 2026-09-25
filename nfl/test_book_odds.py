@@ -115,6 +115,54 @@ def run_synthetic() -> bool:
     return ok
 
 
+def run_bet_now_scope() -> bool:
+    print()
+    print("=" * 70)
+    print("SPORTSBOOK DEEP-LINK (\"Bet Now\") -- link/sid scope gate: DraftKings/")
+    print("FanDuel only, every other real bookmaker's entry stays untouched")
+    print("=" * 70)
+
+    import pandas as pd
+
+    rows = pd.DataFrame([
+        {"book_key": "draftkings", "book_title": "DraftKings", "price": 160,
+         "link": "https://sportsbook.draftkings.com/?outcomes=abc", "sid": "abc"},
+        {"book_key": "fanduel", "book_title": "FanDuel", "price": 165,
+         "link": "https://sportsbook.fanduel.com/addToBetslip?selectionId=xyz", "sid": "xyz"},
+        # BetMGM carries a real link/sid in the raw feed too (the same real
+        # probe found BetMGM returns a usable, if {state}-templated, link) --
+        # this row exists specifically to prove the gate is a deliberate
+        # scope decision, not just "these fields happened to be absent".
+        {"book_key": "betmgm", "book_title": "BetMGM", "price": 185,
+         "link": "https://sports.{state}.betmgm.com/en/sports/events/12345", "sid": "mgm123"},
+        # A book with no link/sid in the raw feed at all (Bovada, confirmed
+        # real in this session's own live probe) -- the ordinary case.
+        {"book_key": "bovada", "book_title": "Bovada", "price": 160, "link": None, "sid": None},
+        # A DUPLICATE DraftKings row with a WORSE price -- proves the
+        # winning row's own link/sid travel with it through the dedup, not
+        # just its price/bookmaker (best_by_key[k] is the whole row).
+        {"book_key": "draftkings", "book_title": "DraftKings", "price": 140,
+         "link": "https://sportsbook.draftkings.com/?outcomes=worse", "sid": "worse"},
+    ])
+
+    result = _book_odds_for_player(rows)
+    print(f"output book_odds: {json.dumps(result, indent=2)}")
+    by_book = {b["bookmaker"]: b for b in result}
+
+    ok = True
+    ok &= check("DraftKings entry has a real link/sid", by_book["DraftKings"].get("link") == "https://sportsbook.draftkings.com/?outcomes=abc" and by_book["DraftKings"].get("sid") == "abc")
+    ok &= check("the WINNING (better-price) DraftKings row's own link/sid survived the dedup, not the loser's", by_book["DraftKings"]["odds"] == 160)
+    ok &= check("FanDuel entry has a real link/sid", by_book["FanDuel"].get("link") == "https://sportsbook.fanduel.com/addToBetslip?selectionId=xyz" and by_book["FanDuel"].get("sid") == "xyz")
+    ok &= check(
+        "BetMGM entry has NO link/sid keys at all, even though the raw feed carried real ones -- "
+        "a deliberate v1 scope gate, not an absence in the source data",
+        "link" not in by_book["BetMGM"] and "sid" not in by_book["BetMGM"],
+    )
+    ok &= check("Bovada entry has NO link/sid keys either (the ordinary no-data case)", "link" not in by_book["Bovada"] and "sid" not in by_book["Bovada"])
+    ok &= check("BetMGM/Bovada odds themselves are untouched -- v1 scope gates link/sid only, never the odds value real consensus/best_price scoring depends on", by_book["BetMGM"]["odds"] == 185 and by_book["Bovada"]["odds"] == 160)
+    return ok
+
+
 def _real_snapshot_for_event(api_key: str, event_id: str):
     resp = requests.get(
         ODDS_EVENT_ODDS_URL.format(event_id=event_id),
@@ -203,9 +251,10 @@ def run_real() -> bool:
 
 if __name__ == "__main__":
     ok_synthetic = run_synthetic()
+    ok_bet_now_scope = run_bet_now_scope()
     ok_real = run_real()
     print()
-    if ok_synthetic and ok_real:
+    if ok_synthetic and ok_bet_now_scope and ok_real:
         print("All checks passed.")
     else:
         print("Some checks FAILED -- see above.")

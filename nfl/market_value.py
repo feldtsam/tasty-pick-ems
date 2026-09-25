@@ -59,6 +59,25 @@ from roster_match import match_player_names
 
 ATTD_MARKET = "player_anytime_td"
 
+# Sportsbook Deep-Link ("Bet Now"), v1 scope (2026-09-25 probe, confirmed
+# via a real Bills @ Chargers player_anytime_td response): only these two
+# books return fully populated, outcome-level (per-player) bet-slip links
+# with no {state} templating -- DraftKings and FanDuel are ready to use
+# as-returned. BetMGM/Caesars/BetRivers also return usable links in the
+# same probe but carry a literal {state} token TPE has no source of truth
+# to substitute yet -- deferred to v2, bundled with the geofencing
+# decision, not solved narrowly here. Every other book (including
+# Fanatics, already a real live bookmaker in this table's own book_odds)
+# either has a null outcome-level link or isn't attempted in v1 -- this
+# set exists to gate link/sid capture, never to filter book_odds itself:
+# every real bookmaker's own odds value still appears in book_odds
+# unchanged, same as before this feature existed, only DraftKings/FanDuel
+# entries additionally carry link/sid. Matched against the Odds API's own
+# DISPLAY TITLE (book_title / bookmaker.get("title")), never the
+# lowercase machine key -- confirmed the real persisted format via a live
+# sample ({"bookmaker": "Fanatics", "odds": 3000}), Title-Case.
+BET_NOW_BOOK_TITLES = frozenset({"DraftKings", "FanDuel"})
+
 
 # Entries in the player_anytime_td market that are not a person. They share
 # the market with real players and would never match seasonal_rosters.
@@ -120,6 +139,18 @@ def parse_attd_event(event: dict) -> pd.DataFrame:
     Player name comes from each outcome's `description` field, not
     `name` (which is always the constant "Yes" for this market — see
     module docstring).
+
+    link/sid (Sportsbook Deep-Link "Bet Now", 2026-09-25 probe): read
+    from the OUTCOME level only — `outcome.get("link")` is the real,
+    populated, per-player bet-slip link; confirmed via the same real
+    probe that the bookmaker top-level `link` is always populated but is
+    only a general event page (last-resort fallback material, not
+    parsed here), and the market-level `link` (inside `market`, one
+    level up from `outcome`) is always null in the confirmed response --
+    deliberately never read. Captured for every outcome regardless of
+    book here (cheap, honest passthrough of what the feed sent); which
+    books actually get persisted downstream is `_book_odds_for_player`'s
+    own job (see BET_NOW_BOOK_TITLES), not this function's.
     """
     rows = []
     for bm in event.get("bookmakers", []):
@@ -138,6 +169,8 @@ def parse_attd_event(event: dict) -> pd.DataFrame:
                         "book_title": bm.get("title"),
                         "player_name_raw": player_name_raw,
                         "price": outcome.get("price"),
+                        "link": outcome.get("link"),
+                        "sid": outcome.get("sid"),
                         "is_dst": _is_dst_outcome(player_name_raw),
                         "non_player_reason": _non_player_outcome(player_name_raw),
                     }
@@ -254,6 +287,15 @@ def snapshot_scoring_inputs(matched: pd.DataFrame) -> pd.DataFrame:
     needed (confirmed directly: the Odds API's own bookmaker objects
     carry both `key` and `title`).
 
+    Sportsbook Deep-Link ("Bet Now", 2026-09-25): DraftKings/FanDuel
+    entries additionally carry real "link"/"sid" keys (see
+    _book_odds_for_player's own docstring for the exact scope gate) --
+    every other bookmaker's entry is byte-for-byte what it was before
+    this feature existed. Lands in nfl_price_history's existing book_odds
+    JSONB column unchanged (that column's own Zod schema already has
+    .passthrough() enabled, confirmed directly against nfl-price-
+    history-write.ts -- no migration, no schema change needed for this).
+
     DEDUPED BY book_key, same real defensive posture as MLB's own
     _book_odds_for_match (pipeline/api/scored_picks.py) — that function's
     own docstring documents a real, confirmed-live production duplicate-
@@ -309,6 +351,21 @@ def _book_odds_for_player(rows: pd.DataFrame) -> list:
     duplicate bookmaker entry exists for the same player), first-seen
     position kept — a deduped bookmaker doesn't jump to a new position
     just because its winning row came from a later duplicate.
+
+    link/sid (Sportsbook Deep-Link "Bet Now", 2026-09-25): added ONLY for
+    BET_NOW_BOOK_TITLES (DraftKings/FanDuel) — every other real
+    bookmaker's entry keeps the exact {"bookmaker", "odds"} shape this
+    already had before this feature existed, no link/sid key at all, not
+    even null. This is a deliberate scope gate on the two NEW fields
+    only, never a filter on book_odds itself: every real bookmaker still
+    gets a real odds entry here, feeding consensus_implied_probability/
+    best_price/n_books exactly as before — v1 not persisting BetMGM/
+    Caesars/BetRivers/etc.'s own deep links doesn't mean dropping their
+    odds from the picture. `r["link"]`/`r["sid"]` come from parse_attd_
+    event's own outcome-level capture; when the same book_key wins the
+    per-book dedup above via a later duplicate row, its link/sid travel
+    with it the same way book_title/price already do (best_by_key[k] is
+    the whole winning row, not just its price).
     """
     best_by_key: dict = {}
     order: list = []
@@ -319,10 +376,15 @@ def _book_odds_for_player(rows: pd.DataFrame) -> list:
             best_by_key[key] = r
         elif r["price"] > best_by_key[key]["price"]:
             best_by_key[key] = r
-    return [
-        {"bookmaker": best_by_key[k]["book_title"], "odds": int(best_by_key[k]["price"])}
-        for k in order
-    ]
+    out = []
+    for k in order:
+        r = best_by_key[k]
+        entry = {"bookmaker": r["book_title"], "odds": int(r["price"])}
+        if r["book_title"] in BET_NOW_BOOK_TITLES:
+            entry["link"] = r.get("link")
+            entry["sid"] = r.get("sid")
+        out.append(entry)
+    return out
 
 
 # --- Price-history storage: DESIGN ONLY. Nothing in this module writes
