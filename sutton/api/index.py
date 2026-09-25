@@ -144,7 +144,7 @@ def sutton_run():
 
     # --- STEP 2: store observations (idempotent upsert) -------------------
     observation_rows = store.shape_observations(payload)
-    obs_ok, _obs_data, obs_error = store.write_observations(observation_rows)
+    obs_ok, obs_data, obs_error = store.write_observations(observation_rows)
     if not obs_ok:
         storage_ok = False
         harness_extra.append(
@@ -252,7 +252,7 @@ def sutton_run():
         detected_at=_now_iso(),
         record_type="radar" if mode == "daily_radar" else "signal",
     )
-    inc_ok, _inc_data, inc_error = store.write_incidents(incident_rows)
+    inc_ok, inc_data, inc_error = store.write_incidents(incident_rows)
     if not inc_ok:
         storage_ok = False
 
@@ -283,6 +283,13 @@ def sutton_run():
             ],
             "observations_written": len(observation_rows),
             "incidents_written": len(incident_rows) if inc_ok else 0,
+            # The routes' own responses, so a smoke test can confirm rows
+            # actually landed. sutton-state-read only returns the WATCHED
+            # scenarios, so a synthetic scenario_id is invisible there.
+            "storage_detail": {
+                "observations": obs_data if obs_ok else None,
+                "incidents": inc_data if inc_ok else None,
+            },
             "storage_errors": [e for e in (obs_error, state_error, inc_error) if e],
         }
     ), 200

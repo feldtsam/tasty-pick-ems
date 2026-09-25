@@ -1,0 +1,25 @@
+# Files that must not ship to the sutton Vercel project.
+#
+# Vercel serves the Root Directory as a static filesystem, so anything
+# uploaded here is publicly fetchable. The ee2fa18 deployment listed 17 static
+# assets: SPEC.md, 11 .py files, requirements.txt, three test files and the
+# 8000-line history fixture were all reachable by URL.
+#
+# Two layers fix that, most-sensitive-first:
+#   1. This file removes what the function never imports, so it is not
+#      uploaded at all.
+#   2. vercel.json sets outputDirectory to public/, so the static root holds
+#      only that directory and the remaining runtime modules are not served.
+#
+# Only remove something here if api/index.py genuinely does not import it,
+# directly or transitively. As of this commit the function needs exactly:
+#   checks.py interpret.py packet.py redact.py render.py store.py validate.py
+# plus requirements.txt.
+
+SPEC.md
+tests/
+build_fixture.py
+diagnose.py
+radar.py
+replay.py
+smoke.sh
