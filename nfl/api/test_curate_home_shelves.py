@@ -13,6 +13,7 @@ Run: python3 nfl/api/test_curate_home_shelves.py
 """
 import io
 import json
+import math
 import sys
 import threading
 import time
@@ -1223,6 +1224,99 @@ if __name__ == "__main__":
         "missing-signal_verdict: this went through the SAME retry path as a None result (2 retries + the "
         "original attempt = 3 real calls), not special-cased into an immediate failure",
         call_count["n"] == 3,
+    ))
+
+    # ==================================================================
+    # PER-STAGE TIMERS
+    # ==================================================================
+    import time as _time
+
+    calls = {"n": 0}
+
+    def _flaky(story_input, api_key, prior_history=None, market_data=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return None                      # two unusable results, then a good one
+        return {"signal_verdict": "SURVIVES", "confirmation": {}, "challenge": {}, "judgment": {}}
+
+    orig_interrogate = chs.interrogate_story
+    try:
+        chs.interrogate_story = _flaky
+        stats = {}
+        out = chs._interrogate_one_candidate(
+            ("P1", "e1"),
+            {("P1", "e1"): pd.Series({"player_id": "P1", "player_name": "Retry Guy"})},
+            "fake-key", max_retries=2, retry_backoff_seconds=0.001, stats=stats,
+        )
+        results.append(check(
+            "timers: retries are counted -- two unusable results then a good one records 3 calls, "
+            "1 candidate, 2 retries",
+            out["interrogation_status"] == "complete"
+            and stats == {"calls": 3, "candidates": 1, "retries": 2},
+        ))
+        results.append(check(
+            "timers: the attempt tally is a SINK -- _interrogate_one_candidate's return is still "
+            "exactly two keys, the contract the gate depends on",
+            sorted(out.keys()) == ["interrogation_status", "result"],
+        ))
+
+        calls["n"] = 0
+        no_stats = chs._interrogate_one_candidate(
+            ("P1", "e1"),
+            {("P1", "e1"): pd.Series({"player_id": "P1", "player_name": "Retry Guy"})},
+            "fake-key", max_retries=2, retry_backoff_seconds=0.001,
+        )
+        results.append(check(
+            "timers: stats is optional -- omitting it changes nothing about the result or the retries",
+            no_stats["interrogation_status"] == "complete" and calls["n"] == 3,
+        ))
+
+        calls["n"] = 99  # always succeeds
+        stats2 = {}
+        chs._interrogate_one_candidate(
+            ("P2", "e2"),
+            {("P2", "e2"): pd.Series({"player_id": "P2", "player_name": "Clean Guy"})},
+            "fake-key", max_retries=2, stats=stats2,
+        )
+        results.append(check(
+            "timers: a first-try success records 1 call and 0 retries -- retries measure real extra "
+            "work, never just 'a candidate was interrogated'",
+            stats2 == {"calls": 1, "candidates": 1, "retries": 0},
+        ))
+    finally:
+        chs.interrogate_story = orig_interrogate
+
+    # END-TO-END WIRING. The tally being correct is worthless if the sink is
+    # never handed to the stage that fills it -- an earlier version of this
+    # change declared interrogation_stats and forgot to pass it, so every
+    # timing field came back empty while the unit tests above still passed.
+    results.append(check(
+        "timers: shape_content_draft_rows actually THREADS the sink into the interrogation stage -- "
+        "selected/waves/concurrency/seconds all populated on a real call, not an empty dict",
+        isinstance(gate_result.get("interrogation_stats"), dict)
+        and {"selected", "waves", "concurrency", "seconds"} <= set(gate_result["interrogation_stats"])
+        and gate_result["interrogation_stats"]["selected"] == 4
+        and gate_result["interrogation_stats"]["waves"] >= 1
+        and gate_result["interrogation_stats"]["seconds"] >= 0,
+    ))
+    results.append(check(
+        "timers: the writer loop reports its own wall time on the same return",
+        isinstance(gate_result.get("writer_loop_seconds"), float)
+        and gate_result["writer_loop_seconds"] >= 0,
+    ))
+    results.append(check(
+        "timers: candidates tallied equals candidates selected -- every selected candidate is "
+        "accounted for exactly once",
+        gate_result["interrogation_stats"].get("candidates") == gate_result["interrogation_stats"]["selected"],
+    ))
+
+    slow_stats = {"seconds": 1.25, "selected": 186, "waves": 13, "concurrency": 15,
+                  "calls": 190, "candidates": 186, "retries": 4}
+    results.append(check(
+        "timers: the Interrogation block carries what the wall time is MADE of -- selected calls, "
+        "waves (ceil(selected/concurrency)), and retries on top",
+        slow_stats["waves"] == math.ceil(slow_stats["selected"] / slow_stats["concurrency"])
+        and slow_stats["calls"] - slow_stats["candidates"] == slow_stats["retries"],
     ))
 
     print()

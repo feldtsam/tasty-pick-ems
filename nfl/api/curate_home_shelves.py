@@ -104,6 +104,7 @@ required fallback argument, not the real source of truth.
 import json
 import math
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -1263,10 +1264,37 @@ def _select_candidates_for_interrogation(candidate_rows: list, top_pct: float) -
     return selected, all_keys - selected
 
 
+_STATS_LOCK = threading.Lock()
+
+
+def _record_attempts(stats: dict, attempts: int) -> None:
+    """
+    Thread-safe attempt tally for the Interrogation stage timer.
+
+    A SINK rather than a return value: _interrogate_one_candidate's
+    {"interrogation_status", "result"} return is a deliberately exact
+    two-key contract with its own test asserting the literal dict, and a
+    reporting convenience must not widen a load-bearing interface. Calls
+    land from Pass 4's ThreadPoolExecutor, so the tally takes a lock --
+    `+=` on a dict value is not atomic across threads.
+
+    attempts is the real number of calls made for ONE candidate: 1 when
+    it succeeded first try, up to max_retries + 1 when it did not.
+    Retries are the difference, and they are the term that turns 13
+    expected waves into an unbounded number on a bad-latency day.
+    """
+    if stats is None:
+        return
+    with _STATS_LOCK:
+        stats["calls"] = stats.get("calls", 0) + attempts
+        stats["candidates"] = stats.get("candidates", 0) + 1
+        stats["retries"] = stats.get("retries", 0) + max(0, attempts - 1)
+
+
 def _interrogate_one_candidate(
     key: tuple, weekly_lookup: dict, anthropic_api_key: str,
     max_retries: int = 2, retry_backoff_seconds: float = 1.0,
-    price_history_by_player: dict = None,
+    price_history_by_player: dict = None, stats: dict = None,
 ) -> dict:
     """
     Runs ONE candidate's Interrogation call in isolation -- the unit of
@@ -1354,6 +1382,7 @@ def _interrogate_one_candidate(
         # the one field the gate actually depends on. Retried the same
         # as a None result, not given special-case handling.
         if result is not None and result.get("signal_verdict"):
+            _record_attempts(stats, attempt + 1)
             return {"interrogation_status": "complete", "result": result}
 
         if attempt >= max_retries:
@@ -1370,6 +1399,7 @@ def _interrogate_one_candidate(
                     f"result -- recording a 'failed' status, not defaulting to a passed-scrutiny result",
                     flush=True,
                 )
+            _record_attempts(stats, attempt + 1)
             return {"interrogation_status": "failed", "result": None}
 
         attempt += 1
@@ -1379,7 +1409,7 @@ def _interrogate_one_candidate(
 
 def _interrogate_unique_candidates(
     capped_assignments: pd.DataFrame, weekly_lookup: dict, anthropic_api_key: str = None, config: dict = CONFIG,
-    price_history_by_player: dict = None,
+    price_history_by_player: dict = None, stats: dict = None,
 ) -> dict:
     """
     Candidate-level Interrogation — called ONCE per (player_id, event_id),
@@ -1590,13 +1620,20 @@ def _interrogate_unique_candidates(
     # to. This governs EXECUTION ONLY: which candidates are selected
     # (Pass 3) and what each interrogation_status means (the three-state
     # contract) are both unchanged.
+    stage_start = time.monotonic()
+    if stats is not None:
+        stats["selected"] = len(selected_keys)
+        stats["concurrency"] = max(1, min(config["interrogation_max_concurrency"], len(selected_keys) or 1))
+        # Waves are what the wall time is actually made of: ceil(selected /
+        # concurrency) sequential rounds, each one Claude-call deep.
+        stats["waves"] = math.ceil(len(selected_keys) / stats["concurrency"]) if selected_keys else 0
     if selected_keys:
         max_workers = max(1, min(config["interrogation_max_concurrency"], len(selected_keys)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_key = {
                 executor.submit(
                     _interrogate_one_candidate, key, weekly_lookup, anthropic_api_key,
-                    price_history_by_player=price_history_by_player,
+                    price_history_by_player=price_history_by_player, stats=stats,
                 ): key
                 for key in selected_keys
             }
@@ -1618,6 +1655,8 @@ def _interrogate_unique_candidates(
                     )
                     results[key] = {"interrogation_status": "failed", "result": None}
 
+    if stats is not None:
+        stats["seconds"] = round(time.monotonic() - stage_start, 2)
     return results
 
 
@@ -1937,6 +1976,7 @@ def shape_content_draft_rows(
     if len(capped_assignments) == 0:
         return {
             "rows": [], "generated_titles": list(avoid_headlines or []), "generated_opening_phrases": list(avoid_opening_phrases or []),
+            "interrogation_stats": {}, "writer_loop_seconds": 0.0,
             "writer_loop_time_guard_triggered": False, "writer_loop_llm_calls_completed": 0, "writer_loop_llm_calls_skipped": 0,
         }
     tasty_lookup = {shelf: (row["player_id"] if row is not None else None) for shelf, row in tasty_six.items()}
@@ -1959,9 +1999,10 @@ def shape_content_draft_rows(
     # placement, with its own per-shelf lens, exactly as it does today;
     # this dict only makes the shared candidate-level result reachable
     # at that call site, it does not change what Tension does with it.
+    interrogation_stats = {}
     interrogation_by_candidate = _interrogate_unique_candidates(
         capped_assignments, weekly_lookup, anthropic_api_key, config,
-        price_history_by_player=price_history_by_player,
+        price_history_by_player=price_history_by_player, stats=interrogation_stats,
     )
 
     # REAL CROSS-BATCH VARIETY STATE (NFL Content Generation V1, Part 1)
@@ -2134,6 +2175,7 @@ def shape_content_draft_rows(
     llm_plan_indices = [i for i, p in enumerate(row_plans) if p["needs_llm"]]
     wave_size = max(1, config["shelf_card_wave_size"])
     deadline_seconds = config["writer_loop_deadline_seconds"]
+    writer_loop_start = time.monotonic()
     time_guard_triggered = False
     llm_calls_completed = 0
     llm_calls_skipped = 0
@@ -2318,6 +2360,8 @@ def shape_content_draft_rows(
         })
     return {
         "rows": rows, "generated_titles": generated_titles, "generated_opening_phrases": generated_opening_phrases,
+        "interrogation_stats": interrogation_stats,
+        "writer_loop_seconds": round(time.monotonic() - writer_loop_start, 2),
         "writer_loop_time_guard_triggered": time_guard_triggered,
         "writer_loop_llm_calls_completed": llm_calls_completed,
         "writer_loop_llm_calls_skipped": llm_calls_skipped,
@@ -2575,10 +2619,12 @@ def curate_nfl_shelves(
         avoid_opening_phrases=avoid_opening_phrases, run_start=run_start,
     )
     shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
+    atl_start = time.monotonic()
     division_cards = build_around_the_league(weekly, config=shelves_config, history_weekly=history_weekly)
     around_the_league_rows = shape_around_the_league_draft_rows(
         division_cards, season, week, weekly=weekly, schedules=schedules,
     )
+    around_the_league_seconds = round(time.monotonic() - atl_start, 2)
     return {
         "home_assignments": home_assignments,
         "capped": capped,
@@ -2591,6 +2637,16 @@ def curate_nfl_shelves(
         "writer_loop_time_guard_triggered": shaped["writer_loop_time_guard_triggered"],
         "writer_loop_llm_calls_completed": shaped["writer_loop_llm_calls_completed"],
         "writer_loop_llm_calls_skipped": shaped["writer_loop_llm_calls_skipped"],
+        # Stage timings for the curation response's own "timing.stages" block.
+        # Reported on EVERY run, not just preview_only: a run that times out is
+        # exactly the run whose breakdown is needed, and that one never reaches
+        # a preview response.
+        "stage_seconds": {
+            "interrogation": (shaped.get("interrogation_stats") or {}).get("seconds", 0.0),
+            "writer_loop": shaped.get("writer_loop_seconds", 0.0),
+            "around_the_league": around_the_league_seconds,
+        },
+        "interrogation_stats": shaped.get("interrogation_stats") or {},
     }
 
 
