@@ -73,6 +73,26 @@ def render_fallback_body(packet: dict) -> str:
     return f"{body}\n\n{FALLBACK_NOTE}"
 
 
+def _since_last_radar_block(packet: dict) -> str:
+    """SPEC.md: "Signals that fired and cleared are listed as 'cleared.'"
+
+    Only rendered on a daily radar, where signals carry a `cleared` flag from
+    radar.aggregate_window(). On a collect run there is no window to summarise
+    and no flag, so this is empty.
+    """
+    signals = [s for s in (packet.get("signals") or []) if "cleared" in s]
+    if not signals:
+        return ""
+    lines = ["", "Since the last radar:"]
+    for sig in signals:
+        mark = " — cleared" if sig.get("cleared") else ""
+        lines.append(
+            f"  {sig.get('scenario')}: {sig.get('signal_id')} "
+            f"({sig.get('tier')}){mark}"
+        )
+    return "\n".join(lines)
+
+
 def _harness_block(harness_signals) -> str:
     loud = [s for s in (harness_signals or []) if s.get("tier") in ("RADAR", "ESCALATE", "LOG")]
     if not loud:
@@ -121,7 +141,11 @@ def render_email(packet: dict, interpretation: dict | None, *,
         body_lines = [header, head_line, interpretation["interpretation"], tail]
         subject = f"{header} · {scenario}"
 
-    body = "\n".join(body_lines) + _harness_block(harness_signals)
+    body = (
+        "\n".join(body_lines)
+        + _since_last_radar_block(packet)
+        + _harness_block(harness_signals)
+    )
     if shadow:
         subject = f"[SHADOW] {subject}"
     return subject, body

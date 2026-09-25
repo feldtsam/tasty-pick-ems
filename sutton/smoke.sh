@@ -7,7 +7,7 @@
 #   bash sutton/smoke.sh
 #
 # What it does
-#   1. GET  /api/sutton-run                 unauthenticated -> expect 401
+#   1. GET  /api/sutton-run                 unauthenticated -> expect 200
 #   2. GET  /api/sutton-run?probe=state     authenticated   -> signed state read
 #   3. POST /api/sutton-run                 one synthetic payload, mode=collect
 #   4. prints the exact rows to delete afterwards
@@ -51,13 +51,15 @@ T_MINUS_10="$(iso_offset 10)"
 STARTED_AT="$(iso)"
 
 rule
-echo "STEP 1  GET /api/sutton-run with no secret  (expect 401 from the Flask app,"
-echo "        not Vercel's 404 — that is what proves the rewrite works)"
+echo "STEP 1  GET /api/sutton-run with no secret  (expect 200: this is the paired"
+echo "        health check and is deliberately unauthenticated, like nfl/'s. Any"
+echo "        Flask response proves the /api/* rewrite works; Vercel's own 404"
+echo "        would mean it does not. The real auth gate is on POST.)"
 rule
 code=$(curl -s -o /tmp/sutton_smoke_1.json -w '%{http_code}' -m 30 "$URL/api/sutton-run")
 echo "HTTP $code"
 cat /tmp/sutton_smoke_1.json | show
-[ "$code" = "401" ] || echo "!! expected 401, got $code"
+[ "$code" = "200" ] || echo "!! expected 200, got $code"
 
 rule
 echo "STEP 2  GET /api/sutton-run?probe=state  (signed state read, server-side)"

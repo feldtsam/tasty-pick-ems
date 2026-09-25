@@ -18,14 +18,84 @@ some tick in the window.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
-__all__ = ["RADAR_HOUR_UTC", "aggregate_window", "daily_radars", "loud_signals"]
+__all__ = [
+    "RADAR_HOUR_UTC",
+    "RADAR_WINDOW_HOURS",
+    "TICK_HOURS",
+    "aggregate_window",
+    "daily_radars",
+    "loud_signals",
+    "radar_ticks",
+    "replay_window",
+]
 
 # 7:00am CT. September is CDT (UTC-5), so 12:00 UTC.
 RADAR_HOUR_UTC = 12
 
+# One daily radar covers the 24 hours since the previous one, sampled at the
+# collector's own 2-hour cadence.
+RADAR_WINDOW_HOURS = 24
+TICK_HOURS = 2
+
 _STATUS_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}
+
+
+def _parse(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    dt = datetime.fromisoformat(text)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def radar_ticks(end: Any, *, hours: int = RADAR_WINDOW_HOURS,
+                step_hours: int = TICK_HOURS) -> list[datetime]:
+    """Every tick in the window ending at `end`, oldest first, `end` included.
+
+    24 hours at a 2-hour step gives 13 ticks: end-24h through end. `end` has to
+    be the last one, because aggregate_window() judges "cleared" against the
+    final tick's state.
+    """
+    finish = _parse(end)
+    steps = max(1, hours // step_hours)
+    return [finish - timedelta(hours=step_hours * (steps - i)) for i in range(steps + 1)]
+
+
+def replay_window(scenarios: list[dict], *, end: Any,
+                  hours: int = RADAR_WINDOW_HOURS, step_hours: int = TICK_HOURS,
+                  final_state: dict | None = None,
+                  evaluate_fn=None) -> list[dict]:
+    """Evaluate the rules at every tick in the radar window.
+
+    Same honesty property as replay.py: checks.evaluate() filters on `now`, so
+    each tick sees only the observations that existed before it. That is what
+    makes a signal that fired and cleared visible at all -- a single evaluation
+    at 7:00am cannot see it.
+
+    `final_state` is applied to the LAST tick only. H1 (collection gap) is
+    about Sutton's own liveness right now, not at each historical tick, so
+    passing the real state to all 13 would manufacture 13 bogus gaps.
+
+    `evaluate_fn` is injectable for tests; it defaults to checks.evaluate.
+    """
+    if evaluate_fn is None:
+        from checks import evaluate as evaluate_fn  # local import keeps this module light
+
+    ticks = radar_ticks(end, hours=hours, step_hours=step_hours)
+    rows = []
+    for tick in ticks:
+        is_final = tick is ticks[-1]
+        result = evaluate_fn(
+            {"collected_at": tick.strftime("%Y-%m-%dT%H:%M:%SZ"), "scenarios": scenarios},
+            state=(final_state or {}) if is_final else {},
+            now=tick,
+        )
+        rows.append({"tick": tick, "result": result})
+    return rows
 
 
 def loud_signals(signals: Iterable[dict]) -> list[dict]:

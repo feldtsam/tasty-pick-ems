@@ -34,7 +34,16 @@ LOUD_TIERS = ("RADAR", "ESCALATE")
 # The signal fields the LLM sees. `scenario_id` is deliberately excluded: it
 # is a large number that would widen the anti-fabrication check's allowed set
 # for no interpretive benefit.
-_SIGNAL_FIELDS = ("signal_id", "class", "tier", "scenario", "facts", "recent_edits")
+#
+# `cleared` is present only on a daily radar, where signals are aggregated
+# across the window: True means the signal fired during the window but was not
+# firing at its end. That changes the interpretation materially -- "failed twice
+# overnight, recovered by morning" is a different story from "failing now" -- so
+# the LLM needs it. It is a boolean, so it cannot widen the anti-fabrication
+# number set. Fields absent from a signal are simply omitted.
+_SIGNAL_FIELDS = (
+    "signal_id", "class", "tier", "scenario", "facts", "recent_edits", "cleared",
+)
 
 
 def _strip_forbidden(value: Any) -> Any:

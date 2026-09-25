@@ -13,13 +13,14 @@
 #
 # Only remove something here if api/index.py genuinely does not import it,
 # directly or transitively. As of this commit the function needs exactly:
-#   checks.py interpret.py packet.py redact.py render.py store.py validate.py
-# plus requirements.txt.
+#   checks.py interpret.py packet.py radar.py redact.py render.py store.py
+#   validate.py
+# plus requirements.txt. radar.py joined that list when daily_radar mode began
+# replaying ticks and aggregating them, so it is no longer ignored here.
 
 SPEC.md
 tests/
 build_fixture.py
 diagnose.py
-radar.py
 replay.py
 smoke.sh

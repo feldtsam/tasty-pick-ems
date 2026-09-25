@@ -31,6 +31,7 @@ sys.path.insert(0, str(SUTTON))
 sys.path.insert(0, str(SUTTON / "api"))
 
 import index as endpoint  # noqa: E402
+import radar  # noqa: E402
 import store  # noqa: E402
 from interpret import SYSTEM_PROMPT, interpret  # noqa: E402
 from packet import build_packet  # noqa: E402
@@ -773,3 +774,195 @@ def test_packet_shape_matches_the_spec():
     assert sorted(sig) == ["class", "facts", "recent_edits", "scenario", "signal_id", "tier"]
     assert "scenario_id" not in sig
     assert "error_message" not in sig["facts"]
+
+
+# --- daily_radar: replay the window, then aggregate ----------------------
+
+
+def radar_payload(collected_at="2026-10-02T12:00:00Z", executions=()):
+    """SYNTHETIC: a daily_radar run. `executions` become the STORED history."""
+    return {
+        "collected_at": collected_at,
+        "mode": "daily_radar",
+        "scenarios": [
+            {
+                "scenario_id": 6186710,
+                "name": "SYNTHETIC Picks",
+                "is_active": True,
+                "is_paused": False,
+                "executions": list(executions),
+                "events": [],
+            }
+        ],
+    }
+
+
+def _ex(at, status=1, run_type="auto", duration_ms=100_000, error_name=None, eid=None):
+    return {
+        "execution_id": eid or f"synthetic-{at}",
+        "started_at": at,
+        "ended_at": None,
+        "duration_ms": duration_ms,
+        "status": status,
+        "run_type": run_type,
+        "error_name": error_name,
+        "error_message": None,
+        "cause_module": "MakeRequest" if error_name else None,
+    }
+
+
+def test_radar_signal_that_fires_and_clears_is_marked_cleared(client, fake, monkeypatch):
+    """The motivating case for the whole window replay.
+
+    A single auto run fails 20h before the radar, then a later auto run
+    succeeds 6h before it. Between those two the failure is unrecovered, so
+    I2b fires. By the time the radar goes out it has recovered, so an
+    evaluation at 7:00am alone would see nothing at all.
+    """
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    payload = radar_payload(
+        executions=[
+            _ex("2026-10-01T16:00:00Z", status=3, error_name="SyntheticError", eid="r-fail"),
+            _ex("2026-10-02T06:00:00Z", status=1, eid="r-recover"),
+        ]
+    )
+    body = post(client, payload).get_json()
+
+    # The window is real: 24h at a 2h step = 13 ticks.
+    assert body["radar_window"]["ticks"] == 13
+    assert body["radar_window"]["from"] == "2026-10-01T12:00:00Z"
+    assert body["radar_window"]["to"] == "2026-10-02T12:00:00Z"
+
+    i2b = [s for s in body["signals"] if s["signal_id"] == "I2b_UNRECOVERED_FAILURE"]
+    assert i2b, "the failure window should have produced I2b at some tick"
+
+    # Worst status across the window, not the state at the end.
+    assert body["status"] == "YELLOW"
+    assert "cleared" in body["body"]
+    assert "I2b_UNRECOVERED_FAILURE (RADAR) — cleared" in body["body"]
+    assert body["deliver_radar"] is True
+
+
+def test_radar_a_single_evaluation_would_have_missed_it(fake, monkeypatch):
+    """Proves the previous test is testing something: evaluated only at the
+    radar moment, the same history is GREEN."""
+    from checks import evaluate as real_evaluate
+
+    scenarios = radar_payload()["scenarios"]
+    scenarios[0]["executions"] = [
+        _ex("2026-10-01T16:00:00Z", status=3, error_name="SyntheticError", eid="r-fail"),
+        _ex("2026-10-02T06:00:00Z", status=1, eid="r-recover"),
+    ]
+    at_radar_time = real_evaluate(
+        {"collected_at": "2026-10-02T12:00:00Z", "scenarios": scenarios},
+        now="2026-10-02T12:00:00Z",
+    )
+    assert at_radar_time["status"] == "GREEN"
+    assert not [s for s in at_radar_time["tpe_signals"] if s["tier"] in ("RADAR", "ESCALATE")]
+
+
+def test_radar_a_still_firing_signal_is_not_marked_cleared(client, fake, monkeypatch):
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    payload = radar_payload(
+        executions=[
+            _ex("2026-10-02T04:00:00Z", status=3, error_name="SyntheticError", eid="r-f1"),
+            _ex("2026-10-02T08:00:00Z", status=3, error_name="SyntheticError", eid="r-f2"),
+        ]
+    )
+    body = post(client, payload).get_json()
+    assert body["status"] == "RED"
+
+    # Check the I2 line specifically, not the whole body. Two consecutive
+    # failures legitimately produce BOTH signals across the window: I2b fires at
+    # the tick after the first failure and then clears once the second failure
+    # makes it a streak, and I2 takes over and is still firing at the end. So
+    # "cleared" does appear in the body -- on the I2b line, correctly.
+    lines = {
+        sig_id: line
+        for sig_id in ("I2_CONSECUTIVE_FAILURES", "I2b_UNRECOVERED_FAILURE")
+        for line in body["body"].splitlines()
+        if sig_id in line
+    }
+    assert "I2_CONSECUTIVE_FAILURES (ESCALATE)" in lines["I2_CONSECUTIVE_FAILURES"]
+    assert "cleared" not in lines["I2_CONSECUTIVE_FAILURES"], (
+        "the unrecovered streak is still firing and must not be marked cleared"
+    )
+    assert "cleared" in lines["I2b_UNRECOVERED_FAILURE"], (
+        "the single-failure signal was superseded by the streak, so it cleared"
+    )
+
+
+def test_radar_ticks_cover_the_window_and_end_on_the_radar_moment():
+    ticks = radar.radar_ticks("2026-10-02T12:00:00Z")
+    assert len(ticks) == 13
+    assert ticks[0].strftime("%Y-%m-%dT%H:%M:%SZ") == "2026-10-01T12:00:00Z"
+    assert ticks[-1].strftime("%Y-%m-%dT%H:%M:%SZ") == "2026-10-02T12:00:00Z"
+    deltas = {(b - a).total_seconds() for a, b in zip(ticks, ticks[1:])}
+    assert deltas == {2 * 3600}
+
+
+def test_radar_each_tick_sees_only_its_own_past():
+    """Same honesty property as replay.py."""
+    seen = []
+
+    def spy(payload, state=None, now=None):
+        seen.append(now)
+        return {"status": "GREEN", "tpe_signals": [], "harness_signals": [], "signals": []}
+
+    rows = radar.replay_window([], end="2026-10-02T12:00:00Z", evaluate_fn=spy)
+    assert len(rows) == 13
+    assert seen == [r["tick"] for r in rows]
+    assert seen == sorted(seen), "ticks are evaluated oldest first"
+
+
+def test_radar_final_state_is_applied_only_to_the_last_tick():
+    """H1 is about Sutton's liveness now, not at each historical tick."""
+    states = []
+
+    def spy(payload, state=None, now=None):
+        states.append(state)
+        return {"status": "GREEN", "tpe_signals": [], "harness_signals": [], "signals": []}
+
+    radar.replay_window(
+        [], end="2026-10-02T12:00:00Z", evaluate_fn=spy,
+        final_state={"last_collection_at": "2026-09-01T00:00:00Z"},
+    )
+    assert states[-1] == {"last_collection_at": "2026-09-01T00:00:00Z"}
+    assert all(s == {} for s in states[:-1])
+
+
+def test_radar_packet_carries_cleared_to_the_llm(client, fake, monkeypatch):
+    captured = {}
+
+    def capture(packet, **kwargs):
+        captured["packet"] = packet
+        return True, json.dumps(GOOD_OUTPUT), "claude-opus-5", None
+
+    monkeypatch.setattr(endpoint, "interpret", capture)
+    post(client, radar_payload(executions=[
+        _ex("2026-10-01T16:00:00Z", status=3, error_name="SyntheticError", eid="r-fail"),
+        _ex("2026-10-02T06:00:00Z", status=1, eid="r-recover"),
+    ]))
+    sig = captured["packet"]["signals"][0]
+    assert sig["cleared"] is True
+    assert "error_message" not in json.dumps(captured["packet"])
+
+
+def test_collect_mode_has_no_radar_window_and_no_cleared_flag(client, fake, monkeypatch):
+    mock_llm(monkeypatch, output=GOOD_OUTPUT)
+    body = post(client, failing_payload()).get_json()
+    assert body["radar_window"] is None
+    assert "Since the last radar:" not in body["body"]
+
+
+def test_radar_green_window_stays_green_and_calls_no_llm(client, fake, monkeypatch):
+    def must_not_run(packet, **kwargs):
+        raise AssertionError("no LLM call on a GREEN radar")
+
+    monkeypatch.setattr(endpoint, "interpret", must_not_run)
+    body = post(client, radar_payload(executions=[
+        _ex("2026-10-02T06:00:00Z", status=1, eid="r-ok"),
+    ])).get_json()
+    assert body["status"] == "GREEN"
+    assert body["deliver_radar"] is True
+    assert body["body"].startswith("SUTTON — GREEN")

@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flask import Flask, jsonify, request  # noqa: E402
 
+import radar  # noqa: E402
 import store  # noqa: E402
 from checks import CLASS_HARNESS, TIER_LOG, evaluate, should_deliver_escalation  # noqa: E402
 from interpret import interpret  # noqa: E402
@@ -183,15 +184,47 @@ def sutton_run():
         )
 
     # --- STEP 4: checks on stored observations ---------------------------
-    evaluation = evaluate(
-        {
-            "collected_at": payload["collected_at"],
-            "mode": mode,
-            "scenarios": scenarios_for_checks,
-        },
-        state={"last_collection_at": state.get("last_collection_at")},
-        now=payload["collected_at"],
-    )
+    final_state = {"last_collection_at": state.get("last_collection_at")}
+    if mode == "daily_radar":
+        # SPEC.md: the daily radar reports the worst status and every signal
+        # that fired across all collection ticks since the previous radar, not
+        # just the state at 7:00am. A single evaluation cannot see a signal that
+        # fired and cleared overnight -- and on the real Sep 18 history, the
+        # Picks duration drift was exactly that: it fired at 16:00 and the 22:29
+        # edit reset the baseline before morning.
+        #
+        # So replay the rules at every 2-hour tick across the window, over the
+        # stored observations, then aggregate. Each tick sees only what preceded
+        # it, because checks.evaluate() filters on `now`.
+        rows = radar.replay_window(
+            scenarios_for_checks,
+            end=payload["collected_at"],
+            final_state=final_state,
+        )
+        aggregate = radar.aggregate_window(rows)
+        evaluation = {
+            "evaluated_at": aggregate.get("window_to"),
+            "status": aggregate["status"],
+            "watched_scenarios": len(WATCHED_SCENARIOS),
+            "tpe_signals": aggregate["signals"],
+            "harness_signals": aggregate["harness_signals"],
+            "signals": aggregate["signals"] + aggregate["harness_signals"],
+            "radar_window": {
+                "from": aggregate.get("window_from"),
+                "to": aggregate.get("window_to"),
+                "ticks": aggregate.get("ticks"),
+            },
+        }
+    else:
+        evaluation = evaluate(
+            {
+                "collected_at": payload["collected_at"],
+                "mode": mode,
+                "scenarios": scenarios_for_checks,
+            },
+            state=final_state,
+            now=payload["collected_at"],
+        )
     for sig in harness_extra:
         evaluation["signals"].append(sig)
         evaluation["harness_signals"].append(sig)
@@ -281,6 +314,7 @@ def sutton_run():
                 {"signal_id": s["signal_id"], "scenario_id": s.get("scenario_id")}
                 for s in new_escalations
             ],
+            "radar_window": evaluation.get("radar_window"),
             "observations_written": len(observation_rows),
             "incidents_written": len(incident_rows) if inc_ok else 0,
             # The routes' own responses, so a smoke test can confirm rows
