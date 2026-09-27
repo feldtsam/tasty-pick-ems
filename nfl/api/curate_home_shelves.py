@@ -1683,6 +1683,18 @@ def _run_writer_llm_for_plan(
     """
     r = plan["r"]
     full_row = plan["full_row"]
+    # TEMP DIAGNOSTIC (Red Zone Trends silent-fallback investigation,
+    # 2026-09-27) -- entry marker so we can tell whether this worker
+    # function is reached at all vs. hanging inside the real writer call.
+    # Runs on a ThreadPoolExecutor worker thread, not the main thread --
+    # flush=True still forces an immediate real write, but if these lines
+    # never show up either, that itself is real evidence for the log-
+    # capture-across-threads hypothesis. Remove once the real cause is found.
+    print(
+        f"[_run_writer_llm_for_plan] CALLING player_id={r['player_id']!r} "
+        f"shelf={r['home_shelf']!r} llm_kind={plan['llm_kind']!r}",
+        flush=True,
+    )
     if plan["llm_kind"] == "tasty_six":
         try:
             draft = generate_nfl_tasty_six_draft(
@@ -1690,7 +1702,17 @@ def _run_writer_llm_for_plan(
                 avoid_headlines=avoid_headlines_snapshot,
             )
         except Exception as e:
+            print(
+                f"[_run_writer_llm_for_plan] EXCEPTION (tasty_six) player_id={r['player_id']!r} "
+                f"shelf={r['home_shelf']!r}: {e!r}",
+                flush=True,
+            )
             return {"outcome": "fallback", "error": repr(e)}
+        print(
+            f"[_run_writer_llm_for_plan] SUCCESS (tasty_six) player_id={r['player_id']!r} "
+            f"shelf={r['home_shelf']!r}",
+            flush=True,
+        )
         return {
             "outcome": "success",
             "title": draft.get("title"),
@@ -1709,9 +1731,24 @@ def _run_writer_llm_for_plan(
             interrogation_result=plan["interrogation_result"],
         )
     except CandidateGatedOut as e:
+        print(
+            f"[_run_writer_llm_for_plan] GATED_OUT (regular) player_id={r['player_id']!r} "
+            f"shelf={r['home_shelf']!r}: {e!r}",
+            flush=True,
+        )
         return {"outcome": "gated_out", "error": repr(e)}
     except Exception as e:
+        print(
+            f"[_run_writer_llm_for_plan] EXCEPTION (regular) player_id={r['player_id']!r} "
+            f"shelf={r['home_shelf']!r}: {e!r}",
+            flush=True,
+        )
         return {"outcome": "fallback", "error": repr(e)}
+    print(
+        f"[_run_writer_llm_for_plan] SUCCESS (regular) player_id={r['player_id']!r} "
+        f"shelf={r['home_shelf']!r}",
+        flush=True,
+    )
     return {
         "outcome": "success",
         "title": draft.get("title"),
@@ -1973,7 +2010,18 @@ def shape_content_draft_rows(
     call) -- exactly what the caller should pass as the next call's own
     seed.
     """
+    # TEMP DIAGNOSTIC (Red Zone Trends silent-fallback investigation,
+    # 2026-09-27) -- confirms this function is actually reached on a real
+    # production request, and with what real inputs, before anything else
+    # in it can run or raise. Remove once the real cause is found.
+    print(
+        f"[shape_content_draft_rows] ENTER capped_assignments={len(capped_assignments)} "
+        f"shelves_to_process={shelves_to_process!r} has_anthropic_key={bool(anthropic_api_key)} "
+        f"run_start={run_start!r}",
+        flush=True,
+    )
     if len(capped_assignments) == 0:
+        print("[shape_content_draft_rows] EARLY RETURN -- capped_assignments is empty", flush=True)
         return {
             "rows": [], "generated_titles": list(avoid_headlines or []), "generated_opening_phrases": list(avoid_opening_phrases or []),
             "interrogation_stats": {}, "writer_loop_seconds": 0.0,
@@ -2033,6 +2081,15 @@ def shape_content_draft_rows(
             continue
         is_tasty_six = tasty_lookup.get(r["home_shelf"]) == r["player_id"]
         full_row = weekly_lookup.get(r["player_id"])
+
+        # TEMP DIAGNOSTIC (Red Zone Trends silent-fallback investigation,
+        # 2026-09-27) -- remove once the real cause is found.
+        if r["home_shelf"] == "Red Zone Trends":
+            print(
+                f"[shape_content_draft_rows] PASS1 row player_id={r['player_id']!r} "
+                f"rank={r.get('rank')!r} is_tasty_six={is_tasty_six} full_row_present={full_row is not None}",
+                flush=True,
+            )
 
         event_id = team = opponent = matchup = kickoff_utc = None
         if full_row is not None:
@@ -2203,6 +2260,16 @@ def shape_content_draft_rows(
         avoid_headlines_snapshot = list(generated_titles)
         avoid_opening_phrases_snapshot = list(generated_opening_phrases)
 
+        # TEMP DIAGNOSTIC (Red Zone Trends silent-fallback investigation,
+        # 2026-09-27) -- confirms a wave is actually dispatched, and which
+        # shelves/players are in it, before handing off to the thread pool.
+        # Remove once the real cause is found.
+        print(
+            f"[shape_content_draft_rows] DISPATCHING wave_start={wave_start} "
+            f"size={len(wave_indices)} players={[(row_plans[i]['r']['player_id'], row_plans[i]['r']['home_shelf']) for i in wave_indices]!r}",
+            flush=True,
+        )
+
         wave_results = {}
         with ThreadPoolExecutor(max_workers=max(1, len(wave_indices))) as executor:
             future_to_idx = {
@@ -2358,6 +2425,14 @@ def shape_content_draft_rows(
             "archetype": plan["archetype_result"]["archetype"],
             "position_variant": plan["archetype_result"]["position_variant"],
         })
+    # TEMP DIAGNOSTIC (Red Zone Trends silent-fallback investigation,
+    # 2026-09-27) -- confirms the function reaches its own normal return,
+    # not just an early exit or a hang. Remove once the real cause is found.
+    print(
+        f"[shape_content_draft_rows] RETURN rows={len(rows)} llm_calls_completed={llm_calls_completed} "
+        f"llm_calls_skipped={llm_calls_skipped} time_guard_triggered={time_guard_triggered}",
+        flush=True,
+    )
     return {
         "rows": rows, "generated_titles": generated_titles, "generated_opening_phrases": generated_opening_phrases,
         "interrogation_stats": interrogation_stats,
