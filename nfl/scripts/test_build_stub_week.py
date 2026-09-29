@@ -34,7 +34,7 @@ import nfl_data_py as nfl
 
 from backfill_redzone import (
     load_depth_charts, load_id_crosswalk, load_injuries, load_schedules,
-    load_seasonal_rosters, load_snap_counts,
+    load_seasonal_rosters, load_snap_counts, load_weekly_stats,
 )
 from build_stub_week import build_stub_week
 
@@ -78,13 +78,13 @@ if __name__ == "__main__":
 
     # Shared, non-pbp raw inputs — loaded once for the broader season set
     # and reused across both calls below. The bug (and the fix) is
-    # entirely about pbp's own emptiness; these six are already
+    # entirely about pbp's own emptiness; these seven are already
     # independently resilient to a season with nothing published yet
-    # (see load_snap_counts'/load_injuries' own docstrings) regardless
-    # of which historical_seasons list is passed, so sharing them here
-    # keeps this test fast and focused on the one real variable that
-    # actually matters.
-    print("Loading shared roster/schedule/snap/injury/depth-chart data (one real network round)...")
+    # (see load_snap_counts'/load_injuries'/load_weekly_stats' own
+    # docstrings) regardless of which historical_seasons list is passed,
+    # so sharing them here keeps this test fast and focused on the one
+    # real variable that actually matters.
+    print("Loading shared roster/schedule/snap/injury/depth-chart/weekly-stats data (one real network round)...")
     load_seasons = [PRIOR_SEASON, TARGET_SEASON]
     snap_counts = load_snap_counts(load_seasons)
     id_crosswalk = load_id_crosswalk(load_seasons)
@@ -92,10 +92,12 @@ if __name__ == "__main__":
     injuries = load_injuries(load_seasons)
     seasonal_rosters = load_seasonal_rosters(load_seasons)
     schedules = load_schedules(load_seasons)
+    weekly_stats = load_weekly_stats(load_seasons)
 
     common_kwargs = dict(
         snap_counts=snap_counts, id_crosswalk=id_crosswalk, depth_charts=depth_charts,
         injuries=injuries, seasonal_rosters=seasonal_rosters, schedules=schedules,
+        weekly_stats=weekly_stats,
     )
 
     # ---- THE REGRESSION: the OLD, buggy single-season scoping really

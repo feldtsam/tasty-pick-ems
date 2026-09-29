@@ -37,6 +37,12 @@ def _fake_run_pipeline(*args, **kwargs):
             "role_momentum_completeness": 1.0, "depth_rank": 1,
             "ahead_injury_statuses": [], "ahead_injured_teammates": [],
             "defensive_matchup_vulnerability": 50.0, "defensive_matchup_completeness": 1.0,
+            # Not a typed column (see NFL_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS) --
+            # included here so run_real_secret_persists_and_flags can confirm
+            # it actually survives into the persisted row's `extra`, the same
+            # real thing add_carries()/run_pipeline() produce on this field
+            # in production (test_redzone_carries.py covers the join itself).
+            "carries": 3,
         }
     ])
     return weekly, weekly.iloc[0:0].copy()
@@ -58,7 +64,7 @@ def _fake_market_value_snapshot(season, week, secret, url=None):
 _OFFLINE_LOAD_KWARGS = dict(
     pbp=pd.DataFrame(), snap_counts=pd.DataFrame(), id_crosswalk=pd.DataFrame(),
     depth_charts=pd.DataFrame(), injuries=pd.DataFrame(), seasonal_rosters=pd.DataFrame(),
-    schedules=pd.DataFrame(),
+    schedules=pd.DataFrame(), weekly_stats=pd.DataFrame(),
 )
 
 
@@ -160,6 +166,17 @@ def run_real_secret_persists_and_flags():
         ok &= check("the real secret was threaded through to the write call", calls["write"][1] == "real-test-secret")
     if calls["flag"] is not None:
         ok &= check("the real secret was threaded through to the flag call", calls["flag"][2] == "real-test-secret")
+    if calls["write"] is not None:
+        written_rows = calls["write"][0]
+        ok &= check("exactly one row was shaped for the write", len(written_rows) == 1)
+        if written_rows:
+            extra = written_rows[0].get("extra", {})
+            ok &= check(
+                "carries (not a typed column) survived into the persisted row's extra jsonb, "
+                "same mechanism as snap_share/targets/rz_touches/gl_touches",
+                extra.get("carries") == 3,
+            )
+            ok &= check("carries is NOT one of the typed top-level keys (by design, see redzone_carries fix)", "carries" not in written_rows[0])
     return ok
 
 

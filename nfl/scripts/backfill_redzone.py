@@ -32,6 +32,7 @@ import nfl_data_py as nfl
 import pandas as pd
 
 from redzone import (
+    add_carries,
     add_defensive_matchup_context,
     add_depth_chart_rank,
     add_environment_data,
@@ -121,6 +122,43 @@ def load_snap_counts(seasons: list[int]) -> pd.DataFrame:
     return _load_per_season_tolerant(seasons, nfl.import_snap_counts, SNAP_COUNTS_COLUMNS, "snap counts")
 
 
+# Real, confirmed columns on nflverse's player_stats_{year}.parquet
+# release (the same file import_weekly_data/import_seasonal_data both
+# read — see vendor/nfl_data_py/__init__.py's own import_seasonal_data,
+# which selects 'carries' directly off this file with no transform).
+# season_type is requested so callers can filter to REG the same way
+# import_seasonal_data itself does for this file -- weekly's own
+# (player_id, season, week) key has no season_type component, so a
+# postseason row at the same raw week number as a regular-season row
+# would otherwise be a real, silent join collision risk, not a
+# hypothetical one.
+WEEKLY_STATS_COLUMNS = ["player_id", "season", "week", "season_type", "carries"]
+
+
+def load_weekly_stats(seasons: list[int]) -> pd.DataFrame:
+    """
+    Load raw weekly player-stats data (nflverse's player_stats release)
+    for the given seasons -- currently just `carries`, the one field
+    add_carries actually needs (see redzone.add_carries). Restricted via
+    import_weekly_data's own `columns` param rather than pulling the
+    full ~50-column real release and discarding most of it.
+
+    Same _load_per_season_tolerant wrapping as load_snap_counts/load_
+    injuries, for the identical real reason: import_weekly_data (like
+    import_snap_counts/import_injuries) is a single pandas.concat over a
+    plain per-year list comprehension with no try/except of its own
+    (confirmed by reading its vendored source) -- one season with no
+    published file yet would otherwise take down every other season's
+    real data too.
+    """
+    return _load_per_season_tolerant(
+        seasons,
+        lambda yrs: nfl.import_weekly_data(yrs, columns=WEEKLY_STATS_COLUMNS),
+        WEEKLY_STATS_COLUMNS,
+        "weekly stats",
+    )
+
+
 def load_id_crosswalk(seasons: list[int]) -> pd.DataFrame:
     """Load the raw id/roster tables build_id_crosswalk needs to translate
     snap_counts' pfr_player_id into play-by-play's gsis-style player_id."""
@@ -171,6 +209,7 @@ def run_pipeline(
     injuries: pd.DataFrame,
     seasonal_rosters: pd.DataFrame,
     schedules: pd.DataFrame,
+    weekly_stats: pd.DataFrame,
     extra_offense_rows: pd.DataFrame = None,
     extra_defense_rows: pd.DataFrame = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -182,9 +221,17 @@ def run_pipeline(
     there is exactly one implementation of this logic to keep in sync")
     can call the identical sequence — this is that shared implementation
     for the ORCHESTRATION ORDER too, not just redzone.py's individual
-    add_* functions. Two hand-maintained copies of this 10-step sequence
-    drifting apart over time (e.g. someone adds a new add_* step to one
-    copy and forgets the other) is exactly the risk this closes.
+    add_* functions. Two hand-maintained copies of this multi-step
+    sequence drifting apart over time (e.g. someone adds a new add_*
+    step to one copy and forgets the other) is exactly the risk this
+    closes.
+
+    weekly_stats: nflverse's player_stats release (load_weekly_stats),
+    the source add_carries reads `carries` from — required, same as
+    every other real data source here (pbp/snap_counts/etc.), not
+    optional. Every caller of run_pipeline() resolves it the same
+    `if weekly_stats is None: weekly_stats = load_weekly_stats(...)`
+    way those other sources already are.
 
     extra_offense_rows / extra_defense_rows: optional skeleton rows
     (matching aggregate_redzone_game's / aggregate_redzone_allowed's own
@@ -214,6 +261,7 @@ def run_pipeline(
         weekly = pd.concat([weekly, extra_offense_rows], ignore_index=True)
 
     weekly = add_snap_shares(weekly, snap_counts, id_crosswalk)
+    weekly = add_carries(weekly, weekly_stats)
     # Must run before add_depth_chart_rank/add_injury_context — both now
     # join on position_group (in addition to player_id/season/week/team)
     # to resolve a player with a genuine multi-position depth-chart
@@ -306,9 +354,12 @@ if __name__ == "__main__":
     print("Loading schedules ...")
     schedules = load_schedules(SEASONS)
 
+    print("Loading weekly player stats ...")
+    weekly_stats = load_weekly_stats(SEASONS)
+
     print("Running the shared join/rolling-window/scoring pipeline ...")
     weekly, allowed_weekly = run_pipeline(
-        pbp, snap_counts, id_crosswalk, depth_charts, injuries, seasonal_rosters, schedules,
+        pbp, snap_counts, id_crosswalk, depth_charts, injuries, seasonal_rosters, schedules, weekly_stats,
     )
 
     unmatched = weekly["snap_share"].isna().sum()

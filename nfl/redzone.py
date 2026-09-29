@@ -460,6 +460,51 @@ def add_snap_shares(weekly: pd.DataFrame, snap_counts: pd.DataFrame, id_crosswal
     return weekly.merge(snaps_for_join, on=["game_id", "player_id"], how="left")
 
 
+def add_carries(weekly: pd.DataFrame, weekly_stats: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join whole-game rush-attempt volume (nfl_data_py.import_weekly_data,
+    sourced from nflverse's player_stats release) onto the red zone
+    weekly table by (player_id, season, week).
+
+    UNLIKE add_snap_shares, no id_crosswalk is needed here: weekly_stats'
+    own `player_id` is already the same gsis-style id play-by-play (and
+    so this module's own `weekly`) uses natively -- confirmed via nfl_
+    data_py's own source (import_seasonal_data selects 'player_id'
+    directly off the same player_stats release with no translation
+    step), and matches existing precedent already in this codebase
+    (seasonal_rosters, from the same vendored library family, is already
+    merged directly against play-by-play's player_id elsewhere with no
+    crosswalk -- see aggregate_redzone_game's own docstring). Also unlike
+    add_snap_shares, the join key has no game_id -- weekly_stats is
+    (player_id, season, week)-indexed, not per-game, since nflverse
+    publishes it at that grain directly.
+
+    Filters to season_type == 'REG' first -- weekly's own join key has
+    no season_type component, so a postseason row at the same raw week
+    number as a regular-season row would otherwise be a real, silent
+    collision risk, not a hypothetical one (nflverse's postseason week
+    numbers are not guaranteed disjoint from regular-season ones across
+    every season in this project's SEASONS list).
+
+    Adds exactly one column:
+      carries - the player's real whole-game rush attempts that week
+                (nflverse's own count, not this module's red-zone-only
+                touch counting -- see rz_touches/gl_touches for that).
+
+    Rows are never dropped for a missing match — a player who doesn't
+    resolve to a weekly_stats row (a real bye week, practice-squad-only
+    week, or a genuine data gap) gets NaN in `carries` rather than being
+    silently removed, same missing-data philosophy add_snap_shares
+    already uses.
+    """
+    stats = weekly_stats[weekly_stats["season_type"] == "REG"] if "season_type" in weekly_stats.columns else weekly_stats
+    stats_for_join = (
+        stats[["player_id", "season", "week", "carries"]]
+        .drop_duplicates(subset=["player_id", "season", "week"])
+    )
+    return weekly.merge(stats_for_join, on=["player_id", "season", "week"], how="left")
+
+
 def _skill_position_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
     """
     Parses the PRE-2025 depth-chart schema only (season/week/gsis_id/

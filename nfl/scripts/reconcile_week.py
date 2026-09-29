@@ -71,6 +71,7 @@ from backfill_redzone import (
     load_schedules,
     load_seasonal_rosters,
     load_snap_counts,
+    load_weekly_stats,
     run_pipeline,
 )
 from market_value import market_value_snapshot_for_reconciliation, merge_market_value_and_rescore
@@ -319,6 +320,7 @@ def reconcile_week(
     injuries: pd.DataFrame = None,
     seasonal_rosters: pd.DataFrame = None,
     schedules: pd.DataFrame = None,
+    weekly_stats: pd.DataFrame = None,
     secret: str = None,
     write_url: str = None,
     price_history_read_url: str = None,
@@ -418,6 +420,8 @@ def reconcile_week(
         seasonal_rosters = load_seasonal_rosters(load_seasons)
     if schedules is None:
         schedules = load_schedules(load_seasons)
+    if weekly_stats is None:
+        weekly_stats = load_weekly_stats(load_seasons)
 
     # Resolved once, early -- reused for BOTH the price-history read below
     # AND the persistence write further down, same NFL_PIPELINE_WEBHOOK_
@@ -426,7 +430,7 @@ def reconcile_week(
     resolved_secret = secret or os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
 
     weekly, _allowed_weekly = run_pipeline(
-        pbp, snap_counts, id_crosswalk, depth_charts, injuries, seasonal_rosters, schedules,
+        pbp, snap_counts, id_crosswalk, depth_charts, injuries, seasonal_rosters, schedules, weekly_stats,
     )
     reconciled = weekly[(weekly["season"] == season) & (weekly["week"] == week)].copy()
     if len(reconciled) == 0:

@@ -71,6 +71,7 @@ from backfill_redzone import (
     load_schedules,
     load_seasonal_rosters,
     load_snap_counts,
+    load_weekly_stats,
     run_pipeline,
 )
 
@@ -160,6 +161,7 @@ def build_stub_week(
     injuries: pd.DataFrame = None,
     seasonal_rosters: pd.DataFrame = None,
     schedules: pd.DataFrame = None,
+    weekly_stats: pd.DataFrame = None,
     to_csv_path: Path = None,
     write_to_table: bool = False,
     secret: str = None,
@@ -168,7 +170,7 @@ def build_stub_week(
     Build the stub week's rows and return them as a DataFrame. Loads
     fresh nfl_data_py data for whichever of historical_seasons (default:
     backfill_redzone.SEASONS) plus `season` aren't already passed in —
-    passing the raw tables in directly (all seven, or none) lets a
+    passing the raw tables in directly (all eight, or none) lets a
     caller reuse data already loaded elsewhere without a second live
     nfl_data_py fetch.
 
@@ -202,12 +204,14 @@ def build_stub_week(
         seasonal_rosters = load_seasonal_rosters(load_seasons)
     if schedules is None:
         schedules = load_schedules(load_seasons)
+    if weekly_stats is None:
+        weekly_stats = load_weekly_stats(load_seasons)
 
     offense_stub = build_stub_offense_rows(season, week, seasonal_rosters, schedules)
     defense_stub = build_stub_defense_rows(season, week, schedules)
 
     weekly, _allowed_weekly = run_pipeline(
-        pbp, snap_counts, id_crosswalk, depth_charts, injuries, seasonal_rosters, schedules,
+        pbp, snap_counts, id_crosswalk, depth_charts, injuries, seasonal_rosters, schedules, weekly_stats,
         extra_offense_rows=offense_stub, extra_defense_rows=defense_stub,
     )
 
