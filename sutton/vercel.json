@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60
+    }
+  },
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/api/sutton-run", "destination": "/api/index" },
+    { "source": "/api", "destination": "/api/index" }
+  ]
+}
