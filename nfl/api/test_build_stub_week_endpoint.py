@@ -174,7 +174,20 @@ if __name__ == "__main__":
     def fake_curate(weekly, season, week, **kw):
         seen["rows"] = len(weekly)
         seen["cols"] = set(weekly.columns)
-        return {"content_draft_rows": [], "shelf_signal_history_rows": []}
+        # Stale-fixture fix (2026-09-29): the real curate_nfl_shelves()
+        # always returns these keys too (both its own return paths, and
+        # shape_content_draft_rows' own two, all confirmed) -- this fake
+        # only had the two oldest keys, and api/index.py's real read
+        # sites for the rest (unsafe [...] access, deliberately, since
+        # the real contract guarantees them) KeyError'd against this
+        # incomplete stand-in. Not a production bug -- see this
+        # investigation's own report for the full trace.
+        return {
+            "content_draft_rows": [], "shelf_signal_history_rows": [],
+            "around_the_league_rows": [], "generated_titles": [], "generated_opening_phrases": [],
+            "writer_loop_time_guard_triggered": False,
+            "writer_loop_llm_calls_completed": 0, "writer_loop_llm_calls_skipped": 0,
+        }
 
     orig_curate = idx.curate_nfl_shelves
     orig_snap = idx.stub_week_snapshot

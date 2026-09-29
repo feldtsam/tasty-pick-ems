@@ -94,6 +94,16 @@ if __name__ == "__main__":
             "around_the_league_rows": [],
             "generated_titles": [],
             "generated_opening_phrases": [],
+            # Stale-fixture fix (2026-09-29): writer-loop concurrency added
+            # these three keys to the real curate_nfl_shelves() return dict
+            # after this fake was written -- api/index.py's real
+            # (deliberately unsafe) [...] reads for them KeyError'd against
+            # this incomplete stand-in. Not a production bug -- the real
+            # producer always includes these on both its return paths; see
+            # this investigation's own report.
+            "writer_loop_time_guard_triggered": False,
+            "writer_loop_llm_calls_completed": 0,
+            "writer_loop_llm_calls_skipped": 0,
         }
 
     def fake_prior(season, week, player_ids, secret):

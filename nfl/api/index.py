@@ -1579,7 +1579,17 @@ def curate_and_write_drafts_endpoint():
             # Claude call deep, and `retries` is how many extra calls the
             # bounded retry path spent on top of `candidates`.
             "interrogation": result.get("interrogation_stats") or {},
-            "writer_loop_time_guard_triggered": result.get("writer_loop_time_guard_triggered"),
+            # Strict [...] access, not .get() -- curate_nfl_shelves() always
+            # returns this key on both its own return paths (confirmed via
+            # a full trace during the 2026-09-29 KeyError investigation),
+            # and a silent None here isn't a meaningful default for a
+            # boolean the caller actually reads. Was the one inconsistent
+            # read site against this same key: the identical field is read
+            # via strict [...] 35 lines below in "writer_loop" -- aligned
+            # to match, not the other way around, so a real future
+            # regression in the producer fails loudly here too instead of
+            # surfacing as a silently-wrong None in this block only.
+            "writer_loop_time_guard_triggered": result["writer_loop_time_guard_triggered"],
             "deadline_seconds": CURATE_HOME_SHELVES_CONFIG.get("writer_loop_deadline_seconds"),
         },
         "market_value": {

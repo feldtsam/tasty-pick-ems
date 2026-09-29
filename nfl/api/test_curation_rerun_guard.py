@@ -270,6 +270,16 @@ if __name__ == "__main__":
             "around_the_league_rows": [],
             "generated_titles": [],
             "generated_opening_phrases": [],
+            # Stale-fixture fix (2026-09-29): writer-loop concurrency added
+            # these three keys to the real function's return dict later
+            # than the Around the League wiring above did -- this fake
+            # missed that update, and api/index.py's real (deliberately
+            # unsafe) [...] reads for them KeyError'd against this
+            # incomplete stand-in. Not a production bug; the real producer
+            # always includes these -- see this investigation's own report.
+            "writer_loop_time_guard_triggered": False,
+            "writer_loop_llm_calls_completed": 0,
+            "writer_loop_llm_calls_skipped": 0,
         }
 
     def fake_write(rows, secret, write_url=None):
@@ -405,6 +415,11 @@ if __name__ == "__main__":
                 "around_the_league_rows": [],
                 "generated_titles": [],
                 "generated_opening_phrases": [],
+                # Stale-fixture fix (2026-09-29): see fake_curate's own
+                # comment above -- same real gap, same real fix.
+                "writer_loop_time_guard_triggered": False,
+                "writer_loop_llm_calls_completed": 0,
+                "writer_loop_llm_calls_skipped": 0,
             }
         idx.curate_nfl_shelves = fake_curate_with_shelf
 
