@@ -374,12 +374,15 @@ def reconcile_week(
     NFL_PIPELINE_WEBHOOK_SECRET env var when not passed explicitly (so
     both the deployed endpoint and this file's own `__main__` entry
     point work without duplicating env-var-reading logic); if still
-    unresolved, the write is SKIPPED with a loud printed warning, not a
-    raise — reconciliation's own real output (the returned `reconciled`
-    DataFrame, and the real run_pipeline/scoring work that produced it)
-    is not gated on persistence config being present, matching this
-    module's own general "missing optional input -> honest degradation,
-    not a hard failure" philosophy elsewhere.
+    unresolved, this now RAISES (real fix, confirmed 2026-09-28 — see
+    the persistence-write block's own comment) rather than silently
+    skipping the write. Unlike the market-value read above, a skipped
+    persistence write is invisible to every caller (reconcile_week()
+    still returns the real `reconciled` DataFrame, and the calling
+    endpoint still reports status="success"), so it does NOT get this
+    module's general "missing optional input -> honest degradation"
+    treatment — the persisted table is not optional output, it's the
+    entire point of this function being called at all.
 
     Raises if no real rows exist for (season, week) — either the games
     haven't been played yet, or genuinely no RB/WR/TE recorded a
@@ -393,11 +396,12 @@ def reconcile_week(
     the raw pre-game snapshot stays available for audit ("what did the
     market look like before this game"), and stub_week_snapshot()
     filters `reconciled` rows out so a stray re-curate of an
-    already-played week can't pull dead data. A missing secret or a
-    failed flag update is logged loudly but does NOT fail
-    reconciliation — the real work (compute + persist the reconciled
-    historical rows) is already done by this point, same
-    honest-degradation posture as the persistence-write step above.
+    already-played week can't pull dead data. resolved_secret is always
+    truthy by the time this runs (the persistence-write raise above
+    already stops the function otherwise) — only a genuinely FAILED flag
+    update (a real, non-secret-related error) is logged loudly here, not
+    fatal, since the real work (compute + persist the reconciled
+    historical rows) is already done by this point.
     """
     load_seasons = sorted(set(historical_seasons or SEASONS) | {season})
     if pbp is None:
@@ -476,49 +480,60 @@ def reconcile_week(
     )
     reconciled = reconciled.drop(columns=["market_value_completeness"])
 
+    # REAL FIX (confirmed, not hypothetical -- see this module's own
+    # investigation notes): a missing/blank NFL_PIPELINE_WEBHOOK_SECRET
+    # used to be a warn-and-continue here, same "honest degradation"
+    # posture as the market-value read above. That's wrong for THIS
+    # write specifically: unlike a missing market-value snapshot (which
+    # shows up as a visible NaN in the persisted data), a skipped
+    # persistence write is invisible -- the function still returns the
+    # real `reconciled` DataFrame and the calling endpoint still reports
+    # status="success", so a blank-secret misconfiguration (Vercel
+    # "Sensitive" env vars are write-only after creation -- a blank save
+    # goes undetected, see resolve_url_env's own docstring) could drop a
+    # whole week's real data with nothing anywhere to show it happened.
+    # Raising here surfaces it as status="error" at the calling endpoint
+    # instead, the same treatment a genuinely failed write already gets
+    # two lines below.
     if not resolved_secret:
-        print(
-            f"[reconcile_week] WARNING: no secret available -- skipping the persistence write for "
-            f"{season} Week {week}. reconcile_week() still returns the real "
-            f"{len(reconciled)} reconciled rows; nothing computed here was lost, "
-            f"only the write to nfl_player_redzone_weekly.",
-            flush=True,
+        raise RuntimeError(
+            f"No secret available (pass secret= or set NFL_PIPELINE_WEBHOOK_SECRET) -- refusing "
+            f"to silently skip the nfl_player_redzone_weekly persistence write for {season} Week "
+            f"{week}. {len(reconciled)} real reconciled rows were computed and then discarded; "
+            f"fix the secret and re-run reconciliation for this week."
         )
-    else:
-        rows = shape_player_redzone_weekly_rows(reconciled)
-        result = write_player_redzone_weekly_rows(rows, resolved_secret, write_url)
-        if not result["success"]:
-            raise RuntimeError(
-                f"Persisting {len(rows)} rows for {season} Week {week} to nfl_player_redzone_weekly "
-                f"failed: status={result['status_code']} error={result['error']!r}"
-            )
-        print(f"Persisted {len(rows)} rows for {season} Week {week} to nfl_player_redzone_weekly "
-              f"({reconciled['market_value_score'].notna().sum()} with a real final Market Value snapshot)")
+    rows = shape_player_redzone_weekly_rows(reconciled)
+    result = write_player_redzone_weekly_rows(rows, resolved_secret, write_url)
+    if not result["success"]:
+        raise RuntimeError(
+            f"Persisting {len(rows)} rows for {season} Week {week} to nfl_player_redzone_weekly "
+            f"failed: status={result['status_code']} error={result['error']!r}"
+        )
+    print(f"Persisted {len(rows)} rows for {season} Week {week} to nfl_player_redzone_weekly "
+          f"({reconciled['market_value_score'].notna().sum()} with a real final Market Value snapshot)")
 
+    # resolved_secret is unconditionally truthy by this point -- the
+    # persistence write above already raises when it isn't, so the
+    # separate falsy-secret warning this branch used to print (and its
+    # own now-inaccurate claim that "the real reconciled rows are
+    # already persisted") can never fire. Removed rather than left as
+    # dead, misleading text.
     if mark_reconciled:
-        if not resolved_secret:
+        flag_result = mark_stub_week_reconciled(season, week, resolved_secret)
+        if flag_result["success"]:
+            print(f"[reconcile_week] Marked nfl_stub_weeks rows reconciled for {season} Week {week} "
+                  f"({flag_result.get('response_body')!r})")
+        else:
+            # Not fatal -- the stub rows are just a stale pre-game
+            # placeholder at this point, and stub_week_snapshot()
+            # would still serve them until the next build_stub_week()
+            # run overwrites them. Logged loudly so it's visible.
             print(
-                f"[reconcile_week] WARNING: no secret available -- skipping the "
-                f"nfl_stub_weeks.reconciled flag update for {season} Week {week}. The real "
-                f"reconciled rows are already persisted; only the stub tombstone was skipped.",
+                f"[reconcile_week] WARNING: failed to mark nfl_stub_weeks reconciled for "
+                f"{season} Week {week}: status={flag_result['status_code']} "
+                f"error={flag_result['error']!r}",
                 flush=True,
             )
-        else:
-            flag_result = mark_stub_week_reconciled(season, week, resolved_secret)
-            if flag_result["success"]:
-                print(f"[reconcile_week] Marked nfl_stub_weeks rows reconciled for {season} Week {week} "
-                      f"({flag_result.get('response_body')!r})")
-            else:
-                # Not fatal -- the stub rows are just a stale pre-game
-                # placeholder at this point, and stub_week_snapshot()
-                # would still serve them until the next build_stub_week()
-                # run overwrites them. Logged loudly so it's visible.
-                print(
-                    f"[reconcile_week] WARNING: failed to mark nfl_stub_weeks reconciled for "
-                    f"{season} Week {week}: status={flag_result['status_code']} "
-                    f"error={flag_result['error']!r}",
-                    flush=True,
-                )
 
     return reconciled
 
