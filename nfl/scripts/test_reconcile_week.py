@@ -131,7 +131,7 @@ def run_real_secret_persists_and_flags():
     print("REAL SECRET -- both the persistence write and the stub-flag update actually run")
     print("=" * 70)
 
-    calls = {"write": None, "flag": None}
+    calls = {"write": None, "flag": None, "season_evidence": None}
 
     def _fake_write(rows, secret, url=None):
         calls["write"] = (rows, secret)
@@ -141,11 +141,16 @@ def run_real_secret_persists_and_flags():
         calls["flag"] = (season, week, secret)
         return {"success": True, "status_code": 200, "error": None, "response_body": "{}"}
 
+    def _fake_season_evidence_write(rows, secret, url=None):
+        calls["season_evidence"] = (rows, secret)
+        return {"success": True, "status_code": 200, "error": None}
+
     originals = _install_common_fakes({
         "run_pipeline": _fake_run_pipeline,
         "market_value_snapshot_for_reconciliation": _fake_market_value_snapshot,
         "write_player_redzone_weekly_rows": _fake_write,
         "mark_stub_week_reconciled": _fake_flag,
+        "write_player_season_evidence_rows": _fake_season_evidence_write,
     })
 
     raised = None
@@ -177,6 +182,55 @@ def run_real_secret_persists_and_flags():
                 extra.get("carries") == 3,
             )
             ok &= check("carries is NOT one of the typed top-level keys (by design, see redzone_carries fix)", "carries" not in written_rows[0])
+    ok &= check("nfl_player_season_evidence write also ran, derived from the same rows (Table 1)", calls["season_evidence"] is not None)
+    if calls["season_evidence"] is not None:
+        se_rows, se_secret = calls["season_evidence"]
+        ok &= check("one season_evidence row for the one reconciled row", len(se_rows) == 1)
+        ok &= check("the real secret threaded through to the season_evidence write too", se_secret == "real-test-secret")
+        if se_rows:
+            ok &= check("season_evidence row carries the real carries value (via extra)", se_rows[0]["carries"] == 3)
+            ok &= check("period_type/period_index shaped correctly for V1", se_rows[0]["period_type"] == "game" and se_rows[0]["period_index"] == 3)
+    return ok
+
+
+def run_season_evidence_write_failure_is_not_fatal():
+    print("\n" + "=" * 70)
+    print("Table 1 write failing does NOT fail an otherwise-successful reconcile_week() run")
+    print("=" * 70)
+
+    def _fake_write(rows, secret, url=None):
+        return {"success": True, "status_code": 200, "error": None}
+
+    def _fake_flag(season, week, secret, url=None):
+        return {"success": True, "status_code": 200, "error": None, "response_body": "{}"}
+
+    def _fake_season_evidence_write_fails(rows, secret, url=None):
+        return {"success": False, "status_code": 500, "error": "simulated: nfl_player_season_evidence write failed"}
+
+    originals = _install_common_fakes({
+        "run_pipeline": _fake_run_pipeline,
+        "market_value_snapshot_for_reconciliation": _fake_market_value_snapshot,
+        "write_player_redzone_weekly_rows": _fake_write,
+        "mark_stub_week_reconciled": _fake_flag,
+        "write_player_season_evidence_rows": _fake_season_evidence_write_fails,
+    })
+
+    raised = None
+    result = None
+    try:
+        result = rw.reconcile_week(2026, 3, secret="real-test-secret", **_OFFLINE_LOAD_KWARGS)
+    except Exception as e:
+        raised = e
+    finally:
+        _restore(originals)
+
+    ok = True
+    ok &= check(
+        "a FAILED nfl_player_season_evidence write does not raise -- unlike the "
+        "nfl_player_redzone_weekly write, this table has no reader yet",
+        raised is None,
+    )
+    ok &= check("reconcile_week() still returns the real reconciled DataFrame despite the Table 1 failure", result is not None and len(result) == 1)
     return ok
 
 
@@ -207,6 +261,7 @@ if __name__ == "__main__":
         run_missing_secret_raises(),
         run_real_secret_persists_and_flags(),
         run_no_real_rows_still_raises_value_error(),
+        run_season_evidence_write_failure_is_not_fatal(),
     ]
     print()
     if all(results):

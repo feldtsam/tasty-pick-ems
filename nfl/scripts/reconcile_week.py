@@ -108,6 +108,20 @@ NFL_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS = [
 # DEFAULT_NFL_CONTENT_DRAFTS_WRITE_URL). The real value comes from the
 # LOVABLE_NFL_PLAYER_REDZONE_WEEKLY_WRITE_URL Vercel env var.
 DEFAULT_NFL_PLAYER_REDZONE_WEEKLY_WRITE_URL = "https://tastypickems.com/api/public/nfl-player-redzone-weekly-write"
+DEFAULT_NFL_PLAYER_SEASON_EVIDENCE_WRITE_URL = "https://tastypickems.com/api/public/nfl-player-season-evidence-write"
+
+# Follow the Story V1, Table 1: extra's real key -> nfl_player_season_
+# evidence's real column name. rz_touches/gl_touches get renamed to
+# their documented, reader-facing names; the other three keep their
+# real Python-side name unchanged. See shape_player_season_evidence_
+# rows' own docstring for the accepted V1 population limitation.
+NFL_PLAYER_SEASON_EVIDENCE_METRIC_KEYS = {
+    "snap_share": "snap_share",
+    "targets": "targets",
+    "carries": "carries",
+    "rz_touches": "red_zone_opportunities",
+    "gl_touches": "goal_line_opportunities",
+}
 
 
 def shape_player_redzone_weekly_rows(reconciled: pd.DataFrame) -> list:
@@ -160,6 +174,68 @@ def write_player_redzone_weekly_rows(rows: list, secret: str, write_url: str = N
 
     url = write_url or resolve_url_env(
         "LOVABLE_NFL_PLAYER_REDZONE_WEEKLY_WRITE_URL", DEFAULT_NFL_PLAYER_REDZONE_WEEKLY_WRITE_URL,
+    )
+    return forward_to_lovable(rows, secret, url)
+
+
+def shape_player_season_evidence_rows(redzone_weekly_rows: list) -> list:
+    """
+    Follow the Story V1, Table 1: derives nfl_player_season_evidence rows
+    from the SAME shaped rows shape_player_redzone_weekly_rows() already
+    built for THIS week's nfl_player_redzone_weekly write -- no separate
+    read-back, no recomputation. Each input row is one of that
+    function's own typed-core-plus-extra dicts.
+
+    ACCEPTED V1 POPULATION LIMITATION (confirmed via a real trace,
+    2026-09-29, not an oversight): one Table 1 row per input row, no
+    additional eligibility filter -- the input population is already
+    exactly nfl_player_redzone_weekly's own (i.e. reconcile_week()'s own
+    `reconciled`), which is itself scoped to players with a real
+    red-zone touch that game (aggregate_redzone_game's own base
+    population). A player with real offensive participation but no
+    red-zone touch that week has no row here for that week. Widening
+    that base population is a separately scoped future task -- not
+    attempted here, and explicitly not blocking this pass.
+
+    Each of the five metrics is read independently from `extra` via
+    NFL_PLAYER_SEASON_EVIDENCE_METRIC_KEYS and left as None when absent
+    -- a real, honest null (e.g. carries for a receiver who never
+    rushed, or snap_share when the PFR crosswalk didn't resolve that
+    player), never a reason to drop the row or fabricate a 0.
+
+    period_type is always "game" for V1 (period_index is the real week
+    number) -- see the table's own migration for why this isn't a
+    column literally named `week`.
+    """
+    out = []
+    for row in redzone_weekly_rows:
+        extra = row.get("extra") or {}
+        shaped = {
+            "player_id": row["player_id"],
+            "season": row["season"],
+            "period_type": "game",
+            "period_index": row["week"],
+        }
+        for extra_key, column_name in NFL_PLAYER_SEASON_EVIDENCE_METRIC_KEYS.items():
+            shaped[column_name] = extra.get(extra_key)
+        out.append(shaped)
+    return out
+
+
+def write_player_season_evidence_rows(rows: list, secret: str, write_url: str = None) -> dict:
+    """
+    Signs and POSTs to nfl_player_season_evidence's write route -- same
+    real HMAC/X-Signature pattern write_player_redzone_weekly_rows above
+    already uses. Upsert-on-conflict on (player_id, season, period_type,
+    period_index) happens server-side, same idempotent-on-rerun shape.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
+    from lovable_forward import forward_to_lovable, resolve_url_env
+
+    url = write_url or resolve_url_env(
+        "LOVABLE_NFL_PLAYER_SEASON_EVIDENCE_WRITE_URL", DEFAULT_NFL_PLAYER_SEASON_EVIDENCE_WRITE_URL,
     )
     return forward_to_lovable(rows, secret, url)
 
@@ -324,6 +400,7 @@ def reconcile_week(
     secret: str = None,
     write_url: str = None,
     price_history_read_url: str = None,
+    season_evidence_write_url: str = None,
 ) -> pd.DataFrame:
     """
     Build this week's real historical rows (run_pipeline against real
@@ -515,6 +592,31 @@ def reconcile_week(
         )
     print(f"Persisted {len(rows)} rows for {season} Week {week} to nfl_player_redzone_weekly "
           f"({reconciled['market_value_score'].notna().sum()} with a real final Market Value snapshot)")
+
+    # Follow the Story V1, Table 1 -- derived from `rows` above (this
+    # week's own already-shaped nfl_player_redzone_weekly rows), never
+    # read back separately. Deliberately NOT fatal on failure, unlike
+    # the persistence write above: nfl_player_redzone_weekly is the
+    # real, load-bearing table every live Intelligence family already
+    # depends on; nfl_player_season_evidence has no reader yet (Table
+    # 2/3 aren't built), so a failure here shouldn't sink an otherwise-
+    # successful reconciliation run -- same "logged loudly, not fatal"
+    # treatment the stub-flag update below already gets, for the same
+    # reason (the real, load-bearing work is already done by this point).
+    season_evidence_rows = shape_player_season_evidence_rows(rows)
+    season_evidence_result = write_player_season_evidence_rows(
+        season_evidence_rows, resolved_secret, season_evidence_write_url,
+    )
+    if season_evidence_result["success"]:
+        print(f"[reconcile_week] Persisted {len(season_evidence_rows)} rows for {season} Week {week} "
+              f"to nfl_player_season_evidence")
+    else:
+        print(
+            f"[reconcile_week] WARNING: failed to persist nfl_player_season_evidence for "
+            f"{season} Week {week}: status={season_evidence_result['status_code']} "
+            f"error={season_evidence_result['error']!r}",
+            flush=True,
+        )
 
     # resolved_secret is unconditionally truthy by this point -- the
     # persistence write above already raises when it isn't, so the
