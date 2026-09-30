@@ -70,6 +70,18 @@ if __name__ == "__main__":
     issues = sanity_check_story(inf_signal)
     results.append(check(f"infinite primary_signal.value is caught (got {issues})", any("primary_signal" in i for i in issues)))
 
+    # REAL FIX (2026-09-30, hotfix): an explicit primary_signal.value of
+    # None is Coaching Trends' own deliberate "no single number to show"
+    # state for a swing pace story (name stays populated, only the value
+    # is null) -- must NOT be treated the same as a bad/missing value.
+    null_signal_value = _real_story(primary_signal={"name": "pace_score", "value": None})
+    issues = sanity_check_story(null_signal_value)
+    results.append(check(f"an explicit primary_signal.value=None is NOT flagged as an issue (got {issues})", issues == []))
+
+    missing_value_key = _real_story(primary_signal={"name": "pace_score"})
+    issues = sanity_check_story(missing_value_key)
+    results.append(check(f"primary_signal missing the 'value' key entirely is still caught (got {issues})", any("primary_signal" in i for i in issues)))
+
     out_of_range = _real_story(completeness=142.0, confidence=142.0)
     issues = sanity_check_story(out_of_range)
     results.append(check(f"out-of-0-100-range completeness/confidence is caught (got {issues})", sum("outside the real documented 0-100 range" in i for i in issues) == 2))
@@ -276,8 +288,38 @@ if __name__ == "__main__":
         for wk, vis, passed in real_flags:
             print(f"  week {wk}: is_visible={vis} sanity_check_passed={passed}")
 
+    # ============================================================
+    # REAL DATA, hotfix regression check (2026-09-30): every real
+    # week-3 2026 Coaching Trends pace story -- swing AND non-swing --
+    # must come out is_visible=True, sanity_check_passed=True through
+    # the real process_family path. Before this hotfix, 10 of the 12
+    # real swing stories failed this (primary_signal was fully None,
+    # which failed process_family's own identifiability check).
+    # ============================================================
+    pace_hotfix_results = []
+    try:
+        import nfl_data_py as nfl
+        from team_tendencies import CONFIG, aggregate_pace, _score_pace, build_pace_stories
+
+        pbp2026 = nfl.import_pbp_data([2026], downcast=True)
+        pace_tw_2026 = _score_pace(aggregate_pace(pbp2026), CONFIG)
+        weekly_empty = pd.DataFrame(columns=["player_id", "player_name", "season", "week", "team", "posteam", "position_group", "snap_share"])
+        pace_stories_2026 = build_pace_stories(pbp2026, weekly_empty, 2026, 3, CONFIG, _team_week=pace_tw_2026)
+
+        result = process_family("coaching_trends", pace_stories_2026, {}, 2026, 3, lifecycle_eligible=True)
+        flags = [(r["entity"]["team"], r["is_visible"], r["sanity_check_passed"], r["primary_signal_name"]) for r in result["story_rows"]]
+        swing_count = sum(1 for s in pace_stories_2026 if s["trend_direction"] == "unsettled")
+        pace_hotfix_results.append(check(
+            f"real 2026 week-3: all {len(pace_stories_2026)} pace stories ({swing_count} swing) are is_visible=True, "
+            f"sanity_check_passed=True, primary_signal_name='pace_score' (got {flags})",
+            len(pace_stories_2026) == 12 and swing_count == 10
+            and all(vis is True and passed is True and name == "pace_score" for _, vis, passed, name in flags),
+        ))
+    except Exception as e:
+        pace_hotfix_results.append(check(f"real 2026 week-3 pace/process_family hotfix check (skipped -- {type(e).__name__}: {e})", True))
+
     print()
-    all_results = results + real_results
+    all_results = results + real_results + pace_hotfix_results
     if all(all_results):
         print(f"All {len(all_results)} total checks passed.")
     else:

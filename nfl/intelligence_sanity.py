@@ -78,7 +78,14 @@ def sanity_check_story(story: dict) -> list:
         value = story.get(field)
         if not isinstance(value, dict) or "value" not in value:
             issues.append(f"{field} is missing or not a dict with a 'value' key: {value!r}")
-        elif not _is_finite_number(value["value"]):
+        # REAL FIX (2026-09-30, hotfix): an explicit `value: None` is a
+        # deliberate "no single number to show" state (Coaching Trends'
+        # pace swing stories -- see team_tendencies.py's own comment on
+        # this), not a data-quality failure -- same "null is a valid,
+        # complete state" convention hero_metric already has elsewhere in
+        # this file/module. Still flags a truly bad value (a string, NaN,
+        # etc.) exactly as before; only a real, explicit None is exempt.
+        elif value["value"] is not None and not _is_finite_number(value["value"]):
             issues.append(f"{field}['value'] is not a finite number: {value['value']!r}")
 
     for field in ("trend_strength", "sample_size", "completeness", "confidence"):

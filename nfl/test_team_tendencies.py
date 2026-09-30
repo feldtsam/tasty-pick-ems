@@ -689,8 +689,9 @@ if __name__ == "__main__":
             and tb_2026["related_players"] == [] and tb_2026["hero_metric"] is None and tb_2026["signal_direction"] is None,
         ))
         results.append(check(
-            "REAL 2026 week-3: TB's swing story also withholds primary_signal (no raw score fallback on the shelf card, approved 2026-09-29) and uses the real played-week range as time_window",
-            tb_2026 is not None and tb_2026["primary_signal"] is None and tb_2026["time_window"] == "Weeks 1–3",
+            "REAL 2026 week-3: TB's swing story keeps primary_signal.name populated ('pace_score') but nulls the value (hotfix 2026-09-30 -- a fully-null primary_signal used to fail process_family's own identifiability check) and uses the real played-week range as time_window",
+            tb_2026 is not None and tb_2026["primary_signal"] == {"name": "pace_score", "value": None}
+            and tb_2026["time_window"] == "Weeks 1–3",
         ))
         gb_2026 = by_team_2026.get("GB")
         results.append(check(

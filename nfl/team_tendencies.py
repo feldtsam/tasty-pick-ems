@@ -1417,18 +1417,30 @@ def build_pace_stories(
             entity={"type": "team", "team": team},
             headline=headline,
             story=story_text,
-            # REAL FIX (2026-09-29): the shelf card falls back to
-            # primary_signal.value as a bare score display whenever
-            # hero_metric is null (IntelligenceCard.tsx's own hero_metric
-            # ? ... : primary_signal ? ... : null chain) -- confirmed by
-            # reading that component directly. A swing story already
-            # nulls hero_metric (no single before/after to show); leaving
-            # primary_signal populated would silently show the current
-            # week's raw pace_score as a fallback "score," the exact
-            # settled-single-number read this framing exists to avoid.
-            # None here, same already-established pattern Market
-            # Intelligence rows use for the same reason.
-            primary_signal=None if is_swing else {"name": "pace_score", "value": float(row["pace_score"])},
+            # REAL FIX (2026-09-30, hotfix): name stays populated
+            # ("pace_score") on a swing story -- only the value is null.
+            # An EARLIER version of this fix set the whole primary_signal
+            # to None, which silently failed process_family()'s own
+            # identifiability check (it requires primary_signal.name),
+            # marking every swing story unidentifiable -- confirmed via a
+            # real run: is_visible=False, sanity_check_passed=False, and
+            # excluded from lifecycle tracking entirely for 10 of 12 real
+            # week-3 pace stories. Keeping name populated satisfies that
+            # check; a null value still needs intelligence_sanity.py's
+            # own primary_signal check to tolerate None (see that
+            # function's own comment) -- this alone isn't sufficient by
+            # itself, both sides of the fix are required together.
+            #
+            # The shelf card's own "no score" requirement still holds:
+            # IntelligenceCard.tsx's hero_metric ? ... : primary_signal ?
+            # ... : null chain checks primary_signal's TRUTHINESS, which
+            # a {"name": ..., "value": None} dict would satisfy -- but
+            # rowToIntelligenceStory() (intelligence-adapter.ts) already
+            # collapses a null value to a fully-null primary_signal
+            # (`current == null ? null : {...}`) before it ever reaches a
+            # component, so no frontend change is needed -- confirmed by
+            # reading that adapter directly, not assumed.
+            primary_signal={"name": "pace_score", "value": None if is_swing else float(row["pace_score"])},
             supporting_evidence=evidence,
             trend_direction=direction,
             trend_strength=float(min(abs(row["_delta"]), 100.0)),
