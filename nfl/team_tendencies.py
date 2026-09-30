@@ -842,6 +842,86 @@ def _headline_and_story_pace(row: pd.Series, direction: str, thin: bool) -> tupl
     return headline, story, agrees
 
 
+# Pace swing framing (2026-09-29) -- a "growing-faster"/"growing-slower"
+# headline implies one settled direction, but a real check against every
+# played game (not just current-vs-last) showed most week-3 pace stories
+# actually move both ways across the season (11 of 12 real week-3
+# stories, checked live against 2026 pbp). TIER-level monotonicity
+# (allowing ties), not raw-score monotonicity, decides swing vs. trend --
+# tier words are what the reader actually sees, and a team whose raw
+# score wobbles within the same tier (e.g. 93.8 -> 84.4, both "fastest")
+# reads as settled, not swinging.
+_PACE_TIER_RANK = {"slowest": 0, "slow": 1, "middle": 2, "fast": 3, "fastest": 4}
+
+
+def _pace_tier(score: float) -> str:
+    if score >= 80:
+        return "fastest"
+    if score >= 60:
+        return "fast"
+    if score >= 40:
+        return "middle"
+    if score >= 20:
+        return "slow"
+    return "slowest"
+
+
+def _pace_tier_sequence(tw: pd.DataFrame, season, team, week) -> list:
+    """Every played game's tier, oldest first, through the flagged week."""
+    sub = tw[(tw["team"] == team) & (tw["season"] == season) & (tw["week"] <= week)].sort_values("week")
+    return [_pace_tier(s) for s in sub["pace_score"]]
+
+
+def _is_pace_swing(tiers: list) -> bool:
+    """
+    Non-monotonic across the FULL tier sequence (not just current vs.
+    last). With fewer than 2 tiers this is trivially False; with exactly
+    2, any single step is monotonic by construction, so a real swing
+    needs at least 3 played games -- matching the real finding that no
+    story can even qualify before games_played=3 (delta is always 0.0 at
+    games_played=2, see build_pace_stories' own docstring note).
+    """
+    ranks = [_PACE_TIER_RANK[t] for t in tiers]
+    diffs = [ranks[i + 1] - ranks[i] for i in range(len(ranks) - 1)]
+    mono_up = all(d >= 0 for d in diffs)
+    mono_down = all(d <= 0 for d in diffs)
+    return not (mono_up or mono_down)
+
+
+def _pace_swing_headline_and_story(team: str, tiers: list, weeks: list) -> tuple:
+    """
+    Descriptive only, no cause implied -- approved wording. "again" only
+    when the flagged week's tier matches the very first played game's
+    tier (a real round-trip, not just "ended on a familiar-sounding
+    word").
+    """
+    body = ", ".join(tiers[:-1]) + f", then {tiers[-1]}"
+    if tiers[-1] == tiers[0]:
+        body += " again"
+    headline = f"{team}'s pace hasn't settled: {body}."
+
+    week_clauses = [f"{tier} in Week {wk}" for tier, wk in zip(tiers[:-1], weeks[:-1])]
+    story = (
+        f"{team}'s pace hasn't shown one direction this season — "
+        f"{', '.join(week_clauses)}, and {tiers[-1]} in Week {weeks[-1]}."
+    )
+    return headline, story
+
+
+def _pace_swing_what_changed(tiers: list, games_played: int, thin: bool) -> list:
+    return [
+        {
+            "label": "Pace hasn't settled",
+            "observation": f"League pace tier by week: {', '.join(tiers)}.",
+        },
+        {
+            "label": "Sample size",
+            "observation": f"Based on {games_played} real games this season"
+            + (" — still a developing read." if thin else ", an established, well-populated read."),
+        },
+    ]
+
+
 # ============================================================
 # Universal Card v2 fields — same "attach after build_story(), not
 # threaded through STORY_FIELDS" approach Defensive Trends and Role
@@ -1238,6 +1318,33 @@ def build_pace_stories(
     in place) before adding _games_played, so a caller reusing the same
     frame object for its own diagnostics never sees this function's own
     added column leak back onto it.
+
+    No story can qualify before games_played=3 -- confirmed against real
+    2026 data, games_played=2 always produces _delta=0.0 for every team,
+    because at that point last1 and season_avg are both computed over
+    the exact same single prior game (see _trend_delta/add_rolling_
+    windows' own shift(1) mechanics). The pace_trend_threshold gate
+    filters this out on its own; no special-casing needed here.
+
+    SWING FRAMING (approved 2026-09-29): a real check against every
+    played game (not just current-vs-last) showed most real week-3 pace
+    stories move both ways across the season, not toward one settled
+    direction (11 of 12 real week-3 stories, live 2026 data). When the
+    full tier sequence is non-monotonic (_is_pace_swing), the story uses
+    a descriptive "hasn't settled" framing instead of growing-faster/
+    growing-slower -- see _pace_swing_headline_and_story and the inline
+    branch below for the exact fields this changes.
+
+    "Show every played game" is THIN-tier only (games_played 2-3). Past
+    thin tier, the swing check bounds to the last trend_window+1 games
+    (the same games last3 itself uses, plus the flagged week) -- confirmed
+    against real 2025 backfill that leaving this ungated makes headlines
+    grow without bound (a real week-12 story cited 11 tiers) and makes
+    virtually every post-thin-tier story a permanent swing, since a long
+    real sequence essentially never stays perfectly monotonic. Bounding
+    also lets a genuinely-settled recent run read as settled even when
+    early-season noise wasn't (real DET case, week 12: full history is a
+    swing, last 4 games are not).
     """
     tw = (_team_week if _team_week is not None else _score_pace(aggregate_pace(pbp), config)).copy()
     tw["_games_played"] = tw.groupby(["team", "season"]).cumcount() + 1
@@ -1248,42 +1355,115 @@ def build_pace_stories(
 
     stories = []
     for _, row in pool.iterrows():
-        direction = "growing-faster" if row["_delta"] > 0 else "growing-slower"
+        team = row["team"]
         thin = row["_games_played"] < config["thin_pace_games"]
-        headline, story_text, agrees = _headline_and_story_pace(row, direction, thin)
         completeness = round(min(row["_games_played"] / config["full_confidence_pace_games"], 1.0) * 100, 1)
 
-        evidence = [
-            f"pace_score {row['pace_score']:.0f}/100, moved {row['_delta']:+.1f} points over the last "
-            f"{_games_phrase(row['_trend_window'])} vs. season-to-date",
-            f"{int(row['_games_played'])} game(s) of data this season "
-            f"({'a thin, still-developing sample' if thin else 'an established, well-populated read'})",
-        ]
-        if agrees:
-            evidence.insert(1, f"Seconds per play: {row['seconds_per_play_last3']:.1f} (last 3 games) vs. {row['seconds_per_play_season_avg']:.1f} (season)")
+        sub = tw[(tw["team"] == team) & (tw["season"] == season) & (tw["week"] <= week)].sort_values("week")
+        all_tiers = [_pace_tier(s) for s in sub["pace_score"]]
+        all_weeks = sub["week"].tolist()
+        # REAL FIX (2026-09-29): "show every played game" was approved for
+        # the thin tier specifically (2-3 games, where it's still fully
+        # readable and genuinely more informative than a 1-game window).
+        # Checked against real 2025 backfill: left ungated, a real week-12
+        # story cited 11 tiers in one run-on headline, and virtually every
+        # story past thin tier was a swing (a real ~10+ point sequence is
+        # essentially never perfectly monotonic) -- trend-confirming
+        # framing would never fire again once a team has enough games.
+        # Bounding to trend_window+1 (the SAME games last3 itself already
+        # uses, plus the flagged week) keeps headlines constant-length all
+        # season and lets a genuinely-settled recent run read as settled
+        # even when early-season noise wasn't (real DET case: 11-game
+        # history is a swing, but its real last-4 games are monotonic).
+        if row["_methodology_maturity"] == "thin":
+            tiers, weeks_played = all_tiers, all_weeks
+        else:
+            bound = int(row["_trend_window"]) + 1
+            tiers, weeks_played = all_tiers[-bound:], all_weeks[-bound:]
+        is_swing = _is_pace_swing(tiers)
+
+        if is_swing:
+            # Swing framing (approved 2026-09-29): the flagged week runs
+            # against the season's own overall tier pattern, so a single
+            # "growing-faster"/"growing-slower" headline would assert a
+            # settled direction the data doesn't have. related_players
+            # and signal_direction are both explicitly withheld below,
+            # same "do not attach a direction to a story that has none"
+            # principle -- not routed through the growing-faster/-slower
+            # label or favorability logic at all.
+            direction = "unsettled"
+            headline, story_text = _pace_swing_headline_and_story(team, tiers, weeks_played)
+            if thin:
+                story_text += " Based on a still-developing sample this season — worth confirming as more games are played."
+            evidence = [
+                f"League pace tier by week: {', '.join(tiers)}.",
+                f"{int(row['_games_played'])} game(s) of data this season "
+                f"({'a thin, still-developing sample' if thin else 'an established, well-populated read'})",
+            ]
+        else:
+            direction = "growing-faster" if row["_delta"] > 0 else "growing-slower"
+            headline, story_text, agrees = _headline_and_story_pace(row, direction, thin)
+            evidence = [
+                f"pace_score {row['pace_score']:.0f}/100, moved {row['_delta']:+.1f} points over the last "
+                f"{_games_phrase(row['_trend_window'])} vs. season-to-date",
+                f"{int(row['_games_played'])} game(s) of data this season "
+                f"({'a thin, still-developing sample' if thin else 'an established, well-populated read'})",
+            ]
+            if agrees:
+                evidence.insert(1, f"Seconds per play: {row['seconds_per_play_last3']:.1f} (last 3 games) vs. {row['seconds_per_play_season_avg']:.1f} (season)")
 
         story = build_story(
             intelligence_family="coaching_trends",
-            entity={"type": "team", "team": row["team"]},
+            entity={"type": "team", "team": team},
             headline=headline,
             story=story_text,
-            primary_signal={"name": "pace_score", "value": float(row["pace_score"])},
+            # REAL FIX (2026-09-29): the shelf card falls back to
+            # primary_signal.value as a bare score display whenever
+            # hero_metric is null (IntelligenceCard.tsx's own hero_metric
+            # ? ... : primary_signal ? ... : null chain) -- confirmed by
+            # reading that component directly. A swing story already
+            # nulls hero_metric (no single before/after to show); leaving
+            # primary_signal populated would silently show the current
+            # week's raw pace_score as a fallback "score," the exact
+            # settled-single-number read this framing exists to avoid.
+            # None here, same already-established pattern Market
+            # Intelligence rows use for the same reason.
+            primary_signal=None if is_swing else {"name": "pace_score", "value": float(row["pace_score"])},
             supporting_evidence=evidence,
             trend_direction=direction,
             trend_strength=float(min(abs(row["_delta"]), 100.0)),
             sample_size=int(row["_games_played"]),
             completeness=completeness,
             confidence=completeness,
-            time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
-            related_players=_related_players_team_wide(
-                weekly, season, week, row["team"], "snap_share",
+            # Swing stories use the real played-week RANGE ("Weeks 1-3"),
+            # not the trend-window phrasing -- "last 1 game through Week
+            # 3" describes a single comparison window, which a swing
+            # explicitly doesn't have (approved 2026-09-29).
+            time_window=(
+                f"Weeks {weeks_played[0]}–{weeks_played[-1]}" if is_swing
+                else f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date"
+            ),
+            related_players=[] if is_swing else _related_players_team_wide(
+                weekly, season, week, team, "snap_share",
                 "Benefits from play volume", "Fewer plays to go around", "Snap share",
                 True, "growing-faster", direction, config,
             ),
         )
-        story["hero_metric"] = _hero_metric_for_pace_row(row, agrees)
-        story["signal_direction"] = _signal_direction_pace(direction)
-        story["what_changed"] = _what_changed_for_pace_row(row, direction, agrees, thin, config)
+        if is_swing:
+            # Suppressed for Phase 1, approved -- a two-point before/after
+            # hero_metric shape can't honestly represent a 3+ point swing
+            # (which value would be "before"?), and no direction exists
+            # to hang a favorable/unfavorable read on. Same null-is-valid
+            # convention every other family already uses when a specific
+            # claim can't be honestly made (see hero_metric's own real
+            # td_agrees gate in Defensive Trends).
+            story["hero_metric"] = None
+            story["signal_direction"] = None
+            story["what_changed"] = _pace_swing_what_changed(tiers, int(row["_games_played"]), thin)
+        else:
+            story["hero_metric"] = _hero_metric_for_pace_row(row, agrees)
+            story["signal_direction"] = _signal_direction_pace(direction)
+            story["what_changed"] = _what_changed_for_pace_row(row, direction, agrees, thin, config)
         story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
         # Story Interrogation V1 -- see build_redzone_play_calling_stories'
         # own comment above for the full reasoning, identical here.
