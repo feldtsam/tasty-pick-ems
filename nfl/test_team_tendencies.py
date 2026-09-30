@@ -704,6 +704,10 @@ if __name__ == "__main__":
             lv_2026 is not None and lv_2026["trend_direction"] == "growing-faster"
             and mia_2026 is not None and mia_2026["trend_direction"] == "growing-slower",
         ))
+        results.append(check(
+            "REAL 2026 week-3: LV's non-swing time_window says 'through Week 2', not 'through Week 3' -- the real window it actually describes (last1=week2 vs season_avg over weeks 1-2), approved fix",
+            lv_2026 is not None and lv_2026["time_window"] == "Season 2026, last 1 game through Week 2 vs. season-to-date",
+        ))
     except Exception as e:
         results.append(check(f"REAL 2026 week-3 pace swing integration check (skipped -- {type(e).__name__}: {e})", True))
 

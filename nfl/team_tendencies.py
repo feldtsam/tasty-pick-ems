@@ -1439,9 +1439,21 @@ def build_pace_stories(
             # not the trend-window phrasing -- "last 1 game through Week
             # 3" describes a single comparison window, which a swing
             # explicitly doesn't have (approved 2026-09-29).
+            #
+            # Non-swing REAL FIX (2026-09-29, approved): "through Week
+            # {week}" used to claim the flagged week itself was inside the
+            # cited window, when last1/last3 always exclude it (shift(1)).
+            # Confirmed live: LV's real "moved +23.5 points... through
+            # Week 3" cited last1(week2)=93.8 vs season_avg(weeks1-2)=
+            # 70.35 -- a comparison that never touches week 3's own 84.4
+            # at all. `week - 1` is the real last week the cited window
+            # actually reaches; the evidence sentence's own delta-vs-
+            # displayed-score mismatch is a separate, broader issue (also
+            # in redzone/fourth-down) scoped to a later investigation, not
+            # this fix.
             time_window=(
                 f"Weeks {weeks_played[0]}–{weeks_played[-1]}" if is_swing
-                else f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date"
+                else f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week - 1} vs. season-to-date"
             ),
             related_players=[] if is_swing else _related_players_team_wide(
                 weekly, season, week, team, "snap_share",
