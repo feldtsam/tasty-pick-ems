@@ -627,6 +627,28 @@ if __name__ == "__main__":
         and "Fewer drives to work with" in known_unfavorable_result[0]["note"],
     ))
 
+    # REAL, PRE-EXISTING BUG fix (confirmed present at 3189f52, before any
+    # Phase 1 commit): rank_col ("snap_share"/"td_opportunity") is one of
+    # `weekly`'s "extra" columns -- absent when role_defensive_weekly_
+    # snapshot() has no real rows to unpack `extra` from (a real, reached
+    # state: a genuinely empty season/week). Used to raise a raw KeyError
+    # from pool.sort_values(); hides instead now, same principle as the
+    # unresolvable-direction case above.
+    missing_rank_col_weekly = pd.DataFrame({
+        "player_id": ["p1"], "player_name": ["Test Player"], "season": [2099], "week": [1],
+        "team": ["KC"], "posteam": ["KC"], "position_group": ["WR"],
+        # deliberately no "snap_share"/"td_opportunity" column at all
+    })
+    missing_col_result = _related_players_team_wide(
+        missing_rank_col_weekly, 2099, 1, "KC", "snap_share",
+        "Benefits from play volume", "Fewer plays to go around", "Snap share",
+        True, "growing-faster", "growing-faster", CONFIG,
+    )
+    results.append(check(
+        "_related_players_team_wide hides (returns []) rather than raising a KeyError when the rank_col is missing from weekly entirely",
+        missing_col_result == [],
+    ))
+
     # ============================================================
     # Pace swing framing (approved 2026-09-29): tier bucketing, the
     # tier-level (not raw-score) monotonicity classifier, and the exact

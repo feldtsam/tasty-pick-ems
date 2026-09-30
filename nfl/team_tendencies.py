@@ -638,6 +638,16 @@ def _related_players_team_wide(
     known_directions = {favorable_direction, _OPPOSITE_DIRECTION.get(favorable_direction)}
     if direction not in known_directions:
         return []
+    # REAL, PRE-EXISTING BUG (confirmed present before Phase 1): rank_col
+    # ("snap_share"/"td_opportunity") is one of `weekly`'s "extra" columns
+    # -- present when role_defensive_weekly_snapshot() has real rows to
+    # unpack `extra` from, absent when the season/week has none (a real,
+    # reachable state, not hypothetical: confirmed live against a real
+    # zero-row read). Hides, same as the unresolvable-direction path
+    # above, rather than raising -- there is nothing to rank real players
+    # by if the column itself doesn't exist this week.
+    if rank_col not in weekly.columns:
+        return []
     pool = weekly[
         (weekly["season"] == season) & (weekly["week"] == week) & (weekly["posteam"] == team)
         & (weekly["position_group"].isin(["RB", "WR", "TE"]))
