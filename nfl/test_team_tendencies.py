@@ -37,6 +37,7 @@ from team_tendencies import (
     _score_redzone_play_calling,
     _trend_delta,
     _weekly_percentile,
+    _related_players_team_wide,
 )
 
 WEEKLY_PATH = Path(__file__).resolve().parent / "scripts" / "player_redzone_weekly.csv"
@@ -312,32 +313,52 @@ if __name__ == "__main__":
         wrte_check_pool = wk_ref[wk_ref["player_id"].isin([r["player_id"] for r in rz_pass_heavy["related_players"]])]
         results.append(check("growing-pass-heavy red-zone related_players are genuinely WR/TE", set(wrte_check_pool["position_group"].unique()) <= {"WR", "TE"}))
 
-    fd_with_related = next((s for s in fd_ref_stories if s["related_players"]), None)
+    # REAL FIX (2026-09-29): related_players' label used to be a single
+    # constant string regardless of direction, while direction_indicator
+    # WAS direction-aware -- e.g. a fourth-down slowdown story could show
+    # a down arrow next to "Benefits from sustained drives". Label and
+    # arrow now come from the same is_favorable boolean, so each
+    # direction gets checked separately against its OWN real label.
+    fd_favorable = next((s for s in fd_ref_stories if s["trend_direction"] == "growing-aggressive" and s["related_players"]), None)
+    fd_unfavorable = next((s for s in fd_ref_stories if s["trend_direction"] == "growing-conservative" and s["related_players"]), None)
     results.append(check(
-        "fourth-down related_players is TEAM-WIDE, real player entities, note cites 'Benefits from sustained drives', direction_indicator matches the real story direction (growing-aggressive -> up)",
-        fd_with_related is not None and all(
-            r["entity_type"] == "player" and "Benefits from sustained drives" in r["note"]
-            and r["direction_indicator"] == ("up" if fd_with_related["trend_direction"] == "growing-aggressive" else "down")
-            for r in fd_with_related["related_players"]
+        "fourth-down FAVORABLE (growing-aggressive) related_players: real player entities, note cites 'Benefits from sustained drives', direction_indicator='up'",
+        fd_favorable is not None and all(
+            r["entity_type"] == "player" and "Benefits from sustained drives" in r["note"] and r["direction_indicator"] == "up"
+            for r in fd_favorable["related_players"]
         ),
     ))
-    if fd_with_related:
+    results.append(check(
+        "fourth-down UNFAVORABLE (growing-conservative) related_players: real player entities, note cites 'Fewer drives to work with', direction_indicator='down' -- the real bug this fix closes",
+        fd_unfavorable is not None and all(
+            r["entity_type"] == "player" and "Fewer drives to work with" in r["note"] and r["direction_indicator"] == "down"
+            for r in fd_unfavorable["related_players"]
+        ),
+    ))
+    if fd_favorable:
         td_by_player = dict(zip(wk_ref["player_id"], wk_ref["td_opportunity"]))
-        tds = [td_by_player.get(r["player_id"]) for r in fd_with_related["related_players"]]
+        tds = [td_by_player.get(r["player_id"]) for r in fd_favorable["related_players"]]
         results.append(check("fourth-down related_players ranked by real td_opportunity, highest first (cross-checked against real weekly data)", tds == sorted(tds, reverse=True)))
 
-    pace_with_related = next((s for s in pace_ref_stories if s["related_players"]), None)
+    pace_favorable = next((s for s in pace_ref_stories if s["trend_direction"] == "growing-faster" and s["related_players"]), None)
+    pace_unfavorable = next((s for s in pace_ref_stories if s["trend_direction"] == "growing-slower" and s["related_players"]), None)
     results.append(check(
-        "pace related_players is TEAM-WIDE, real player entities, note cites 'Benefits from play volume', direction_indicator matches the real story direction (growing-faster -> up) -- a genuinely different real mechanism than fourth-down's td_opportunity ranking",
-        pace_with_related is not None and all(
-            r["entity_type"] == "player" and "Benefits from play volume" in r["note"]
-            and r["direction_indicator"] == ("up" if pace_with_related["trend_direction"] == "growing-faster" else "down")
-            for r in pace_with_related["related_players"]
+        "pace FAVORABLE (growing-faster) related_players: real player entities, note cites 'Benefits from play volume', direction_indicator='up'",
+        pace_favorable is not None and all(
+            r["entity_type"] == "player" and "Benefits from play volume" in r["note"] and r["direction_indicator"] == "up"
+            for r in pace_favorable["related_players"]
         ),
     ))
-    if pace_with_related:
+    results.append(check(
+        "pace UNFAVORABLE (growing-slower) related_players: real player entities, note cites 'Fewer plays to go around', direction_indicator='down' -- the real bug this fix closes",
+        pace_unfavorable is not None and all(
+            r["entity_type"] == "player" and "Fewer plays to go around" in r["note"] and r["direction_indicator"] == "down"
+            for r in pace_unfavorable["related_players"]
+        ),
+    ))
+    if pace_favorable:
         snap_by_player = dict(zip(wk_ref["player_id"], wk_ref["snap_share"]))
-        snaps = [snap_by_player.get(r["player_id"]) for r in pace_with_related["related_players"]]
+        snaps = [snap_by_player.get(r["player_id"]) for r in pace_favorable["related_players"]]
         results.append(check("pace related_players ranked by real snap_share, highest first (cross-checked against real weekly data)", snaps == sorted(snaps, reverse=True)))
 
     for name, stories in all_stories.items():
@@ -518,6 +539,50 @@ if __name__ == "__main__":
         f"a team's own SECOND reconciled week (games_played=2) now correctly lands in 'thin', not below it -- "
         f"the exact off-by-one this fix closes (got maturity={wk2_maturity!r}, window={wk2_window}, delta={wk2_delta})",
         wk2_maturity == "thin" and wk2_window == 1.0 and pd.notna(wk2_delta),
+    ))
+
+    # ============================================================
+    # _related_players_team_wide: the "hide, don't guess" path added
+    # alongside the direction-aware label fix. A direction outside the
+    # caller's own favorable/unfavorable pair should never reach a real
+    # call site (build_pace_stories/build_fourth_down_aggressiveness_
+    # stories both assign direction from a plain two-way ternary right
+    # before calling this), but the function guards it directly rather
+    # than trusting that invariant forever. Purely synthetic -- no real
+    # detector ever produces a third direction value today.
+    # ============================================================
+    unknown_direction_pool = pd.DataFrame({
+        "player_id": ["p1"], "player_name": ["Test Player"], "season": [2099], "week": [1],
+        "team": ["KC"], "posteam": ["KC"], "position_group": ["WR"], "snap_share": [0.8], "td_opportunity": [50.0],
+    })
+    unknown_result = _related_players_team_wide(
+        unknown_direction_pool, 2099, 1, "KC", "td_opportunity",
+        "Benefits from sustained drives", "Fewer drives to work with", "TD opportunity",
+        False, "growing-aggressive", "some-other-direction", CONFIG,
+    )
+    results.append(check(
+        "_related_players_team_wide hides (returns []) rather than guessing a label when direction isn't the caller's known favorable/unfavorable pair",
+        unknown_result == [],
+    ))
+    known_favorable_result = _related_players_team_wide(
+        unknown_direction_pool, 2099, 1, "KC", "td_opportunity",
+        "Benefits from sustained drives", "Fewer drives to work with", "TD opportunity",
+        False, "growing-aggressive", "growing-aggressive", CONFIG,
+    )
+    known_unfavorable_result = _related_players_team_wide(
+        unknown_direction_pool, 2099, 1, "KC", "td_opportunity",
+        "Benefits from sustained drives", "Fewer drives to work with", "TD opportunity",
+        False, "growing-aggressive", "growing-conservative", CONFIG,
+    )
+    results.append(check(
+        "_related_players_team_wide: known favorable direction returns the favorable label and 'up'",
+        len(known_favorable_result) == 1 and known_favorable_result[0]["direction_indicator"] == "up"
+        and "Benefits from sustained drives" in known_favorable_result[0]["note"],
+    ))
+    results.append(check(
+        "_related_players_team_wide: known unfavorable direction returns the unfavorable label and 'down'",
+        len(known_unfavorable_result) == 1 and known_unfavorable_result[0]["direction_indicator"] == "down"
+        and "Fewer drives to work with" in known_unfavorable_result[0]["note"],
     ))
 
     print()

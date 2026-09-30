@@ -579,9 +579,23 @@ def _related_players_redzone(weekly: pd.DataFrame, season, week, team, direction
     ]
 
 
+# The only two real direction pairs the team-wide detectors ever
+# produce (fourth-down: team_tendencies.py:1152, pace: :1236) -- each
+# assigned by a plain ternary right before the call, so a third value
+# never reaches _related_players_team_wide through a real call site.
+# Kept explicit rather than inferred so an actually-unresolvable
+# direction (a future detector, a typo) hides instead of guessing.
+_OPPOSITE_DIRECTION = {
+    "growing-aggressive": "growing-conservative",
+    "growing-conservative": "growing-aggressive",
+    "growing-faster": "growing-slower",
+    "growing-slower": "growing-faster",
+}
+
+
 def _related_players_team_wide(
-    weekly: pd.DataFrame, season, week, team, rank_col: str, benefit_label: str, metric_label: str, metric_is_percent: bool,
-    favorable_direction: str, direction: str, config: dict,
+    weekly: pd.DataFrame, season, week, team, rank_col: str, favorable_label: str, unfavorable_label: str,
+    metric_label: str, metric_is_percent: bool, favorable_direction: str, direction: str, config: dict,
 ) -> list:
     """
     TEAM-WIDE (not directional in WHICH players are selected): used by
@@ -605,13 +619,33 @@ def _related_players_team_wide(
     matching the exact same distinction role_changes.py's own snap_
     share citations already make) — real, confirmed unit difference,
     not a guess.
+
+    REAL FIX (2026-09-29): the label used to be a single caller-supplied
+    `benefit_label`, invariant regardless of direction, while the arrow
+    WAS direction-aware -- a real contradiction (e.g. pace's slowdown
+    stories showing a down arrow next to "Benefits from play volume").
+    `favorable_label`/`unfavorable_label` are now both required, and the
+    SAME boolean (`direction == favorable_direction`) that has always
+    picked the arrow now also picks which string is used -- arrow and
+    label can no longer disagree, structurally, not just by convention.
+
+    A direction this function can't resolve (missing, or not one of the
+    two real values the caller's own favorable_direction pairing
+    expects) hides the whole related_players list rather than guessing
+    which label to show -- an empty list, not a fabricated favorable/
+    unfavorable call.
     """
+    known_directions = {favorable_direction, _OPPOSITE_DIRECTION.get(favorable_direction)}
+    if direction not in known_directions:
+        return []
     pool = weekly[
         (weekly["season"] == season) & (weekly["week"] == week) & (weekly["posteam"] == team)
         & (weekly["position_group"].isin(["RB", "WR", "TE"]))
     ]
     pool = pool.sort_values(rank_col, ascending=False, na_position="last").head(config["related_players_limit"])
-    indicator = "up" if direction == favorable_direction else "down"
+    is_favorable = direction == favorable_direction
+    indicator = "up" if is_favorable else "down"
+    benefit_label = favorable_label if is_favorable else unfavorable_label
     return [
         {
             "player_id": r["player_id"],
@@ -1158,7 +1192,8 @@ def build_fourth_down_aggressiveness_stories(
             confidence=completeness,
             time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
             related_players=_related_players_team_wide(
-                weekly, season, week, row["team"], "td_opportunity", "Benefits from sustained drives", "TD opportunity",
+                weekly, season, week, row["team"], "td_opportunity",
+                "Benefits from sustained drives", "Fewer drives to work with", "TD opportunity",
                 False, "growing-aggressive", direction, config,
             ),
         )
@@ -1241,7 +1276,8 @@ def build_pace_stories(
             confidence=completeness,
             time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
             related_players=_related_players_team_wide(
-                weekly, season, week, row["team"], "snap_share", "Benefits from play volume", "Snap share",
+                weekly, season, week, row["team"], "snap_share",
+                "Benefits from play volume", "Fewer plays to go around", "Snap share",
                 True, "growing-faster", direction, config,
             ),
         )
