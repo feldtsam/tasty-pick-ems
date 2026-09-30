@@ -240,7 +240,7 @@ def generate_family(
 
 def generate_and_write_intelligence(
     season: int, week: int, secret: str, families: list = None, preview_only: bool = False,
-    data_overrides: dict = None,
+    data_overrides: dict = None, market_week: int = None,
 ) -> dict:
     """
     The real, family-agnostic "curate fully, then write" call this whole
@@ -269,7 +269,25 @@ def generate_and_write_intelligence(
     family, for real local/synthetic testing without needing a live
     secret. Omit entirely (or omit a given family's key) for a real fetch.
 
-    Returns {"season", "week", "preview_only", "families": {family:
+    market_week: OPTIONAL, market_intelligence only. When given, market_
+    intelligence reads nfl_price_history at (season, market_week) instead
+    of (season, week), and its story_rows/history_rows are stamped with
+    market_week instead of week -- every other family is completely
+    unaffected (each gets its own generate_family() call with the
+    original `week`, no shared state). Real trace, not assumed: a
+    deviation story (build_deviation_stories(), market_intelligence.py)
+    carries no season/week field of its own at all -- process_family()'s
+    own season/week PARAMETERS are what shape_story_row()/_shape_
+    history_row_for_wire() stamp onto every row, so redirecting
+    generate_family()'s own `week` argument for this one family's call is
+    sufficient; no change needed in market_value.py, market_intelligence.py,
+    or intelligence_write.py. Also confirmed market_intelligence has
+    lifecycle_eligible=False (an existing, unrelated design decision) --
+    read_prior_history() is never called for it regardless of week, so
+    there is no lifecycle read-back path for this to break, for market or
+    any other family (each family's prior_history read is independent).
+
+    Returns {"season", "week", "market_week", "preview_only", "families": {family:
     {stories_generated, story_rows, history_rows, diagnostics (market_
     intelligence only, see _fetch_market_intelligence's own docstring)}},
     "story_rows_written", "history_rows_written", "forwarded", "lovable_status_code",
@@ -286,8 +304,14 @@ def generate_and_write_intelligence(
     all_history_rows = []
     for family in families:
         overrides = data_overrides.get(family, {})
+        # market_week substitution is scoped to exactly this one family's
+        # own generate_family() call -- every other family keeps `week`
+        # unchanged, with its own independent prior_history read (see this
+        # function's own docstring for the real trace confirming this is
+        # the one and only place that needs to branch).
+        family_week = market_week if (family == "market_intelligence" and market_week is not None) else week
         result = generate_family(
-            family, season, week, secret,
+            family, season, family_week, secret,
             stories=overrides.get("stories"), prior_history=overrides.get("prior_history"),
         )
         per_family[family] = {
@@ -307,6 +331,7 @@ def generate_and_write_intelligence(
     return {
         "season": season,
         "week": week,
+        "market_week": market_week,
         "preview_only": preview_only,
         "families": per_family,
         "story_rows_written": len(all_story_rows) if not preview_only else 0,

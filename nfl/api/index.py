@@ -1966,7 +1966,11 @@ def generate_and_write_intelligence_endpoint():
     POST body: {"season": int, "week": int, "families": [str, ...]
     (optional, default every family in intelligence_generate.FAMILIES —
     coaching_trends, defensive_trends, market_intelligence, role_changes),
-    "preview_only": bool (optional)}.
+    "preview_only": bool (optional), "market_week": int (optional --
+    market_intelligence only; must be >= 1 and >= week; every other
+    family always uses `week`, unchanged. See generate_and_write_
+    intelligence()'s own docstring for the real trace confirming this
+    is the only thing it affects.)}.
 
     AUTH: check_pipeline_secret() — same small-fixed-Make.com-trigger
     reasoning as /api/curate-and-write-drafts and /api/write-intelligence.
@@ -2013,21 +2017,43 @@ def generate_and_write_intelligence_endpoint():
 
     preview_only = bool(data.get("preview_only"))
 
+    market_week = None
+    if data.get("market_week") is not None:
+        try:
+            market_week = int(data.get("market_week"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "\"market_week\" must be an integer if provided."}), 400
+        if market_week < 1 or market_week < week:
+            return jsonify({
+                "error": f"\"market_week\" must be >= 1 and >= week (got market_week={market_week}, week={week}).",
+            }), 400
+
     secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
     if not secret:
         return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
 
     try:
-        result = generate_and_write_intelligence(season, week, secret, families=families, preview_only=preview_only)
+        result = generate_and_write_intelligence(
+            season, week, secret, families=families, preview_only=preview_only, market_week=market_week,
+        )
     except Exception as e:
-        print(f"[generate-and-write-intelligence] season={season} week={week} status=error error={e!r}", flush=True)
-        return jsonify({"status": "error", "season": season, "week": week, "error": str(e)}), 500
+        print(f"[generate-and-write-intelligence] season={season} week={week} market_week={market_week} status=error error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "week": week, "market_week": market_week, "error": str(e)}), 500
 
     result = _json_safe(result)
 
+    per_family_counts = " ".join(
+        f"{fam}_stories={fam_data.get('stories_generated')}" for fam, fam_data in result["families"].items()
+    )
+    market_scoring_diag = (
+        (result["families"].get("market_intelligence") or {}).get("diagnostics") or {}
+    ).get("scoring") or {}
+
     print(
-        f"[generate-and-write-intelligence] season={season} week={week} "
-        f"families={list(result['families'])} "
+        f"[generate-and-write-intelligence] season={season} week={week} market_week={market_week} "
+        f"families={list(result['families'])} {per_family_counts} "
+        f"market_fresh_row_count={market_scoring_diag.get('fresh_row_count')} "
+        f"market_input_row_count={market_scoring_diag.get('input_row_count')} "
         f"story_rows_generated={result['story_rows_generated']} history_rows_generated={result['history_rows_generated']} "
         f"story_rows_written={result['story_rows_written']} history_rows_written={result['history_rows_written']} "
         f"forward_success={result['forwarded']} forward_status={result['lovable_status_code']} "
@@ -2043,7 +2069,8 @@ def generate_and_write_intelligence_health_check():
     return jsonify({
         "status": "ok",
         "usage": "POST {\"season\": int, \"week\": int, \"families\": [str, ...] (optional, default all of "
-                 f"{sorted(FAMILIES)}), \"preview_only\": bool (optional)}}. "
+                 f"{sorted(FAMILIES)}), \"preview_only\": bool (optional), \"market_week\": int (optional, "
+                 "market_intelligence only, must be >= 1 and >= week)}}. "
                  "Fetches each family's real input, builds real stories, reads real prior lifecycle state back "
                  "(Phase 2), sanity-checks + applies lifecycle + shapes rows (Phase 2/existing), and writes "
                  "everything in one combined signed call to nfl_intelligence_stories / nfl_intelligence_story_history.",
