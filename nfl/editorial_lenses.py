@@ -62,6 +62,8 @@ validated tables use means a shelf-name typo here fails loudly at
 lookup time in three places at once, not silently in just this one.
 """
 
+import pandas as pd
+
 # {shelf: {"primary": signal_name, "supporting": (signal_name, ...)}}
 # supporting is an ORDERED tuple — first entry is the stronger/more
 # specific backup signal for that shelf, per the approved table. Real
@@ -126,6 +128,12 @@ SIGNAL_TO_CITABLE_FIELDS = {
         "td_opportunity", "proven_heat", "emerging_heat", "recent_td_production_pct", "conversion_rate_pct",
         "touch_share_trend_pct", "snap_share_trend_pct", "touch_volume_trend_pct", "td_opportunity_completeness",
         "i10_touches_trail3", "gl_touches_trail3", "rz_tds_trail3",
+        # Stage 1G: the real sample size (1-3) behind the three trail3
+        # sums above -- see shelves.add_red_zone_trend_windows' own
+        # docstring for the real "climbing" headline this closes. Always
+        # travels with the trail3 fields it describes, same lens, same
+        # scoping -- never cited on its own.
+        "trail3_games_played",
     ),
     "role_momentum": (
         "role_momentum", "role_trend", "external_opportunity", "touch_share_trend_pct_role",
@@ -247,3 +255,59 @@ def citable_fields_for_lens(lens: dict) -> tuple:
             if field not in seen:
                 seen.append(field)
     return tuple(seen)
+
+
+# Same bar shelves.CONFIG["completeness_threshold"]'s per-shelf values
+# already use for real-vs-fallback gating -- ONE shared constant, moved
+# here (was shelves.ROLE_SIGNAL_COMPLETENESS_THRESHOLD) specifically so
+# nfl_tension.find_tension() can share the identical bar rather than
+# inventing a second one. shelves.py imports this name back, unchanged.
+ROLE_SIGNAL_COMPLETENESS_THRESHOLD = 50.0
+
+
+def pct_col_is_real(row, col: str) -> bool:
+    """
+    Reuses fill_neutral's own exact fallback sentinel (50.0) as the
+    real-vs-fallback signal for an already-percentile/composite-scored
+    column with no completeness column of its own to check instead — the
+    SAME convention every completeness column in this pipeline already
+    relies on (see scoring.py's own repeated use of this exact pattern).
+    A coincidental genuine 50.0 reading is indistinguishable from a
+    fallback by this check alone — the same documented simplification
+    scoring.score_role_momentum already accepts for depth_chart_
+    movement_pct's own completeness tracking (see that function's own
+    docstring), not a new one invented here.
+
+    Moved here from shelves.py (was shelves._pct_col_is_real, same body,
+    same name minus the leading underscore) so nfl_tension.py can reuse
+    it too, via is_masked_fallback() below, instead of re-deriving its
+    own real-vs-fallback rule against the same 50.0 sentinel a second
+    time. shelves.py imports this name back under its old private alias
+    so every existing call site there is unchanged.
+    """
+    v = row.get(col)
+    return pd.notna(v) and v != 50.0
+
+
+def is_masked_fallback(row, value_col: str, completeness_col: str = None) -> bool:
+    """
+    True when value_col's real reading isn't trustworthy yet -- the
+    shared rule shelves._composite_candidate's own inline eligibility
+    check already applies, extracted here so nfl_tension.find_tension()
+    can apply the identical rule to role_momentum/td_opportunity/
+    situation (read directly off the full candidate, unscoped by any
+    lens) instead of treating a masked fallback as a real signal, which
+    is what it did before this helper existed.
+
+    Prefers a real completeness column when one is given and present
+    (completeness < ROLE_SIGNAL_COMPLETENESS_THRESHOLD -- the precise
+    gate, same threshold CONFIG's per-shelf completeness_threshold
+    values already use); falls back to the neutral-50-sentinel
+    heuristic on value_col itself only when completeness_col is
+    omitted or genuinely absent from this row -- same two-tier
+    preference shelves._composite_candidate already established.
+    """
+    completeness = row.get(completeness_col) if completeness_col else None
+    if completeness is not None and pd.notna(completeness):
+        return completeness < ROLE_SIGNAL_COMPLETENESS_THRESHOLD
+    return not pct_col_is_real(row, value_col)

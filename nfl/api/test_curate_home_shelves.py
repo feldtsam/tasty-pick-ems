@@ -739,12 +739,27 @@ if __name__ == "__main__":
 
     from nfl_tension import find_tension, GAP_THRESHOLD  # noqa: E402
 
+    # Stage 1, Masked-Value Handling: both fixtures now carry real
+    # completeness columns (100.0 -- genuinely complete, same as every
+    # real production row scoring.py produces) so an exactly-50.0
+    # td_opportunity/role_momentum/situation reads as a real, confirmed
+    # value, not a masked fallback -- find_tension()/_candidate_best_gap
+    # both now exclude a masked reading from internal_avg/gap comparisons
+    # entirely (is_masked_fallback), and a bare dict with no completeness
+    # columns at all would have every one of these three incorrectly
+    # excluded, which isn't what this test is exercising.
     gap_case_divergence = {
-        "market_value_score": 80.0, "td_opportunity": 50.0, "role_momentum": 50.0, "situation": 50.0,
+        "market_value_score": 80.0,
+        "td_opportunity": 50.0, "td_opportunity_completeness": 100.0,
+        "role_momentum": 50.0, "role_momentum_completeness": 100.0,
+        "situation": 50.0, "situation_completeness": 100.0,
         "role_trend": 50.0, "proven_heat": 50.0, "emerging_heat": 50.0,
     }
     gap_case_flat = {
-        "market_value_score": 51.0, "td_opportunity": 50.0, "role_momentum": 49.0, "situation": 50.0,
+        "market_value_score": 51.0,
+        "td_opportunity": 50.0, "td_opportunity_completeness": 100.0,
+        "role_momentum": 49.0, "role_momentum_completeness": 100.0,
+        "situation": 50.0, "situation_completeness": 100.0,
         "role_trend": 50.0, "proven_heat": 50.0, "emerging_heat": 51.0,
     }
     results.append(check(
@@ -882,11 +897,20 @@ if __name__ == "__main__":
         # best_gap = |market_value_score - 50| = 10*i exactly -- a fully
         # deterministic, hand-computable ranking. round-half-up(20*0.65)
         # = 13 kept: i=7..19 (gap 70..190) selected, i=0..6 (gap 0..60) not.
+        # *_completeness=100.0 (Stage 1, Masked-Value Handling): every
+        # real production row has real completeness columns -- without
+        # them, is_masked_fallback() would read an exactly-50.0 td_
+        # opportunity/role_momentum/situation as a masked fallback (not
+        # "flat, but real" as this fixture intends) and drop it out of
+        # internal_present entirely, breaking the hand-computed ranking
+        # this test depends on.
         concurrency_weekly_lookup[f"CONC_{i:02d}"] = pd.Series({
             "player_id": f"CONC_{i:02d}", "player_name": f"Concurrency Test {i}",
             "game_id": "2026_04_TST_OPP", "consensus_price_american": 900,
             "market_value_score": 50.0 + 10.0 * i,
-            "td_opportunity": 50.0, "role_momentum": 50.0, "situation": 50.0,
+            "td_opportunity": 50.0, "td_opportunity_completeness": 100.0,
+            "role_momentum": 50.0, "role_momentum_completeness": 100.0,
+            "situation": 50.0, "situation_completeness": 100.0,
             "role_trend": 50.0, "proven_heat": 50.0, "emerging_heat": 50.0,
         })
     concurrency_config = dict(CONFIG)
