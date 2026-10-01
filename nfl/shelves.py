@@ -71,6 +71,7 @@ import ast
 import pandas as pd
 
 from divisions import DIVISIONS, team_to_division
+from editorial_lenses import ROLE_SIGNAL_COMPLETENESS_THRESHOLD, pct_col_is_real as _pct_col_is_real
 from redzone import add_rolling_windows, aggregate_whole_game_targets
 
 
@@ -128,12 +129,6 @@ SECTION_TITLE_BY_SHELF = {
     "ATTD +700+": "WHY HE'S ON THE RADAR",
 }
 DEFAULT_SECTION_TITLE = "ROLE SIGNALS"
-
-# Same bar CONFIG["completeness_threshold"]'s existing per-shelf values
-# already use for real-vs-fallback gating (rule 1) — one shared constant,
-# not a magic number repeated at every composite-signal call site below.
-ROLE_SIGNAL_COMPLETENESS_THRESHOLD = 50.0
-
 
 def _attd_eligible(weekly: pd.DataFrame, min_odds: int) -> pd.Series:
     """
@@ -329,11 +324,37 @@ def add_red_zone_trend_windows(weekly: pd.DataFrame) -> pd.DataFrame:
     reimplement this prep step. Confirmed a strict no-op for
     build_red_zone_trends' own output (test_shelves.py, unchanged
     pass/fail).
+
+    trail3_games_played (Stage 1G, Masked-Value Handling): how many real
+    games (1, 2, or 3) actually back the three sums above, for the same
+    real reason this was needed at all -- the sums themselves are a
+    real, INCLUSIVE rolling sum with min_periods=1, so a brand-new
+    player's week-1 i10_touches_trail3 is a real, honest number built
+    from exactly one real game, indistinguishable in VALUE from a
+    genuine 3-game trail3 sum. Every other trend concept in this
+    pipeline carries its own games-played mask (scoring._trend_delta's
+    own games_played cumcount; see that function's own docstring); these
+    three display-only sums never did, which is the direct, confirmed
+    mechanism behind a real card headline claiming a red-zone role is
+    "climbing" off two real games (Noah Fant, real Week 1->3 2026) --
+    a technically-true-but-premature claim from the writer, since
+    nothing in source_facts told it these sums were running on a sample
+    this thin. Not a masking GATE the way is_masked_fallback() is
+    (nothing here excludes these sums from source_facts; the no-numbers
+    rule already keeps them out of `story` regardless) -- just an honest
+    sample-size annotation alongside them, so the one sentence added to
+    STATIC_SYSTEM_PROMPT (nfl_shelf_card_prompt.py) has something real to
+    check against. Same (player_id, season) grouping as _trailing_sum,
+    capped at 3 since the window itself is only ever 3 games wide.
     """
     weekly = weekly.copy()
     weekly["i10_touches_trail3"] = _trailing_sum(weekly, "i10_touches", 3)
     weekly["gl_touches_trail3"] = _trailing_sum(weekly, "gl_touches", 3)
     weekly["rz_tds_trail3"] = _trailing_sum(weekly, "rz_tds", 3)
+    weekly = weekly.sort_values(["player_id", "season", "week"])
+    weekly["trail3_games_played"] = (
+        weekly.groupby(["player_id", "season"]).cumcount() + 1
+    ).clip(upper=3)
     return weekly
 
 
@@ -342,22 +363,6 @@ def _round(x):
     through this so a NaN never silently leaks into written JSON as
     "NaN" (invalid) instead of a real null."""
     return round(float(x), 2) if x is not None and pd.notna(x) else None
-
-
-def _pct_col_is_real(row: pd.Series, col: str) -> bool:
-    """
-    Reuses fill_neutral's own exact fallback sentinel (50.0) as the
-    real-vs-fallback signal for an already-percentile/composite-scored
-    column — the SAME convention every completeness column in this
-    pipeline already relies on (see scoring.py's own repeated use of
-    this exact pattern). A coincidental genuine 50.0 reading is
-    indistinguishable from a fallback by this check alone — the same
-    documented simplification scoring.score_role_momentum already
-    accepts for depth_chart_movement_pct's own completeness tracking
-    (see that function's own docstring), not a new one invented here.
-    """
-    v = row.get(col)
-    return pd.notna(v) and v != 50.0
 
 
 def _trend_candidate(row: pd.Series, key: str, label: str, raw_col: str, window: int, gate_col: str, unit: str, scale: float = 1.0) -> dict:
@@ -401,6 +406,12 @@ def _trend_candidate(row: pd.Series, key: str, label: str, raw_col: str, window:
     return {
         "key": key, "label": label, "value": _round(value), "delta": _round(delta), "unit": unit,
         "_eligible": real_delta, "_magnitude": abs(delta) if delta is not None else 0.0,
+        # A TREND candidate has exactly one way to be ineligible: not
+        # enough real games yet (see this function's own docstring) --
+        # ineligible and masked are the same fact here, never two
+        # different reasons (see _select_role_signals' own "still
+        # forming" placeholder, Stage 1).
+        "_masked": not real_delta,
     }
 
 
@@ -430,6 +441,12 @@ def _level_candidate(row: pd.Series, key: str, label: str, raw_col: str, window:
     return {
         "key": key, "label": label, "value": _round(value), "delta": _round(delta), "unit": unit,
         "_eligible": value is not None, "_magnitude": (value if value is not None else 0.0),
+        # Ineligible here means "no real prior game yet" (raw_col_last{window}
+        # is NaN, per add_rolling_windows' own shift(1)) -- the same "not
+        # enough games" fact a TREND candidate's own mask represents, just
+        # without a percentile gate column to read it from. Never a
+        # genuinely-absent-forever case for this candidate type.
+        "_masked": value is None,
     }
 
 
@@ -465,6 +482,11 @@ def _composite_candidate(row: pd.Series, key: str, label: str, value_col: str, c
     return {
         "key": key, "label": label, "value": _round(value), "delta": None, "unit": "score",
         "_eligible": eligible, "_magnitude": abs(value - 50.0) if pd.notna(value) else 0.0,
+        # Same reasoning as _trend_candidate: a COMPOSITE candidate's only
+        # way to be ineligible IS the completeness/fallback gate -- not
+        # enough real data yet, never a separate "genuinely absent"
+        # reason for this candidate type.
+        "_masked": not eligible,
     }
 
 
@@ -492,10 +514,32 @@ def _select_role_signals(candidates: list) -> list:
     hit a round number (rule 3). A pool with 0 or 1 eligible candidates
     returns exactly that many, not a fabricated minimum — see this
     task's own report for whether that was observed against real data.
+
+    STILL-FORMING PLACEHOLDER (Stage 1, Masked-Value Handling): when
+    ZERO candidates are eligible AND at least one is `_masked` (not
+    enough real data/games yet, per each builder's own `_masked` flag —
+    see each one's docstring for exactly what counts), returns a single
+    placeholder entry instead of []. Distinguishes this from a
+    genuinely-absent-forever case (e.g. every candidate in the pool is a
+    real, confirmed reading that just isn't noteworthy this week, like
+    external_opportunity's own real-zero case) — THAT still returns [],
+    unchanged, since there is nothing "still forming" about it.
+
+    unit is "" (an empty string), not None: the real nfl-content-drafts-
+    write.ts Zod schema requires role_signals[].unit to be a non-null
+    string (RoleSignalSchema: z.string(), no .nullable()) — confirmed
+    directly against that route before choosing this, not assumed from
+    the (more permissive) NflRoleSignal TS type alone, which allows
+    unit: string | null but is not what actually validates a real write.
     """
     eligible = [(i, c) for i, c in enumerate(candidates) if c["_eligible"]]
     eligible.sort(key=lambda ic: (-ic[1]["_magnitude"], ic[0]))
     chosen = eligible[:3]
+    if not chosen and any(c["_masked"] for c in candidates):
+        return [{
+            "label": "Trend still forming: not enough games yet",
+            "value": None, "delta": None, "unit": "",
+        }]
     return [{"label": c["label"], "value": c["value"], "delta": c["delta"], "unit": c["unit"]} for _, c in chosen]
 
 
@@ -534,6 +578,11 @@ def _target_share_level_candidate(row: pd.Series) -> dict:
     return {
         "key": "target_share", "label": "Target Share", "value": _round(scaled), "delta": None, "unit": "%",
         "_eligible": scaled is not None, "_magnitude": (scaled if scaled is not None else 0.0),
+        # Ineligible only when pbp wasn't threaded through at build time
+        # (see this function's own docstring) -- a build-time wiring
+        # fact about THIS call, not "not enough games yet" for this
+        # player. Never counted toward the "still forming" placeholder.
+        "_masked": False,
     }
 
 
@@ -550,6 +599,8 @@ def _target_share_trend_candidate(row: pd.Series) -> dict:
     return {
         "key": "target_share_trend", "label": "Target Share Trend", "value": _round(scaled), "delta": None, "unit": "pp",
         "_eligible": scaled is not None, "_magnitude": abs(scaled) if scaled is not None else 0.0,
+        # Same reasoning as _target_share_level_candidate above.
+        "_masked": False,
     }
 
 
@@ -602,6 +653,13 @@ def _evidence_quality_convergence_candidate(row: pd.Series) -> dict:
     return {
         "key": "evidence_quality", "label": "Signal Convergence", "value": _round(value), "delta": None, "unit": "score",
         "_eligible": eligible, "_magnitude": abs(value - 50.0) if pd.notna(value) else 0.0,
+        # Masked ONLY for the data-completeness half of eligibility
+        # (missing value, or completeness below the bar) -- NOT for
+        # `not converged` alone. A real, complete evidence_quality
+        # reading whose pillars genuinely don't converge this week is a
+        # real, permanent-for-this-week "no" per this candidate's own
+        # design (see docstring), never "not enough games yet".
+        "_masked": pd.isna(value) or not completeness_ok,
     }
 
 
@@ -645,6 +703,12 @@ def _market_value_snapshot_candidate(row: pd.Series) -> dict:
     return {
         "key": "market_value_score", "label": "Market Value (Snapshot)", "value": _round(value), "delta": None, "unit": "score",
         "_eligible": eligible, "_magnitude": abs(value - 50.0) if pd.notna(value) else 0.0,
+        # Ineligible here means no real book odds existed for this
+        # player this week (market_value_completeness is a same-week
+        # binary, not games-played -- see scoring.score_market_value's
+        # own docstring) -- a real "not enough real data yet" case for
+        # THIS week, same treatment as every other completeness gate.
+        "_masked": not eligible,
     }
 
 
@@ -678,6 +742,12 @@ def _external_opportunity_candidate(row: pd.Series) -> dict:
     return {
         "key": "external_opportunity", "label": "Backup Opportunity", "value": _round(value), "delta": None, "unit": "score",
         "_eligible": pd.notna(value) and value > 0, "_magnitude": (value if pd.notna(value) else 0.0),
+        # A real, confirmed 0 (this function's own docstring: "a real
+        # reading, no vacated opportunity") is NOT masked -- it's a
+        # genuine, permanent-for-this-week absence of a noteworthy
+        # signal, never "not enough data yet". Only a missing/NaN value
+        # (the read itself never happened) counts as masked.
+        "_masked": pd.isna(value),
     }
 
 

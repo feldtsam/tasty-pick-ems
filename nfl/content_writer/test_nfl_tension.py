@@ -44,8 +44,8 @@ if __name__ == "__main__":
     r = []
 
     # --- Every real type is a valid, real value ---
-    r.append(check("TENSION_TYPES has exactly the 5 real NFL-detectable types",
-                    set(TENSION_TYPES) == {"divergence", "contradiction", "change", "convergence", "uncertainty"}))
+    r.append(check("TENSION_TYPES has exactly the 6 real NFL-detectable types (Stage 1 added 'forming')",
+                    set(TENSION_TYPES) == {"divergence", "contradiction", "change", "convergence", "uncertainty", "forming"}))
 
     # --- The spec's own worked example, re-derived exactly ---
     golden = _row(market_value_score=72.9, td_opportunity=57.1, td_opportunity_completeness=30.0,
@@ -295,6 +295,81 @@ if __name__ == "__main__":
         "legacy fields are byte-for-byte identical across no_interrogation/not_selected/failed -- "
         "the pre-existing analysis tier is genuinely unaffected by which of these three applies",
         all(no_ir[k] == not_selected_ir[k] == failed_ir[k] for k in LEGACY_KEYS),
+    ))
+
+    # ============================================================
+    # MASKED-VALUE HANDLING (Stage 1) -- role_momentum=50.0 with low/no
+    # completeness must not be treated as a real signal.
+    # ============================================================
+
+    # Noah Fant's real Week 3 2026 row: role_momentum=50.0, completeness=0.0
+    # (zero games' worth of real role data). Before this fix, this
+    # classified as "convergence" with the editorial_claim "Every real
+    # signal here is sitting in the same unremarkable middle range" --
+    # confirmed directly against this exact row during Stage 1's own
+    # investigation, not assumed.
+    fant_week3 = _row(
+        market_value_score=None,
+        td_opportunity=56.1, td_opportunity_completeness=70.0,
+        role_momentum=50.0, role_momentum_completeness=0.0,
+        situation=59.5, situation_completeness=100.0,
+        role_trend=None, proven_heat=None, emerging_heat=None,
+        evidence_quality=71.6,
+    )
+    out = find_tension(fant_week3)
+    r.append(check(
+        "Fant's real Week 3 row (role_momentum masked, completeness=0.0) -> type=forming, not convergence",
+        out["tension_type"] == "forming",
+    ))
+    r.append(check(
+        "Fant: editorial_claim describes still-forming evidence, not a flat/settled role",
+        "hasn't played enough of a role yet" in out["editorial_claim"],
+    ))
+    r.append(check(
+        "Fant: information_value is LOW for forming (lower than uncertainty's MEDIUM)",
+        out["information_value"] == "LOW",
+    ))
+
+    # A real, unmasked, genuine contradiction (Rachaad White, week 10 2025)
+    # must classify identically to before this fix -- the masking check
+    # must never touch a real signal.
+    rachaad = _row(
+        market_value_score=None,
+        td_opportunity=92.8, td_opportunity_completeness=100.0,
+        role_momentum=100.0, role_momentum_completeness=80.0,
+        situation=29.3, situation_completeness=100.0,
+        role_trend=82.2, proven_heat=None, emerging_heat=None,
+        evidence_quality=52.3,
+    )
+    out_rachaad = find_tension(rachaad)
+    r.append(check(
+        "Rachaad White real week-10-2025 row (unmasked, genuine gap) -> type=contradiction, unaffected by the masking fix",
+        out_rachaad["tension_type"] == "contradiction",
+    ))
+
+    # A masked role_momentum must never win a false contradiction against
+    # a real td_opportunity/situation value merely because 50.0 happens
+    # to sit far from them.
+    masked_but_would_have_contradicted = _row(
+        market_value_score=None,
+        td_opportunity=95.0, td_opportunity_completeness=100.0,
+        role_momentum=50.0, role_momentum_completeness=0.0,
+        situation=90.0, situation_completeness=100.0,
+        role_trend=None, proven_heat=None, emerging_heat=None,
+        evidence_quality=80.0,
+    )
+    out_masked_gap = find_tension(masked_but_would_have_contradicted)
+    r.append(check(
+        "a masked role_momentum=50.0 never manufactures a false contradiction against real td_opportunity=95/situation=90 -- type=forming",
+        out_masked_gap["tension_type"] == "forming",
+    ))
+
+    # The Golden worked example's own role_momentum=50.0 is a REAL reading
+    # (its completeness default is 100.0, unmodified by that test's own
+    # overrides) -- must still blend into internal_avg exactly as before.
+    r.append(check(
+        "Golden worked example's role_momentum=50.0 has real completeness (100.0, untouched) -- still type=divergence, unaffected",
+        find_tension(golden)["tension_type"] == "divergence",
     ))
 
     print()

@@ -133,6 +133,36 @@ convergence, uncertainty. Each sport/family is explicitly allowed to
 define which tension types it's capable of detecting (per the spec's own
 "Where this lives" section) — this is that decision for NFL, not an
 oversight.
+
+MASKED-VALUE HANDLING (Stage 1, added after the fact): td_opportunity,
+role_momentum, and situation used to be read straight off the full
+candidate via _real() alone, which only excludes None/NaN — a masked
+fallback reading (the neutral-50.0 sentinel every percentile/composite
+pillar in this pipeline uses for "not enough real data yet", same
+convention shelves.py's own role-signal candidates already gate on) was
+treated as a genuine signal. Confirmed against a real case: Noah Fant's
+real Week 3 2026 row (role_momentum=50.0, role_momentum_completeness=0.0
+-- zero games' worth of real role data) classified as "convergence" with
+the editorial_claim "Every real signal here is sitting in the same
+unremarkable middle range" -- a masked fallback blended into internal_avg
+and read back out as a real, settled reading. Fixed by reusing editorial_
+lenses.is_masked_fallback() (the same rule shelves._composite_candidate
+already applies) to exclude a masked internal signal from internal_avg
+and every gap comparison entirely, and by adding a sixth type, "forming",
+returned when role_momentum specifically was masked and nothing else
+cleared a real gap among whatever internal signals remain real -- told to
+the writer as still-forming evidence, never as a flat or settled role.
+Scoped to role_momentum only (not td_opportunity/situation) because
+role_momentum is the one internal signal whose completeness column is
+itself mostly games-played-gated early in a season (confirmed: 68% of
+real 2026 weeks-1-3 candidates would reclassify once masked values are
+excluded, including 65 real cases that were a manufactured "contradiction"
+purely from a masked role_momentum against a real td_opportunity/
+situation value -- a confident, specific false claim, not just a mushy
+one). td_opportunity/situation are still excluded from internal_avg when
+masked (same is_masked_fallback check, same reasoning), they just don't
+get their own dedicated "forming" branch -- role_momentum's own genuinely
+common early-season gap is the one this type exists to name honestly.
 """
 from __future__ import annotations
 
@@ -140,9 +170,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from editorial_lenses import signal_phrase  # noqa: E402
+from editorial_lenses import is_masked_fallback, signal_phrase  # noqa: E402
 
-TENSION_TYPES = ("divergence", "contradiction", "change", "convergence", "uncertainty")
+TENSION_TYPES = ("divergence", "contradiction", "change", "convergence", "uncertainty", "forming")
 
 # information_value is a pure function of tension_type ALONE, by design
 # -- independent of evidence_strength (a thin-evidence divergence is
@@ -154,6 +184,10 @@ TENSION_TYPES = ("divergence", "contradiction", "change", "convergence", "uncert
 _INFORMATION_VALUE_BY_TYPE = {
     "divergence": "HIGH", "contradiction": "HIGH", "mismatch": "HIGH",
     "change": "MEDIUM", "convergence": "MEDIUM", "uncertainty": "MEDIUM",
+    # LOW, not MEDIUM: "forming" isn't a real, if weak, movement the way
+    # uncertainty is -- it's the honest absence of enough games to read
+    # anything at all. Lower than every other real type on purpose.
+    "forming": "LOW",
 }
 
 # reader_question_type is a pure function of story_mode ALONE. Only two
@@ -385,10 +419,29 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
             reader_question_type=reader_question_type, allowed_claim_strength=allowed_claim_strength,
         )
 
+    def _real_unmasked(value_col, completeness_col=None):
+        """_real(), but also None when is_masked_fallback() says this
+        reading isn't trustworthy yet -- see module docstring's
+        MASKED-VALUE HANDLING section. Applied to the three internal
+        signals only (td_opportunity/role_momentum/situation); market_
+        value_score, role_trend, proven_heat, and emerging_heat are
+        untouched -- market_value_score's own completeness is a same-
+        week binary tied to real-odds presence, not games-played, and
+        the other three have no real masking precedent established
+        anywhere else in this pipeline to reuse rather than invent."""
+        value = _real(candidate.get(value_col))
+        if value is None or is_masked_fallback(candidate, value_col, completeness_col):
+            return None
+        return value
+
     mv = _real(candidate.get("market_value_score"))
-    td = _real(candidate.get("td_opportunity"))
-    rm = _real(candidate.get("role_momentum"))
-    sit = _real(candidate.get("situation"))
+    td = _real_unmasked("td_opportunity", "td_opportunity_completeness")
+    role_momentum_was_masked = (
+        _real(candidate.get("role_momentum")) is not None
+        and is_masked_fallback(candidate, "role_momentum", "role_momentum_completeness")
+    )
+    rm = _real_unmasked("role_momentum", "role_momentum_completeness")
+    sit = _real_unmasked("situation", "situation_completeness")
     rm_trend = _real(candidate.get("role_trend"))
     proven = _real(candidate.get("proven_heat"))
     emerging = _real(candidate.get("emerging_heat"))
@@ -473,6 +526,23 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
                     story_angle="The recent trend is the more current read here -- the season-long number is already stale.",
                     strength=strength, uncertainty=uncertainty,
                 )
+
+    # --- 3.5. Forming: role_momentum specifically masked, nothing else real cleared a gap ---
+    # Checked AFTER divergence/contradiction/change (a real, earned gap
+    # among whatever DID clear the masking filter always wins first --
+    # see module docstring's MASKED-VALUE HANDLING section) and BEFORE
+    # the uncertainty/convergence fallback, so a masked role read never
+    # gets folded into either of those as if it were a real quiet signal.
+    if role_momentum_was_masked:
+        return _build(
+            "forming",
+            primary_signal="role_momentum has not cleared enough games yet to read as a real signal",
+            counter_signal=None,
+            editorial_claim="This player hasn't played enough of a role yet this season to say whether it's trending up, down, or flat.",
+            story_angle="Still-forming evidence -- worth another look once there's a real trend to read, not a claim yet.",
+            strength="thin",
+            uncertainty=uncertainty or "The role read here is still forming -- not enough games yet to call it flat or trending.",
+        )
 
     # --- 4/5. Nothing cleared GAP/CHANGE_THRESHOLD: uncertainty or convergence ---
     present_all = {**internal_present, **({"market_value": mv} if mv is not None else {})}

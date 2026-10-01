@@ -292,7 +292,27 @@ def run_pipeline(
     weekly = add_defensive_matchup_context(weekly, allowed_weekly)
     # Must run after add_snap_shares — snap_share has to exist as a column
     # before it can be rolled into snap_share_last1/last3/last5/season_avg.
-    weekly = add_rolling_windows(weekly)
+    #
+    # gl_touches/i10_touches added (Stage 1, Masked-Value Handling,
+    # dead-column fix): shelves.red_zone_trends_role_signals and shelves.
+    # attd_700_plus_role_signals have always called _level_candidate on
+    # these two raw_cols expecting real gl_touches_last3/season_avg and
+    # i10_touches_last3/season_avg columns -- those never existed on this
+    # offense-side table (only the DEFENSE-allowed table above rolled them,
+    # via its own explicit metrics= list), so both candidates were dead
+    # code, always value=None/_eligible=False, on every real row, every
+    # week. This is the one call site producing `weekly` for both the
+    # batch backfill and the live weekly job (see this function's own
+    # docstring), so the fix lands in both places at once. No new masking
+    # logic needed for these two: _level_candidate's existing `value is
+    # not None` eligibility already IS the correct games-played gate for
+    # a raw-count column (min_periods=1 + shift(1) above means _last3 is
+    # real NaN, not a 50.0-style sentinel, for a player with no real prior
+    # game -- the same accepted small-sample trade-off _level_candidate's
+    # own docstring already documents for this exact pair of metrics).
+    weekly = add_rolling_windows(
+        weekly, metrics=["rz_touches", "rz_touch_share", "rz_tds", "snap_share", "gl_touches", "i10_touches"],
+    )
 
     weekly = score_td_opportunity(weekly)
     weekly = score_role_momentum(weekly)

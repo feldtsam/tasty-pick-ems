@@ -119,6 +119,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 
 from divisions import DIVISIONS
+from editorial_lenses import is_masked_fallback
 from normalize import build_reference_scale, fill_neutral, percentile_lookup
 from redzone import add_kickoff_utc
 from shelves import CONFIG as SHELVES_CONFIG
@@ -1163,13 +1164,36 @@ def _candidate_best_gap(full_row) -> float:
     a candidate with too little data to compute any gap ranks lowest
     within its band, it never crashes or silently opts itself out of
     grouping.
+
+    MASKED-VALUE HANDLING (Stage 1, added after the fact): td_
+    opportunity/role_momentum/situation are excluded from internal_
+    present (and therefore from every gap this function computes) when
+    masked -- the identical editorial_lenses.is_masked_fallback() rule
+    find_tension() itself now applies, imported directly from editorial_
+    lenses.py rather than from nfl_tension.py, so this still doesn't
+    import from or modify that module (this function's own "must not"
+    constraint, unchanged -- editorial_lenses.py is the shared primitives
+    module, not the Tension/Eyebrow Test logic itself). Required to keep
+    this reimplementation's own stated contract ("validated against
+    find_tension()'s real behavior") true: before this, a masked role_
+    momentum=50.0 inflated this function's gap the same way it inflated
+    find_tension()'s own internal_avg, which would have kept steering
+    Pass 3's limited Interrogation capacity toward early-season
+    candidates on a manufactured gap, not a real one.
     """
     if full_row is None:
         return 0.0
     mv = _real(full_row.get("market_value_score"))
-    td = _real(full_row.get("td_opportunity"))
-    rm = _real(full_row.get("role_momentum"))
-    sit = _real(full_row.get("situation"))
+
+    def _real_unmasked(value_col, completeness_col):
+        value = _real(full_row.get(value_col))
+        if value is None or is_masked_fallback(full_row, value_col, completeness_col):
+            return None
+        return value
+
+    td = _real_unmasked("td_opportunity", "td_opportunity_completeness")
+    rm = _real_unmasked("role_momentum", "role_momentum_completeness")
+    sit = _real_unmasked("situation", "situation_completeness")
     rm_trend = _real(full_row.get("role_trend"))
     proven = _real(full_row.get("proven_heat"))
     emerging = _real(full_row.get("emerging_heat"))

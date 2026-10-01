@@ -99,13 +99,24 @@ def _tension_block(tension: dict) -> str:
             "confidently in `story`, without hedging language that isn't earned."
         )
 
+    forming_instruction = ""
+    if tension["tension_type"] == "forming":
+        forming_instruction = (
+            "\nThis card's tension type is \"forming\": state the sample-size limit ONCE, briefly, in your own "
+            "words -- then stop repeating it. Spend the rest of `story` on the one concrete, real thing that IS "
+            "there in the source facts (a specific usage fact or event this player's own data actually shows), "
+            "not on restating in different words that the sample is thin. If source_facts has nothing concrete "
+            "beyond the sample-size limit itself, say that plainly and stop -- don't pad the gap with more ways "
+            "of saying \"not enough data yet\"."
+        )
+
     return f"""
 FIND THE TENSION — the analysis stage already did this work; your job is to translate it, not re-derive it or second-guess it:
   Type: {tension['tension_type']}
   Primary signal: {tension['primary_signal']}{counter_line}
   Editorial claim: {tension['editorial_claim']}
   Suggested angle: {tension['story_angle']}
-{confidence_instruction}"""
+{confidence_instruction}{forming_instruction}"""
 
 
 BANNED_PHRASES = ", ".join(GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG)
@@ -132,6 +143,7 @@ HARD RULES -- apply regardless of shelf or confidence band:
 - Write 2-3 why_reasons. Each one's `pillar` field must be EXACTLY one of these five literal strings, spelled exactly as written here -- never a shortened or paraphrased version (not "opportunity", not "role", not "market"): "td_opportunity", "role_momentum", "matchup", "environment", "market_value". Tag each reason with whichever of those five its own real evidence actually comes from, and give it a star rating (1-5) that genuinely reflects that pillar's real score -- not an independent creative choice. At least one why_reason must be tagged with this card's own primary lens's pillar (matchup or environment if the lens is "situation").
 - why_reasons is the EVIDENCE layer -- the lowest-personality text on the card (about 2 on a 0-10 scale), and it stays there no matter how dramatic the shelf is or how high the confidence band. Receipts, not verdicts: each reason states a number, a comparison, a window, a sample size, or a source, in plain language. The reader opened this to verify the pick, not to be entertained -- the title already made the argument, so a reason just shows the math under it. State the fact first, plainly; only then consider whether the material supports any personality at all, and it usually will not. No joke is required or expected here. At most one dry aside across all of the reasons, only if it genuinely fits, and never load-bearing -- the point has to stand completely without it. Never soften, hedge, or joke around a thin sample size or a low pillar score -- report it straight.
 - `story` is the STORY tier -- it should sound like a sportswriter who already read the analysis, not like the analysis talking. HARD RULE: story must NEVER contain a sentence that could be produced by reading a Story Object field aloud in prose -- e.g. never "Market value scored 72.9" or "TD opportunity grades out at 57.1, though that figure is built on only 30% completeness." If a human editor could regenerate a line of `story` just by narrating the JSON you were given, it fails. Do not put ANY raw number, percentage, or score in `story` -- not even a rounded one. Numbers are evidence; they belong in why_reasons, never here. Write 1-2 short paragraphs that translate the tension above into something a reader actually wants to read.
+- If source_fact_keys includes trail3_games_played, check it before describing i10_touches_trail3/gl_touches_trail3/rz_tds_trail3 as a trend or as "climbing", "rising", "building", or similar -- a change backed by fewer than 3 real games is early or thin, not a trend yet; call it that instead, not a settled direction.
 - Do not manufacture drama that isn't in the tension you were given. If the tension type is "convergence" and the editorial_claim is modest (signals quietly agreeing, or a routine market position), `story` should be modest too -- a quiet, honest read is a real story, not a failure to find one. Never invent a contradiction, urgency, or stakes that aren't genuinely there.
 - This is football, not baseball -- do not use baseball terminology, imagery, or comparisons anywhere in the card."""
 
