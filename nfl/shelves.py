@@ -71,7 +71,11 @@ import ast
 import pandas as pd
 
 from divisions import DIVISIONS, team_to_division
-from editorial_lenses import ROLE_SIGNAL_COMPLETENESS_THRESHOLD, pct_col_is_real as _pct_col_is_real
+from editorial_lenses import (
+    ROLE_SIGNAL_COMPLETENESS_THRESHOLD,
+    is_masked_fallback,
+    pct_col_is_real as _pct_col_is_real,
+)
 from redzone import add_rolling_windows, aggregate_whole_game_targets
 
 
@@ -908,6 +912,24 @@ def red_zone_story(row: pd.Series) -> dict:
             f"{int(gl_trail)} goal-line touches, {int(i10_trail)} inside-the-10 touches, and "
             f"{int(rz_tds_trail)} red-zone touchdowns over his last three games"
         )
+    elif is_masked_fallback(row, "touch_share_trend_pct") or is_masked_fallback(row, "snap_share_trend_pct"):
+        # MASKED-HEAT TEMPLATE FIX (2026-10-01): touch_share_trend_pct/
+        # snap_share_trend_pct are percentile-normalized TREND reads that
+        # fall back to a neutral 50.0 sentinel when there isn't enough
+        # games-played history yet (see scoring._trend_delta) -- the
+        # EXACT same sentinel a real, non-trending 50th-percentile read
+        # would produce. Printing it as "trending Nth percentile" below
+        # is indistinguishable from a genuine measured trend; caught
+        # directly on real data (Pat Freiermuth wk1, Blake Whiteheart
+        # wk2: both fields exactly 50.0, both confirmed masked). Either
+        # field masked is enough to drop the whole sentence -- citing
+        # one real number next to one fabricated one is worse than an
+        # honest fallback for both.
+        headline = "The early role hasn't shown enough yet to call a direction."
+        why_this_hits = (
+            "Touch-share and snap-share trend data isn't reliable yet -- "
+            "too early in the season to read this role's direction."
+        )
     else:
         headline = "The opportunity is climbing before the touchdowns have arrived."
         why_this_hits = (
@@ -952,13 +974,30 @@ def position_story(row: pd.Series, position: str) -> dict:
     content the "evidence" field used to hold — renamed only.
     """
     if row["role_trend"] >= row["external_opportunity"]:
-        headline = f"This {position} role may already be changing hands."
         snap_last1 = row.get("snap_share_last1")
         snap_season = row.get("snap_share_season_avg")
         snap_really_up = pd.notna(snap_last1) and pd.notna(snap_season) and snap_last1 > snap_season
         if snap_really_up:
+            headline = f"This {position} role may already be changing hands."
             why_this_hits = f"Snap share {snap_season*100:.0f}% (season) → {snap_last1*100:.0f}% (most recent)"
+        elif is_masked_fallback(row, "touch_share_trend_pct_role") or is_masked_fallback(row, "snap_share_trend_pct_role"):
+            # MASKED-HEAT TEMPLATE FIX (2026-10-01): same fix as red_zone_
+            # story above, same reason -- touch_share_trend_pct_role/
+            # snap_share_trend_pct_role fall back to a neutral 50.0
+            # sentinel on too little games-played history, indistinguishable
+            # from a genuine 50th-percentile trend reading by value alone.
+            # The headline changes too, not just why_this_hits: "may
+            # already be changing hands" is just as much an unsupported
+            # directional claim as Red Zone Trends' "climbing" headline
+            # once neither the raw snap-share number NOR the trend
+            # percentiles backing it are real.
+            headline = f"This {position} role hasn't shown enough yet to call a direction."
+            why_this_hits = (
+                "Touch-share and snap-share trend data isn't reliable yet -- "
+                "too early in the season to read this role's direction."
+            )
         else:
+            headline = f"This {position} role may already be changing hands."
             why_this_hits = (
                 f"Touch-share trend {row['touch_share_trend_pct_role']:.0f}th percentile, "
                 f"snap-share trend {row['snap_share_trend_pct_role']:.0f}th percentile, "

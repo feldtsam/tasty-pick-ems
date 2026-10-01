@@ -163,6 +163,19 @@ one). td_opportunity/situation are still excluded from internal_avg when
 masked (same is_masked_fallback check, same reasoning), they just don't
 get their own dedicated "forming" branch -- role_momentum's own genuinely
 common early-season gap is the one this type exists to name honestly.
+
+MASKED-HEAT FIX (2026-10-01, follow-up): role_trend, proven_heat, and
+emerging_heat were deliberately left out of the gating above -- see
+_real_unmasked's own docstring for why that reasoning didn't hold up
+once checked against real data. All three now go through the identical
+is_masked_fallback() gate; a masked one of any of the three is simply
+excluded from the "change" comparison (step 3 below) the same way a
+masked td_opportunity/situation is already excluded from "divergence"/
+"contradiction" -- no new tension type needed, a masked role_trend/
+proven/emerging candidate with nothing else real falls through to the
+existing "forming" branch (role_momentum_was_masked) or the uncertainty/
+convergence fallback, exactly as a masked role_momentum-only candidate
+already did.
 """
 from __future__ import annotations
 
@@ -422,13 +435,29 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
     def _real_unmasked(value_col, completeness_col=None):
         """_real(), but also None when is_masked_fallback() says this
         reading isn't trustworthy yet -- see module docstring's
-        MASKED-VALUE HANDLING section. Applied to the three internal
-        signals only (td_opportunity/role_momentum/situation); market_
-        value_score, role_trend, proven_heat, and emerging_heat are
-        untouched -- market_value_score's own completeness is a same-
-        week binary tied to real-odds presence, not games-played, and
-        the other three have no real masking precedent established
-        anywhere else in this pipeline to reuse rather than invent."""
+        MASKED-VALUE HANDLING section. market_value_score is the one
+        real exception left: its own completeness is a same-week binary
+        tied to real-odds presence, not games-played, so it has no
+        games-played masking concept to apply here at all.
+
+        MASKED-HEAT FIX (2026-10-01): role_trend/proven_heat/emerging_
+        heat used to be read via bare _real() too, on the stated reasoning
+        that they had "no real masking precedent established anywhere
+        else in this pipeline to reuse rather than invent" -- that
+        reasoning no longer holds: this is the same is_masked_fallback()
+        bare-value heuristic already used for td_opportunity/role_
+        momentum/situation above (none of the three have a dedicated
+        completeness column either, same as those three didn't always).
+        Confirmed as a real, reproducible bug on real data before this
+        fix: emerging_heat is itself a weighted blend of three percentile
+        trend inputs (scoring.score_td_opportunity) that can ALL be
+        masked-to-50.0 at once -- indistinguishable by value alone from a
+        genuine 50th-percentile emerging-heat reading -- and a real,
+        low proven_heat compared against that masked 50.0 cleared
+        CHANGE_THRESHOLD on multiple real 2026 cards (Denzel Boston wk3,
+        proven_heat=6.2 vs a masked emerging_heat=50.0, among others),
+        producing a "change" tension's false "a real recent move" claim
+        off a sentinel, not a signal."""
         value = _real(candidate.get(value_col))
         if value is None or is_masked_fallback(candidate, value_col, completeness_col):
             return None
@@ -442,9 +471,9 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
     )
     rm = _real_unmasked("role_momentum", "role_momentum_completeness")
     sit = _real_unmasked("situation", "situation_completeness")
-    rm_trend = _real(candidate.get("role_trend"))
-    proven = _real(candidate.get("proven_heat"))
-    emerging = _real(candidate.get("emerging_heat"))
+    rm_trend = _real_unmasked("role_trend")
+    proven = _real_unmasked("proven_heat")
+    emerging = _real_unmasked("emerging_heat")
 
     strength = _evidence_strength(candidate)
     # force_thin (only ever True for a SURVIVES candidate whose own

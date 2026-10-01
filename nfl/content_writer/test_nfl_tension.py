@@ -372,6 +372,66 @@ if __name__ == "__main__":
         find_tension(golden)["tension_type"] == "divergence",
     ))
 
+    # ============================================================
+    # MASKED-HEAT FIX (2026-10-01): role_trend/proven_heat/emerging_heat
+    # now go through the same is_masked_fallback gate td_opportunity/
+    # role_momentum/situation already got in Stage 1 -- see nfl_tension.
+    # _real_unmasked's own docstring for the real bug this closes.
+    # ============================================================
+
+    # Real 2026 Week 3 row, byte-for-byte the confirmed production case:
+    # Denzel Boston -- proven_heat=6.2 (real), emerging_heat=50.0 (masked
+    # -- itself a blend of three percentile trend inputs that were all
+    # masked-to-50), role_momentum=50.0/completeness=0.0 (masked). Before
+    # this fix: type=change, falsely citing emerging_heat's 50.0 sentinel
+    # as "a real recent move" against the real, low proven_heat.
+    boston_row = _row(
+        market_value_score=None,
+        td_opportunity=None, role_momentum=50.0, role_momentum_completeness=0.0,
+        situation=None, role_trend=50.0, proven_heat=6.2, emerging_heat=50.0,
+        evidence_quality=50.0,
+    )
+    out_boston = find_tension(boston_row)
+    r.append(check(
+        "Denzel Boston real wk3 row: masked emerging_heat=50.0 vs real proven_heat=6.2 no longer manufactures 'change' -- falls to forming",
+        out_boston["tension_type"] == "forming",
+    ))
+
+    # Four more real 2026 wk3 rows, same confirmed pattern (proven_heat
+    # real and low, emerging_heat masked at exactly 50.0) -- McMillan,
+    # Etienne, Harris, Pollard. Every one must land on "forming" too, not
+    # a one-off that only happens to work for Boston's own numbers.
+    for name, proven in [("Tetairoa McMillan", 1.8), ("Travis Etienne", 3.6), ("Najee Harris", 4.4), ("Tony Pollard", 2.7)]:
+        row = _row(
+            market_value_score=None, td_opportunity=None, role_momentum=50.0, role_momentum_completeness=0.0,
+            situation=None, role_trend=50.0, proven_heat=proven, emerging_heat=50.0, evidence_quality=50.0,
+        )
+        out = find_tension(row)
+        r.append(check(
+            f"{name} real wk3 row (proven_heat={proven}, masked emerging_heat=50.0): no false 'change' -- type=forming",
+            out["tension_type"] == "forming",
+        ))
+
+    # Regression: a REAL (genuinely unmasked) proven_heat/emerging_heat
+    # gap must still classify as "change" -- the fix gates on masking,
+    # not on using these fields at all.
+    real_change_row = _row(
+        market_value_score=50.0, td_opportunity=50.0, role_momentum=48.0, situation=50.0,
+        role_trend=50.0, proven_heat=12.0, emerging_heat=78.0,
+    )
+    r.append(check(
+        "a REAL (unmasked) proven_heat vs emerging_heat gap still classifies as 'change', unaffected by the masking fix",
+        find_tension(real_change_row)["tension_type"] == "change",
+    ))
+
+    # Regression: the EXISTING change_row test (role_trend=80.0, a real,
+    # far-from-50.0 value) must still resolve to "change" -- confirms the
+    # fix gates on MASKING, not on blanket-excluding role_trend.
+    r.append(check(
+        "existing change_row fixture (role_trend=80.0, genuinely real) still resolves to type=change",
+        find_tension(change_row)["tension_type"] == "change",
+    ))
+
     print()
     p = sum(r)
     print(f"{p}/{len(r)} checks passed")

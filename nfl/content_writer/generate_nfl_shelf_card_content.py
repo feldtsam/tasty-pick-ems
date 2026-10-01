@@ -78,13 +78,23 @@ WRITER_TYPE = "shelf_card"
 
 # Fields this removes from source_facts when masked -- see strip_masked_
 # role_fields's own docstring. role_momentum pairs with its own real
-# completeness column; the four trend-gate columns have none of their
-# own (same bare neutral-50 check shelves._trend_candidate's own gate_col
-# argument already uses) -- is_masked_fallback() with no completeness_col
-# falls back to exactly that check for each of them.
+# completeness column; the remaining trend-gate columns have none of
+# their own (same bare neutral-50 check shelves._trend_candidate's own
+# gate_col argument already uses) -- is_masked_fallback() with no
+# completeness_col falls back to exactly that check for each of them.
+#
+# proven_heat/emerging_heat/role_trend added (MASKED-HEAT FIX,
+# 2026-10-01): the same bare-50.0 masking already applied to the five
+# original fields, extended to these three -- see nfl_tension.py's own
+# _real_unmasked docstring for the real, reproducible bug this closes
+# in the tension layer; this is the matching writer-citation half of
+# that same fix, so a masked emerging_heat/proven_heat/role_trend can't
+# be cited directly in a why_reason even if tension itself is now
+# gated correctly.
 _ROLE_TREND_GATE_FIELDS = (
     "touch_share_trend_pct", "snap_share_trend_pct", "touch_volume_trend_pct",
     "touch_share_trend_pct_role", "snap_share_trend_pct_role",
+    "proven_heat", "emerging_heat", "role_trend",
 )
 
 
