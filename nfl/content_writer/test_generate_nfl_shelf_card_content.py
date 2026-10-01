@@ -171,6 +171,33 @@ if __name__ == "__main__":
         stripped_real.get("role_momentum") == 73.2 and stripped_real.get("touch_share_trend_pct") == 62.0,
     ))
 
+    # --- MASKED-HEAT FIX (2026-10-01): proven_heat/emerging_heat/
+    # role_trend added to the same gate -- real Denzel Boston wk3 shape
+    # (proven_heat real and low, emerging_heat/role_trend masked at 50.0).
+    boston_masked_facts = {
+        "player_name": "Denzel Boston", "posteam": "SEA", "position_group": "WR",
+        "proven_heat": 6.2, "emerging_heat": 50.0, "role_trend": 50.0,
+    }
+    boston_stripped = strip_masked_role_fields(boston_masked_facts, dict(boston_masked_facts))
+    r.append(check(
+        "strip_masked_role_fields removes emerging_heat and role_trend when masked at 50.0 (real Boston wk3 shape)",
+        "emerging_heat" not in boston_stripped and "role_trend" not in boston_stripped,
+    ))
+    r.append(check(
+        "strip_masked_role_fields leaves the REAL, low proven_heat alone -- masking is per-field, not a blanket strip",
+        boston_stripped.get("proven_heat") == 6.2,
+    ))
+
+    # A real (non-50.0) proven_heat/emerging_heat/role_trend trio must
+    # never be stripped -- same regression shape as the role_momentum
+    # check above, now for the three newly-gated fields.
+    real_heat_facts = {"proven_heat": 61.0, "emerging_heat": 74.0, "role_trend": 68.0}
+    real_heat_stripped = strip_masked_role_fields(real_heat_facts, dict(real_heat_facts))
+    r.append(check(
+        "strip_masked_role_fields leaves REAL (unmasked) proven_heat/emerging_heat/role_trend untouched",
+        real_heat_stripped == real_heat_facts,
+    ))
+
     # Prompt carries the masked-role-fields instruction, no-numbers rule still untouched.
     masked_role_prompt_lens = {"primary": "td_opportunity", "supporting": ("role_momentum",)}
     masked_role_tension = find_tension(dict(fant_masked_facts), masked_role_prompt_lens)
