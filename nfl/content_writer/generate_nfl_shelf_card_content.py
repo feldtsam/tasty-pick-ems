@@ -72,9 +72,48 @@ from nfl_shelf_card_writer_schema import NFL_SHELF_CARD_TOOL_SCHEMA, validate_sc
 from nfl_tension import find_tension  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from editorial_lenses import citable_fields_for_lens, resolve_editorial_lens  # noqa: E402
+from editorial_lenses import citable_fields_for_lens, is_masked_fallback, resolve_editorial_lens  # noqa: E402
 
 WRITER_TYPE = "shelf_card"
+
+# Fields this removes from source_facts when masked -- see strip_masked_
+# role_fields's own docstring. role_momentum pairs with its own real
+# completeness column; the four trend-gate columns have none of their
+# own (same bare neutral-50 check shelves._trend_candidate's own gate_col
+# argument already uses) -- is_masked_fallback() with no completeness_col
+# falls back to exactly that check for each of them.
+_ROLE_TREND_GATE_FIELDS = (
+    "touch_share_trend_pct", "snap_share_trend_pct", "touch_volume_trend_pct",
+    "touch_share_trend_pct_role", "snap_share_trend_pct_role",
+)
+
+
+def strip_masked_role_fields(source_facts: dict, candidate: dict) -> dict:
+    """
+    Removes role_momentum (and its trend-gate inputs) from source_facts
+    when they're masked, so the writer cannot cite a fallback 50.0/50%
+    reading as if it were a real, settled role signal -- the exact real
+    card this closes: Fant's real Week 4 row (role_momentum masked,
+    completeness 0.0) produced a why_reason citing touch_share_trend_pct/
+    snap_share_trend_pct/touch_volume_trend_pct sitting at their shared
+    50.0 fallback as if they were real evidence of a "flat" role.
+
+    Only ever REMOVES keys already present (never adds, never changes a
+    value) -- a key the lens never scoped in for this card in the first
+    place is simply absent either way, same as before this function
+    existed. Does NOT special-case trail3_games_played -- this branch
+    deliberately does not add it to role_momentum's own citable group
+    (see the games-played hotfix in this same branch, which removes it
+    from every pillar's citable fields entirely), so there is nothing
+    role_momentum-specific to preserve here.
+    """
+    stripped = dict(source_facts)
+    if "role_momentum" in stripped and is_masked_fallback(candidate, "role_momentum", "role_momentum_completeness"):
+        del stripped["role_momentum"]
+    for key in _ROLE_TREND_GATE_FIELDS:
+        if key in stripped and is_masked_fallback(candidate, key):
+            del stripped[key]
+    return stripped
 
 
 class CandidateGatedOut(Exception):
@@ -121,27 +160,46 @@ def opening_phrase(title: str) -> str:
     return " ".join(words[:6])
 
 
-def call_claude_for_nfl_shelf_card(api_key: str, system_prompt, user_prompt: str) -> dict:
+# NFL-only override of the shared MAX_TOKENS default (card_writer_common.
+# py, 1024 -- unchanged, still what MLB and every other non-NFL-shelf-card
+# writer gets). 2048, not the shared default, per the real 25%-truncation
+# incident this constant's own history already documents (see NFL_SHELF_
+# CARD_MAX_TOKENS's own callers). Kept as a named module constant (not
+# just a literal default) so a future real-data re-tune has exactly one
+# place to change, and so this value is independently inspectable in a
+# test without re-deriving it from the function's own default argument.
+#
+# NOT raised further as part of the games-played hotfix investigation,
+# despite that investigation originally suspecting max_tokens truncation
+# as the cause of a real malformed-why_reasons failure mode: real usage
+# data from 60 real calls (30 pre-hotfix, 30 post) showed NONE came
+# within 150 tokens of this cap (max observed output_tokens: 1904 of
+# 2048 pre-hotfix, 1795 post) and zero calls raised call_claude_with_
+# tool's own max_tokens-truncation exception -- the malformed output is
+# a real, separate model-formatting issue, not a token-budget one, so
+# raising this cap is not expected to fix it (confirmed empirically, not
+# just reasoned about -- see this task's own report for the real
+# before/after rate at a higher cap).
+NFL_SHELF_CARD_MAX_TOKENS = 2048
+
+
+def call_claude_for_nfl_shelf_card(api_key: str, system_prompt, user_prompt: str, max_tokens: int = NFL_SHELF_CARD_MAX_TOKENS) -> dict:
     """Thin, named wrapper around the shared call_claude_with_tool() --
     same shape as every other writer's own entry point in this pipeline.
 
-    max_tokens=2048, not the shared module default (1024): a real
-    production run showed 8 of 32 calls (25%) truncated at 1024 for this
-    schema (title + a 1-2 paragraph story + 2-4 grounded why_reasons) --
-    not an occasional near-miss, a regular occurrence. 2048 is an interim,
-    evidence-informed value (real headroom above a rate that high, same
-    "headroom, not a bare revert" reasoning already applied when
-    shelf_card_llm_top_n was raised from 6 to 8) pending the real
-    output_tokens distribution the new usage logging in
-    call_claude_with_tool will produce on the next real run -- not a
-    permanent number picked without data. Overriding here, not raising
-    the shared MAX_TOKENS default, matches this module's own stated
-    convention (call_claude_with_tool's docstring: "real callers with a
-    larger structured shape can override it") and leaves other writer
-    types (Tasty Six) that haven't shown this failure untouched.
+    max_tokens defaults to NFL_SHELF_CARD_MAX_TOKENS (2048), not the
+    shared module default (1024): a real production run showed 8 of 32
+    calls (25%) truncated at 1024 for this schema (title + a 1-2
+    paragraph story + 2-4 grounded why_reasons) -- not an occasional
+    near-miss, a regular occurrence. Now a real parameter (was a bare
+    literal in the call below) specifically so this ONE writer can be
+    tuned independently -- card_writer_common.MAX_TOKENS (the shared
+    default every OTHER writer, including MLB's, still gets) is
+    completely untouched by this change; nothing here alters the shared
+    function's own default argument.
     """
     return call_claude_with_tool(
-        api_key, system_prompt, user_prompt, NFL_SHELF_CARD_TOOL_SCHEMA, max_tokens=2048,
+        api_key, system_prompt, user_prompt, NFL_SHELF_CARD_TOOL_SCHEMA, max_tokens=max_tokens,
     )
 
 
@@ -238,7 +296,7 @@ def generate_nfl_shelf_card_draft(
     row: dict, shelf: str, confidence_band: str, anthropic_api_key: str,
     debug_inject_violation_instruction: str = None,
     avoid_headlines: list[str] | None = None, avoid_opening_phrases: list[str] | None = None,
-    interrogation_result: dict | None = None,
+    interrogation_result: dict | None = None, max_tokens: int = NFL_SHELF_CARD_MAX_TOKENS,
 ) -> dict:
     """
     The full pipeline for one real regular (non-Tasty-Six) NFL shelf
@@ -332,6 +390,7 @@ def generate_nfl_shelf_card_draft(
     lens = resolve_editorial_lens(shelf, candidate)
     scoped_fields = citable_fields_for_lens(lens)
     source_facts = flatten_source_facts(candidate, scoped_fields)
+    source_facts = strip_masked_role_fields(source_facts, candidate)
     tension = find_tension(candidate, lens, interrogation_result)
     if tension is None:
         raise CandidateGatedOut(
@@ -354,6 +413,7 @@ def generate_nfl_shelf_card_draft(
 
     output = call_claude_for_nfl_shelf_card(
         anthropic_api_key, system_blocks(STATIC_SYSTEM_PROMPT, dynamic_system_prompt), user_prompt,
+        max_tokens=max_tokens,
     )
     issues = run_all_validators(output, source_facts)
     title = output.get("title")

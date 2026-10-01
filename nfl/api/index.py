@@ -1416,7 +1416,16 @@ def curate_and_write_drafts_endpoint():
     content_ready_rows = [r for r in all_rows if r.get("title")]
     rows_without_content = len(all_rows) - len(content_ready_rows)
 
-    rows_to_write = [] if preview_only else content_ready_rows
+    # Underscore-prefixed keys (currently just _tension_type/_tension_claim
+    # -- see curate_home_shelves.shape_content_draft_rows' own plan dict)
+    # are PREVIEW-ONLY INSPECTION fields, never meant to reach a real
+    # write. Stripped into fresh dicts here -- not a mutation of
+    # content_ready_rows/all_rows, which `curated_rows` below still
+    # points at directly -- so they can never leak into a real Lovable
+    # POST regardless of whether this call is preview_only or not.
+    rows_to_write = [] if preview_only else [
+        {k: v for k, v in r.items() if not k.startswith("_")} for r in content_ready_rows
+    ]
     if not preview_only:
         if player_ids_to_write:
             rows_to_write = [r for r in rows_to_write if r["player_id"] in set(player_ids_to_write)]

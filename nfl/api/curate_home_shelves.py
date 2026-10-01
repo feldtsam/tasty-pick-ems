@@ -1773,6 +1773,7 @@ def _run_writer_llm_for_plan(
         f"shelf={r['home_shelf']!r}",
         flush=True,
     )
+    _tension = draft.get("_tension") or {}
     return {
         "outcome": "success",
         "title": draft.get("title"),
@@ -1783,6 +1784,12 @@ def _run_writer_llm_for_plan(
         "validation_passed": bool(draft.get("validation_passed", True)),
         "validation_issues": draft.get("validation_issues") or [],
         "opening_phrase": draft.get("opening_phrase"),
+        # PREVIEW-ONLY INSPECTION fields -- see shape_content_draft_rows'
+        # own plan dict and api/index.py's row-stripping before any real
+        # write. Real for a regular (non-Tasty-Six) row; a Tasty Six draft
+        # has no Tension Object yet, so _tension is {} and both stay None.
+        "tension_type": _tension.get("tension_type"),
+        "tension_claim": _tension.get("editorial_claim"),
     }
 
 
@@ -2196,6 +2203,13 @@ def shape_content_draft_rows(
             "why_reasons": [], "model_name": None, "validation_passed": True, "validation_issues": [],
             "gated_out": False, "needs_llm": False, "llm_kind": None, "llm_band": None,
             "fallback_title": None, "fallback_why_reasons": [],
+            # PREVIEW-ONLY INSPECTION (never written -- see api/index.py's
+            # own row-stripping before any real write): the real Tension
+            # Object's tension_type/editorial_claim, when this row got a
+            # real LLM call. None for a gated-out row, a deterministic-
+            # template fallback (no Tension Object computed at all), or
+            # a Tasty Six row (same writer, no tension concept yet).
+            "tension_type": None, "tension_claim": None,
         }
 
         if is_tasty_six:
@@ -2365,6 +2379,8 @@ def shape_content_draft_rows(
                     plan["editorial_sentence"] = result.get("editorial_sentence")
                 else:
                     plan["story_text"] = result.get("story_text")
+                    plan["tension_type"] = result.get("tension_type")
+                    plan["tension_claim"] = result.get("tension_claim")
                     if result.get("opening_phrase"):
                         generated_opening_phrases.append(result["opening_phrase"])
             llm_calls_completed += 1
@@ -2417,6 +2433,14 @@ def shape_content_draft_rows(
             "validation_passed": plan["validation_passed"],
             "validation_issues": plan["validation_issues"],
             "review_status": "pending_review",
+            # PREVIEW-ONLY INSPECTION, never persisted -- api/index.py
+            # strips every underscore-prefixed key before any real write
+            # (preview_only or not), so these two only ever reach a real
+            # response under preview_only=true. See this function's own
+            # plan-dict defaults and _run_writer_llm_for_plan's return
+            # dict for where these come from.
+            "_tension_type": plan["tension_type"],
+            "_tension_claim": plan["tension_claim"],
             # Already computed upstream (scoring.score_evidence_quality) --
             # pulled straight through, same full_row.get(...) pattern as
             # tpe_score above. None (not False) when full_row is missing or

@@ -127,13 +127,27 @@ SIGNAL_TO_CITABLE_FIELDS = {
     "td_opportunity": (
         "td_opportunity", "proven_heat", "emerging_heat", "recent_td_production_pct", "conversion_rate_pct",
         "touch_share_trend_pct", "snap_share_trend_pct", "touch_volume_trend_pct", "td_opportunity_completeness",
-        "i10_touches_trail3", "gl_touches_trail3", "rz_tds_trail3",
-        # Stage 1G: the real sample size (1-3) behind the three trail3
-        # sums above -- see shelves.add_red_zone_trend_windows' own
-        # docstring for the real "climbing" headline this closes. Always
-        # travels with the trail3 fields it describes, same lens, same
-        # scoping -- never cited on its own.
-        "trail3_games_played",
+        # GAMES-PLAYED HOTFIX (2026-09-30): i10_touches_trail3/gl_touches_
+        # trail3/rz_tds_trail3/trail3_games_played deliberately REMOVED
+        # from here. Confirmed from source: the real live write path
+        # (api/index.py -> stub_week_snapshot() -> curate_home_shelves.
+        # shape_content_draft_rows -> shelves.add_red_zone_trend_windows)
+        # runs that windowing function on a ONE-ROW-PER-PLAYER snapshot,
+        # not the full multi-week frame it needs -- every live card's
+        # trail3_games_played has always been 1, and the three trail3
+        # sums have always just equaled that single week's own raw
+        # value, never a real trailing window. Writing from these fields
+        # produced real cards that said "two games" when the real
+        # history was more, or stated a specific game count at all when
+        # the pipeline had no honest way to know it. Pulled from the
+        # writer's own citable fields until the real upstream fix (move
+        # the windowing into build_stub_week() on the full frame, fix
+        # the games-played formula, remove the redundant downstream
+        # call) lands -- see this task's own investigation for the full
+        # plan. shelves.py's own computation of these columns is
+        # UNTOUCHED (red_zone_story's deterministic template and role_
+        # signals still read them) -- this removal is scoped to the LLM
+        # writer's source_facts only.
     ),
     "role_momentum": (
         "role_momentum", "role_trend", "external_opportunity", "touch_share_trend_pct_role",
