@@ -203,6 +203,100 @@ def call_claude_for_nfl_shelf_card(api_key: str, system_prompt, user_prompt: str
     )
 
 
+def _is_well_formed_card(candidate_output: dict) -> bool:
+    """A block is usable iff it clears the same validate_schema_shape()
+    check a published card has to clear anyway -- not a separate,
+    looser notion of "looks okay". A degenerate placeholder block
+    (empty why_reasons, "placeholder" title/story) fails this the same
+    as the raw-XML-fragment malformation does; neither should ever be
+    treated as recovered."""
+    return len(validate_schema_shape(candidate_output)) == 0
+
+
+def call_claude_for_nfl_shelf_card_with_retry(
+    api_key: str, system_prompt, user_prompt: str, max_tokens: int = NFL_SHELF_CARD_MAX_TOKENS,
+) -> tuple[dict, dict]:
+    """
+    NFL-only recovery wrapper around call_claude_with_tool for the real
+    malformed-why_reasons bug (2026-09-30 investigation): why_reasons
+    sometimes comes back as a raw string fragment resembling old-style
+    XML tool-call syntax (e.g. '\\n<parameter name="pillar">role_momentum')
+    instead of the structured array the schema requires -- confirmed via
+    real API responses to be a model tool-formatting glitch, NOT
+    max_tokens truncation (no call ever hit stop_reason="max_tokens" at
+    either 2048 or 3072; see this task's own report).
+
+    Also confirmed from those same raw responses: with tool_choice
+    forced, the API sometimes still emits MORE THAN ONE tool_use block
+    for the same tool in a single response, and a LATER block is
+    sometimes the complete, well-formed card the first one failed to
+    be. Checking every block in the response this call already paid for
+    costs nothing extra, so that's tried FIRST; only if none of them are
+    well-formed does this fall back to one additional real call (capped
+    at exactly one retry -- never a retry loop). If even the retry comes
+    back with no well-formed block, this returns the original response's
+    first block unchanged, same as calling call_claude_for_nfl_shelf_card
+    directly -- run_all_validators' existing schema_shape check and the
+    flagged-review fallback are what catch that case downstream; this
+    function never fabricates a result to make a problem disappear.
+
+    card_writer_common.call_claude_with_tool's own DEFAULT behavior --
+    every other caller, including every MLB writer -- is completely
+    unaffected; this only uses its new return_all_tool_use_blocks=True
+    opt-in, which that function's own default (False) never engages.
+
+    Returns (card_output, retry_stats). retry_stats = {
+      "blocks_in_first_response": int,
+      "recovered_from_same_response": bool,  # found a later block in the SAME response that validates -- zero extra cost
+      "retry_fired": bool,                   # none of the first response's blocks validated -- one extra real call was made
+      "retry_recovered": bool,               # the retry's own response had a validating block
+    } -- kept on the draft under the underscore-prefixed `_retry_stats` key (stripped before any real write, same convention as `_tension`/`_editorial_lens`) so real production frequency and cost are visible without re-deriving them from logs.
+    """
+    blocks = call_claude_with_tool(
+        api_key, system_prompt, user_prompt, NFL_SHELF_CARD_TOOL_SCHEMA,
+        max_tokens=max_tokens, return_all_tool_use_blocks=True,
+    )
+    stats = {
+        "blocks_in_first_response": len(blocks),
+        "recovered_from_same_response": False,
+        "retry_fired": False,
+        "retry_recovered": False,
+    }
+    for i, block in enumerate(blocks):
+        if _is_well_formed_card(block):
+            if i > 0:
+                stats["recovered_from_same_response"] = True
+                print(
+                    f"[nfl_shelf_card_retry] recovered a well-formed block at index={i} of "
+                    f"{len(blocks)} in the SAME response -- no extra API call",
+                    flush=True,
+                )
+            return block, stats
+
+    stats["retry_fired"] = True
+    print(
+        f"[nfl_shelf_card_retry] none of {len(blocks)} block(s) in the first response were "
+        f"well-formed -- making the one capped retry call",
+        flush=True,
+    )
+    retry_blocks = call_claude_with_tool(
+        api_key, system_prompt, user_prompt, NFL_SHELF_CARD_TOOL_SCHEMA,
+        max_tokens=max_tokens, return_all_tool_use_blocks=True,
+    )
+    for block in retry_blocks:
+        if _is_well_formed_card(block):
+            stats["retry_recovered"] = True
+            print("[nfl_shelf_card_retry] retry recovered a well-formed card", flush=True)
+            return block, stats
+
+    print(
+        "[nfl_shelf_card_retry] retry did NOT recover a well-formed card -- "
+        "returning the original first block unchanged (flagged review handles it downstream)",
+        flush=True,
+    )
+    return blocks[0], stats
+
+
 # Skip source-fact values this small -- a jersey number, a single-digit
 # star rating, an ordinary small count. A raw field value THIS size can
 # appear in ordinary English by pure coincidence ("he's their No. 2
@@ -341,6 +435,7 @@ def generate_nfl_shelf_card_draft(
         "validation_issues": [...], "review_status": "pending_review"|"flagged",
         "opening_phrase": str, "_editorial_lens": {...}, "_tension": {...},
         "_interrogation_result": {...} | None, "_raw_model_output": {...},
+        "_retry_stats": {...},
       }
     `story` (Editorial Voice Spec, "Find the Tension" addition) is the
     real Story-tier text — see nfl_shelf_card_writer_schema.py's own
@@ -411,7 +506,7 @@ def generate_nfl_shelf_card_draft(
     if debug_inject_violation_instruction:
         dynamic_system_prompt += f"\n\nFOR THIS GENERATION ONLY, additionally: {debug_inject_violation_instruction}"
 
-    output = call_claude_for_nfl_shelf_card(
+    output, retry_stats = call_claude_for_nfl_shelf_card_with_retry(
         anthropic_api_key, system_blocks(STATIC_SYSTEM_PROMPT, dynamic_system_prompt), user_prompt,
         max_tokens=max_tokens,
     )
@@ -435,6 +530,7 @@ def generate_nfl_shelf_card_draft(
         "_tension": tension,
         "_interrogation_result": interrogation_result,
         "_raw_model_output": output,
+        "_retry_stats": retry_stats,
     }
 
 
