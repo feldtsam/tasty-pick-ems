@@ -366,6 +366,154 @@ if __name__ == "__main__":
         "max_tokens" not in tasty_six_source,
     ))
 
+    # --- NFL-only malformed-why_reasons retry/recovery
+    # (call_claude_for_nfl_shelf_card_with_retry) -- the real tool-
+    # formatting glitch confirmed 2026-09-30: the API sometimes emits
+    # more than one tool_use block for the same forced tool in one
+    # response, and a later block is sometimes the real, well-formed
+    # card the first one failed to be. Every scenario below mocks
+    # gnscc.call_claude_with_tool directly (never a real network call)
+    # and counts how many times it's invoked, to prove the "free first,
+    # capped-at-one-retry second" shape, not just the happy path.
+    MALFORMED_BLOCK = {
+        "title": "A Title", "story": "x" * 80,
+        "why_reasons": '\n<parameter name="pillar">role_momentum',
+    }
+    PLACEHOLDER_BLOCK = {"title": "placeholder", "story": "placeholder", "why_reasons": []}
+    WELL_FORMED_BLOCK = {
+        "title": "A Real Title", "story": "y" * 80,
+        "why_reasons": [
+            {"pillar": "role_momentum", "stars": 2, "reason_text": "real reason one", "source_fact_keys": ["a"]},
+            {"pillar": "matchup", "stars": 4, "reason_text": "real reason two", "source_fact_keys": ["b"]},
+        ],
+    }
+    r.append(check(
+        "_is_well_formed_card: the real malformed XML-fragment shape fails",
+        gnscc._is_well_formed_card(MALFORMED_BLOCK) is False,
+    ))
+    r.append(check(
+        "_is_well_formed_card: a degenerate placeholder block (empty why_reasons, too-short story) also fails",
+        gnscc._is_well_formed_card(PLACEHOLDER_BLOCK) is False,
+    ))
+    r.append(check(
+        "_is_well_formed_card: a real, complete card passes",
+        gnscc._is_well_formed_card(WELL_FORMED_BLOCK) is True,
+    ))
+
+    def _with_mocked_call(responses):
+        """responses: a list of return values, one per call_claude_with_tool
+        invocation (each itself a list of block `input` dicts, matching
+        return_all_tool_use_blocks=True). Returns (call_count_box, restore_fn)."""
+        orig = gnscc.call_claude_with_tool
+        box = {"n": 0, "kwargs": []}
+
+        def fake(api_key, system_prompt, user_prompt, tool_schema, max_tokens=SHARED_MAX_TOKENS, return_all_tool_use_blocks=False):
+            box["kwargs"].append({"max_tokens": max_tokens, "return_all_tool_use_blocks": return_all_tool_use_blocks})
+            out = responses[box["n"]]
+            box["n"] += 1
+            return out
+
+        gnscc.call_claude_with_tool = fake
+        return box, lambda: setattr(gnscc, "call_claude_with_tool", orig)
+
+    # Scenario 1: single well-formed block, first try -- zero extra cost, no retry.
+    box, restore = _with_mocked_call([[WELL_FORMED_BLOCK]])
+    try:
+        out, stats = gnscc.call_claude_for_nfl_shelf_card_with_retry("key", "sys", "user")
+    finally:
+        restore()
+    r.append(check(
+        "retry wrapper, single well-formed block: returns it, makes exactly one call, no retry",
+        out == WELL_FORMED_BLOCK and box["n"] == 1
+        and stats == {"blocks_in_first_response": 1, "recovered_from_same_response": False, "retry_fired": False, "retry_recovered": False},
+    ))
+
+    # Scenario 2: first block malformed, second block in the SAME response
+    # is well-formed -- recovered for free, still exactly one call.
+    box, restore = _with_mocked_call([[MALFORMED_BLOCK, WELL_FORMED_BLOCK]])
+    try:
+        out, stats = gnscc.call_claude_for_nfl_shelf_card_with_retry("key", "sys", "user")
+    finally:
+        restore()
+    r.append(check(
+        "retry wrapper, malformed-then-well-formed in ONE response: recovers the second block, zero extra API calls",
+        out == WELL_FORMED_BLOCK and box["n"] == 1
+        and stats["recovered_from_same_response"] is True and stats["retry_fired"] is False,
+    ))
+
+    # Scenario 3: no well-formed block anywhere in the first response
+    # (malformed + a degenerate placeholder) -- the one capped retry
+    # fires, and the retry's own response has a well-formed block.
+    box, restore = _with_mocked_call([[MALFORMED_BLOCK, PLACEHOLDER_BLOCK], [WELL_FORMED_BLOCK]])
+    try:
+        out, stats = gnscc.call_claude_for_nfl_shelf_card_with_retry("key", "sys", "user")
+    finally:
+        restore()
+    r.append(check(
+        "retry wrapper, nothing usable in the first response: fires exactly one retry and recovers from it",
+        out == WELL_FORMED_BLOCK and box["n"] == 2
+        and stats["retry_fired"] is True and stats["retry_recovered"] is True,
+    ))
+
+    # Scenario 4: the retry ALSO comes back with nothing usable -- capped
+    # at exactly one retry (never a second), falls back to the ORIGINAL
+    # first response's first block, unchanged, for the existing
+    # schema_shape/flagged-review path downstream to catch.
+    box, restore = _with_mocked_call([[MALFORMED_BLOCK], [PLACEHOLDER_BLOCK]])
+    try:
+        out, stats = gnscc.call_claude_for_nfl_shelf_card_with_retry("key", "sys", "user")
+    finally:
+        restore()
+    r.append(check(
+        "retry wrapper, retry also fails: makes exactly two calls total (capped, no loop), returns original first block",
+        out == MALFORMED_BLOCK and box["n"] == 2
+        and stats["retry_fired"] is True and stats["retry_recovered"] is False,
+    ))
+
+    # Every call the retry wrapper makes asks for ALL blocks, not just
+    # the first -- the whole mechanism depends on this.
+    r.append(check(
+        "every call the retry wrapper makes passes return_all_tool_use_blocks=True",
+        all(kw["return_all_tool_use_blocks"] is True for kw in box["kwargs"]),
+    ))
+
+    # --- card_writer_common.call_claude_with_tool itself: the new
+    # return_all_tool_use_blocks parameter is opt-in and MLB-safe --
+    # with it OMITTED (every existing caller, including every MLB
+    # writer), a multi-block response still yields the single first
+    # block's input, exactly as before this change, not a list.
+    import card_writer_common as cwc
+
+    real_requests_post = cwc.requests.post
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "stop_reason": "tool_use",
+                "usage": {},
+                "content": [
+                    {"type": "tool_use", "name": "emit_nfl_shelf_card", "input": MALFORMED_BLOCK},
+                    {"type": "tool_use", "name": "emit_nfl_shelf_card", "input": WELL_FORMED_BLOCK},
+                ],
+            }
+
+    cwc.requests.post = lambda *a, **k: _FakeResp()
+    try:
+        default_result = cwc.call_claude_with_tool("key", "sys", "user", {"name": "emit_nfl_shelf_card"})
+        all_result = cwc.call_claude_with_tool("key", "sys", "user", {"name": "emit_nfl_shelf_card"}, return_all_tool_use_blocks=True)
+    finally:
+        cwc.requests.post = real_requests_post
+    r.append(check(
+        "call_claude_with_tool default (omitted param, every existing MLB/NFL caller): still returns ONLY the first block's input, unchanged behavior",
+        default_result == MALFORMED_BLOCK,
+    ))
+    r.append(check(
+        "call_claude_with_tool(return_all_tool_use_blocks=True): returns every matching block's input, in order",
+        all_result == [MALFORMED_BLOCK, WELL_FORMED_BLOCK],
+    ))
+
     print()
     p = sum(r)
     print(f"{p}/{len(r)} checks passed")

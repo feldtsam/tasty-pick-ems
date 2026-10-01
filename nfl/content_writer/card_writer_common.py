@@ -928,6 +928,7 @@ def system_blocks(static: str, dynamic: str = "") -> list:
 
 def call_claude_with_tool(
     api_key: str, system_prompt, user_prompt: str, tool_schema: dict, max_tokens: int = MAX_TOKENS,
+    return_all_tool_use_blocks: bool = False,
 ) -> dict:
     """
     One real Claude API call, forced tool-use against the given
@@ -938,6 +939,19 @@ def call_claude_with_tool(
     a real bug found and fixed 2026-08-04). Raises ValueError if the model
     response somehow has no tool_use block for the requested tool —
     shouldn't happen with tool_choice forced, but not assumed.
+
+    return_all_tool_use_blocks (default False, every existing caller
+    unaffected): with tool_choice forced, the API is still free to emit
+    MORE THAN ONE tool_use block for the same tool in one response — a
+    real, confirmed behavior (NFL shelf-card malformed-why_reasons
+    investigation, 2026-09-30), not a hypothetical. Default behavior
+    (False) is exactly what this function always did: return the FIRST
+    matching block's `input` alone, silently ignoring any others. Pass
+    True to get the full list of every matching block's `input` instead,
+    in response order — lets a caller that knows a later block is
+    sometimes the real, well-formed one recover it without a second API
+    call. Raises the same ValueError as before if there are zero
+    matching blocks, either way.
 
     max_tokens defaults to this module's own MAX_TOKENS (1024, tuned for
     this module's own card-writing prompts) — real callers with a
@@ -1057,8 +1071,11 @@ def call_claude_with_tool(
             f"max_tokens for this prompt shape rather than treating a partial result as valid."
         )
 
-    for block in data.get("content", []):
-        if block.get("type") == "tool_use" and block.get("name") == tool_schema["name"]:
-            return block["input"]
+    matching_blocks = [
+        block["input"] for block in data.get("content", [])
+        if block.get("type") == "tool_use" and block.get("name") == tool_schema["name"]
+    ]
+    if matching_blocks:
+        return matching_blocks if return_all_tool_use_blocks else matching_blocks[0]
 
     raise ValueError(f"Claude response had no {tool_schema['name']} tool_use block: {data}")
