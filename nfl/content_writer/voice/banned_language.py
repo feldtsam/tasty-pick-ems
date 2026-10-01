@@ -105,24 +105,52 @@ LITERAL_BETTING_SLANG = (
     "bet the house",
 )
 
+# Real card found with this exact problem (NFL Red Zone Trends, thin-
+# sample/"forming" cards, 2026-09-30): a title or story on a card backed
+# by fewer than 3 real games asserted what the betting MARKET would do
+# next ("outrunning his price", "room to move", "before the market
+# catches up") -- a prediction this pipeline has no real basis for and
+# never should have made (describing the real gap between opportunity
+# and price is fine; forecasting which way that gap resolves is not).
+# Distinct from GUARANTEE_LANGUAGE/LITERAL_BETTING_SLANG above (those are
+# about overselling CONFIDENCE in a pick; this is about predicting WHERE
+# a price goes) -- kept as its own list so each stays independently
+# reviewable and named for what it actually catches.
+PRICE_MOVEMENT_PREDICTION_PHRASES = (
+    "outrunning his price",
+    "outrunning her price",
+    "outrunning the price",
+    "before the market catches up",
+    "before the market corrects",
+    "room to move",
+    "the price hasn't caught up",
+    "the market hasn't caught up",
+    "the odds will move",
+    "the price will move",
+    "the number will move",
+    "due for a correction",
+    "primed to shorten",
+    "primed to move",
+)
+
 _SINGLE_WORD_PATTERNS = {
     phrase: re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE)
-    for phrase in GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG
+    for phrase in GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG + PRICE_MOVEMENT_PREDICTION_PHRASES
     if " " not in phrase and "-" not in phrase
 }
 
 
 def find_banned_phrases(text: str) -> list[str]:
     """
-    Returns every banned phrase found in `text` (from either list,
-    deduplicated in the order the lists are defined), or an empty list if
-    clean. Deliberately returns WHICH phrases matched, not just a
+    Returns every banned phrase found in `text` (from any of the three
+    lists, deduplicated in the order the lists are defined), or an empty
+    list if clean. Deliberately returns WHICH phrases matched, not just a
     pass/fail boolean — the whole point of this being deterministic is
     that a validation failure should be immediately explainable, not a
     black box the human reviewer has to reverse-engineer.
     """
     found = []
-    for phrase in GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG:
+    for phrase in GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG + PRICE_MOVEMENT_PREDICTION_PHRASES:
         pattern = _SINGLE_WORD_PATTERNS.get(phrase)
         if pattern is not None:
             if pattern.search(text):

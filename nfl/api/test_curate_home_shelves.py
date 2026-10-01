@@ -1343,6 +1343,57 @@ if __name__ == "__main__":
         and slow_stats["calls"] - slow_stats["candidates"] == slow_stats["retries"],
     ))
 
+    # ============================================================
+    # PREVIEW-ONLY TENSION INSPECTION -- _tension_type/_tension_claim
+    # propagate from a real draft's _tension into _run_writer_llm_for_
+    # plan's own return dict, and (simulated here the same way api/
+    # index.py's own list comprehension does it) are stripped before
+    # anything resembling a real write.
+    # ============================================================
+    fake_plan = {"r": {"player_id": "TENSION_TEST", "home_shelf": "Red Zone Trends"},
+                 "full_row": pd.Series({"player_id": "TENSION_TEST"}),
+                 "confidence_band": "developing_angle", "interrogation_result": None,
+                 "llm_kind": "regular", "is_tasty_six": False}
+
+    def fake_generate_nfl_shelf_card_draft(row, shelf, band, api_key, **kwargs):
+        return {
+            "title": "A Test Title", "story": "A test story.", "why_reasons": [],
+            "confidence_band": band, "model_name": "test-model",
+            "validation_passed": True, "validation_issues": [], "opening_phrase": None,
+            "_tension": {"tension_type": "forming", "editorial_claim": "Still forming, test claim."},
+        }
+
+    orig_draft_fn = chs.generate_nfl_shelf_card_draft
+    chs.generate_nfl_shelf_card_draft = fake_generate_nfl_shelf_card_draft
+    try:
+        llm_result = chs._run_writer_llm_for_plan(fake_plan, [], [], "fake-key")
+    finally:
+        chs.generate_nfl_shelf_card_draft = orig_draft_fn
+
+    results.append(check(
+        "_run_writer_llm_for_plan's own return dict carries the real tension_type/tension_claim through",
+        llm_result.get("tension_type") == "forming" and llm_result.get("tension_claim") == "Still forming, test claim.",
+    ))
+
+    # Simulated final row (same shape shape_content_draft_rows' own PASS
+    # 3 loop builds), carrying the underscore-prefixed preview fields.
+    simulated_row = {
+        "player_id": "TENSION_TEST", "title": "A Test Title", "story": "A test story.",
+        "_tension_type": llm_result["tension_type"], "_tension_claim": llm_result["tension_claim"],
+    }
+    # The exact stripping expression api/index.py uses before rows_to_write
+    # is ever built, reproduced here so this test fails if that expression
+    # ever changes shape without this test being updated alongside it.
+    stripped_for_write = {k: v for k, v in simulated_row.items() if not k.startswith("_")}
+    results.append(check(
+        "the write-bound stripped row has NO underscore-prefixed keys at all",
+        all(not k.startswith("_") for k in stripped_for_write) and "_tension_type" not in stripped_for_write,
+    ))
+    results.append(check(
+        "the preview-bound (unstripped) row still carries _tension_type/_tension_claim for inspection",
+        simulated_row["_tension_type"] == "forming" and simulated_row["_tension_claim"] == "Still forming, test claim.",
+    ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")

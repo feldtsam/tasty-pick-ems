@@ -92,17 +92,16 @@ NFL_PILLAR_FIELD_GROUPS = {
     "td_opportunity": frozenset({
         "td_opportunity", "proven_heat", "emerging_heat", "recent_td_production_pct", "conversion_rate_pct",
         "touch_share_trend_pct", "snap_share_trend_pct", "touch_volume_trend_pct", "td_opportunity_completeness",
-        "i10_touches_trail3", "gl_touches_trail3", "rz_tds_trail3",
-        # Stage 1G: the real sample size behind the three trail3 fields
-        # above -- added to editorial_lenses.SIGNAL_TO_CITABLE_FIELDS at
-        # the same time, but this is a SEPARATE constant (this module's
-        # own "duplicate rather than cross-import" convention) and was
-        # missed there, which is exactly why a why_reason correctly
-        # tagged td_opportunity but citing trail3_games_played alone was
-        # flagged as a false mismatch: this set had no entry for it at
-        # all, in ANY pillar, so line 162's own "at least one real cited
-        # field genuinely backs this pillar tag" check never found one.
-        "trail3_games_played",
+        # GAMES-PLAYED HOTFIX (2026-09-30): i10_touches_trail3/gl_touches_
+        # trail3/rz_tds_trail3/trail3_games_played deliberately REMOVED
+        # from here, mirroring the same removal in editorial_lenses.
+        # SIGNAL_TO_CITABLE_FIELDS["td_opportunity"] (see that module's
+        # own comment for the full real incident) -- these fields no
+        # longer reach source_facts at all, so there is nothing for a
+        # why_reason to legitimately cite them FOR under any pillar;
+        # a stray citation of one now correctly reads as a real mismatch
+        # (validate_pillar_field_consistency) rather than being silently
+        # waved through the way it was while this set still listed them.
     }),
     "role_momentum": frozenset({
         "role_momentum", "role_trend", "external_opportunity", "touch_share_trend_pct_role",

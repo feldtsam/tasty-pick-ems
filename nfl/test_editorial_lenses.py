@@ -73,12 +73,19 @@ if __name__ == "__main__":
         is_masked_fallback({"role_momentum": 100.0, "role_momentum_completeness": 80.0}, "role_momentum", "role_momentum_completeness") is False,
     ))
 
-    # --- Stage 1G: trail3_games_played travels with the trail3 fields it describes ---
+    # --- GAMES-PLAYED HOTFIX: trail3_games_played and the three trail3
+    # sums are deliberately NOT in any shelf's citable fields anymore --
+    # see editorial_lenses.SIGNAL_TO_CITABLE_FIELDS["td_opportunity"]'s
+    # own comment for the real incident (every live card's games-played
+    # figure has always been wrong; pulled from the writer until the
+    # real upstream fix lands). Supersedes the former Stage 1G test
+    # asserting the opposite.
     rz_lens = resolve_editorial_lens("Red Zone Trends", {})
     rz_fields = citable_fields_for_lens(rz_lens)
     results.append(check(
-        "trail3_games_played is in Red Zone Trends' citable fields, alongside the trail3 sums it annotates",
-        "trail3_games_played" in rz_fields and "i10_touches_trail3" in rz_fields,
+        "trail3_games_played and the trail3 sums are NOT in Red Zone Trends' citable fields (games-played hotfix)",
+        "trail3_games_played" not in rz_fields and "i10_touches_trail3" not in rz_fields
+        and "gl_touches_trail3" not in rz_fields and "rz_tds_trail3" not in rz_fields,
     ))
 
     print()

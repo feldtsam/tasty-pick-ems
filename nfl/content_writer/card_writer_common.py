@@ -369,6 +369,42 @@ _ORDINAL_PATTERN = re.compile(r"(?<![a-zA-Z])-?\d*\.?\d+(?:st|nd|rd|th)\b", re.I
 _PER_NINE_PATTERN = re.compile(r"(?:/|per\s+)(9)\b", re.IGNORECASE)
 
 
+# Real false positives found in production generation (NFL, 2026-09-30,
+# across 13 real Red Zone Trends cards, re-confirmed against the exact
+# real reason_text each time, not reconstructed): "touches inside the
+# 10", "inside-the-10) touches", "inside-10 touches", "inside the 10-yard
+# line" each flagged "10.0" as an ungrounded number. "The 10"/"the 20"/
+# "the 50" here is a fixed yard-line reference (standard football
+# vocabulary for proximity to the goal line), not a statistic -- no
+# source fact is ever going to read ~10, 20, or 50 to ground it against,
+# the same structural reason _ORDINAL_PATTERN exists for "3rd"/"89th".
+#
+# Scoped to exactly these three numbers (the real yard markers this
+# task's own real evidence and the user's own examples named) and ONLY
+# when preceded by a directional preposition (inside/outside/at/to/from/
+# past) -- deliberately NOT a bare "the 50" with no preposition, which
+# would also match "the 10-game sample" or "the 50 best picks" (a real
+# count or ranking, not a yard line) and over-exempt a genuinely
+# ungrounded number.
+#
+# "the" is OPTIONAL between the preposition and the number -- real
+# production text uses both "inside the 10" and "inside-10" (no "the"
+# at all) for the identical real claim. [\s-]+ as every separator covers
+# the spaced, hyphenated, and no-"the" forms all seen in production
+# ("inside the 10", "inside-the-10", "inside-10").
+#
+# The trailing negative lookahead blocks a hyphenated qualifier (so "the
+# 10-game" / "the 50-pick" still get checked as real counts, not
+# exempted) and a percent sign ("the 50%" stays a real percentage), but
+# explicitly ALLOWS "-yard" through -- "inside the 10-yard line" is a
+# real, equally legitimate yard-line form seen in production, not a
+# count the hyphen-qualifier guard should be blocking.
+_YARD_LINE_PATTERN = re.compile(
+    r"\b(?:inside|outside|at|to|from|past)(?:[\s-]+the)?[\s-]+(10|20|50)\b(?!-(?!yard\b)|\s*%)",
+    re.IGNORECASE,
+)
+
+
 # Real false positive found in production generation (2026-08-04, Jeremy
 # Pena): "Bieber's contact-allowed and rate-outcome marks both sit above
 # 90" was flagged as ungrounded because the real values (90.8, 90.7) don't
@@ -731,6 +767,7 @@ def validate_numeric_grounding(why_reasons: list, source_facts: dict, tolerance_
         # pass below.
         exclude_spans += [m.span(1) for m in _PER_NINE_PATTERN.finditer(text)]
         exclude_spans += [m.span() for m in _ORDINAL_PATTERN.finditer(text)]
+        exclude_spans += [m.span(1) for m in _YARD_LINE_PATTERN.finditer(text)]
 
         for m in _NUMBER_PATTERN.finditer(text):
             if any(m.start() >= lo and m.end() <= hi for lo, hi in exclude_spans):
