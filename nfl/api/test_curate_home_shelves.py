@@ -1181,6 +1181,49 @@ if __name__ == "__main__":
         md4 is not None and len(md4["odds_history"]) == 2,
     ))
 
+    # ============================================================
+    # Follow the Story (2026-10-02): _player_history_for_candidate --
+    # the same "reduce this candidate's own slice of an already-fetched
+    # batch" shape _market_data_for_candidate above already established,
+    # applied to Table 1 instead of nfl_price_history.
+    # ============================================================
+    history_rows_by_player = {
+        "P1": [
+            {"player_id": "P1", "season": 2026, "week": 1, "snap_share": 0.5, "targets": 3, "carries": 0, "red_zone_opportunities": 1, "goal_line_opportunities": 0},
+            {"player_id": "P1", "season": 2026, "week": 2, "snap_share": 0.6, "targets": 4, "carries": 1, "red_zone_opportunities": 1, "goal_line_opportunities": 0},
+        ],
+    }
+    ph = chs._player_history_for_candidate("P1", 2026, 2, history_rows_by_player, reconciled_weeks=[1, 2])
+    results.append(check(
+        "_player_history_for_candidate: a real candidate with real rows gets a real package, not None",
+        ph is not None and ph["weeks_present"] == [1, 2] and ph["coverage"] == "2 of 2 reconciled weeks",
+    ))
+    results.append(check(
+        "_player_history_for_candidate: as_of_week is whatever the caller passes (here, 2 -- the season's "
+        "latest reconciled week), never this function's own guess",
+        ph["as_of_week"] == 2 and ph["current_week"]["targets"] == 4,
+    ))
+    results.append(check(
+        "_player_history_for_candidate: honest None (not an all-null-shaped package) for a candidate with "
+        "zero rows in the fetched batch at all -- the player genuinely isn't in rows_by_player",
+        chs._player_history_for_candidate("NEVER_SEEN", 2026, 2, history_rows_by_player, reconciled_weeks=[1, 2]) is None,
+    ))
+    results.append(check(
+        "_player_history_for_candidate: honest None for an explicitly empty rows list too, not just a missing key",
+        chs._player_history_for_candidate("EMPTY", 2026, 2, {**history_rows_by_player, "EMPTY": []}, reconciled_weeks=[1, 2]) is None,
+    ))
+    # A real row exists, but for a LATER week than as_of_week (e.g. a stale
+    # rows_by_player somehow including a week beyond the season's own
+    # latest reconciled week) -- build_player_history_package's own as-of
+    # filtering must still leave weeks_present empty, so this still
+    # resolves to None here, not a package describing a week that
+    # shouldn't be visible yet.
+    future_only = {"P5": [{"player_id": "P5", "season": 2026, "week": 5, "targets": 9, "carries": 2, "snap_share": 0.4, "red_zone_opportunities": 1, "goal_line_opportunities": 0}]}
+    results.append(check(
+        "_player_history_for_candidate: a row for a week AFTER as_of_week never leaks a non-None package",
+        chs._player_history_for_candidate("P5", 2026, 2, future_only, reconciled_weeks=[1, 2]) is None,
+    ))
+
     evidentiary_row = pd.Series({
         "evidence_quality": 62.0, "td_opportunity_completeness": 30.0, "role_momentum_completeness": 100.0,
         "situation_completeness": None, "defensive_matchup_completeness": float("nan"),

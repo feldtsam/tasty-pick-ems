@@ -623,6 +623,99 @@ guardrail, applied one level deeper.
 # per call so every call site below sends byte-identical bytes.
 CACHED_SYSTEM_BLOCKS = system_blocks(SYSTEM_PROMPT)
 
+# PRIOR_HISTORY PROMPT ADDITION (Follow the Story, 2026-10-02) -- a SECOND,
+# ALSO-frozen module constant, not a per-call string build. Two real reasons
+# this isn't dynamic interpolation into SYSTEM_PROMPT itself:
+#   1. interrogate_story()'s own `prior_history` parameter stays optional and
+#      defaults to None everywhere it's already called -- this addition must
+#      be byte-identical-absent in that case, not just "usually empty." A
+#      frozen base string that never changes is how that's actually proven
+#      (see test_story_interrogation.py's own prompt-identity test), not
+#      just asserted.
+#   2. The two variants below are each STILL a fixed, cacheable prompt in
+#      their own right -- Anthropic's prompt cache keys on exact prefix
+#      bytes, so a call made WITH real prior_history caches against every
+#      OTHER call also made with it, and a call made withOUT it keeps
+#      caching against SYSTEM_PROMPT exactly as before. Two cache keys
+#      instead of one, not zero caching -- the real, accepted cost of a
+#      genuinely conditional prompt, not a regression to rebuilding a
+#      prompt string fresh per call.
+#
+# Built via .replace() against SYSTEM_PROMPT's own real, unique anchor
+# strings, with an assertion each anchor was actually found -- a silent
+# no-op match (anchor text later edited elsewhere in SYSTEM_PROMPT, this
+# addition never updated to match) must fail loudly at import time, not
+# ship a prompt that quietly never mentions prior_history despite the
+# parameter being populated.
+_PRIOR_HISTORY_SECTION = """
+## Reading prior_history
+
+When provided, prior_history is this player's own real weekly record from the
+current season: current_week (the most recent completed week's real
+snap_share/targets/carries/red_zone_opportunities/goal_line_opportunities, or
+null fields if no real row exists for that week), recent_weeks (the last few
+weeks with real data), season_baseline (the per-metric average over weeks
+with real data only, with weeks_used stating how many), weeks_present (which
+weeks actually have a real row), and coverage (how many of the season's
+reconciled weeks this player has a real row for).
+
+A week absent from weeks_present is not a zero. It may be a bye week, or a
+real game this player played with no qualifying touch — this data cannot
+tell those apart, and neither can you. Never say or imply a missing week
+means the player did nothing that week.
+
+If prior_history is not provided, or its weeks_present is empty, say so
+plainly; do not guess at a trend that isn't there.
+
+"""
+
+_PRIOR_HISTORY_TASK1_ADDITION = """
+If prior_history is provided and shows this week's number is a single-week
+outlier against a flat season_baseline, that is a real, checkable alternate
+explanation (regression to the mean, or small-sample noise) — test it the
+same way as any other alternate explanation above, never invent it without
+checking prior_history first.
+"""
+
+_PRIOR_HISTORY_TASK4_ADDITION = """
+When prior_history is provided, consistency with its own recent_weeks and
+season_baseline is real supporting evidence for SURVIVES, and a real
+contradiction with them is real evidence for FAILS — weigh it in proportion
+to coverage: low coverage is a reason to weigh it less, not a reason to
+ignore it entirely.
+"""
+
+_TASK1_ANCHOR = "## Task 1b — primary_alternate"
+_TASK4_ANCHOR = "CRITICAL — READ BEFORE ANSWERING THIS FIELD: signal_verdict must be\ndetermined INDEPENDENTLY"
+_SECTION_ANCHOR = "## Task 1 — challenge.alternate_explanations"
+
+# Every insertion below is "this stripped paragraph, as its own paragraph,
+# immediately before this exact anchor text" -- normalized to exactly one
+# blank line on each side regardless of how many newlines happen to
+# surround the anchor in SYSTEM_PROMPT itself, so this can't silently
+# produce a doubled or missing blank line the way raw string
+# concatenation already did once here (caught by eye, not by the
+# assertion below -- the assertion only proves the anchor was found and
+# the text changed, not that the result reads cleanly; this normalization
+# is what actually keeps it clean, not something to rely on re-eyeballing
+# every time this is touched again).
+SYSTEM_PROMPT_WITH_PRIOR_HISTORY = SYSTEM_PROMPT
+for _anchor, _addition in (
+    (_SECTION_ANCHOR, _PRIOR_HISTORY_SECTION),
+    (_TASK1_ANCHOR, _PRIOR_HISTORY_TASK1_ADDITION),
+    (_TASK4_ANCHOR, _PRIOR_HISTORY_TASK4_ADDITION),
+):
+    assert _anchor in SYSTEM_PROMPT_WITH_PRIOR_HISTORY, (
+        f"prior_history prompt anchor not found -- SYSTEM_PROMPT text drifted "
+        f"since this addition was written: {_anchor!r}"
+    )
+    _replacement = _addition.strip() + "\n\n" + _anchor
+    SYSTEM_PROMPT_WITH_PRIOR_HISTORY = SYSTEM_PROMPT_WITH_PRIOR_HISTORY.replace(_anchor, _replacement, 1)
+assert SYSTEM_PROMPT_WITH_PRIOR_HISTORY != SYSTEM_PROMPT
+del _anchor, _addition, _replacement
+
+CACHED_SYSTEM_BLOCKS_WITH_PRIOR_HISTORY = system_blocks(SYSTEM_PROMPT_WITH_PRIOR_HISTORY)
+
 
 INTERROGATION_TOOL_SCHEMA = {
     "name": "record_story_interrogation",
@@ -945,12 +1038,23 @@ def interrogate_story(
     review (this function only returns it; logging/flagging is the
     caller's own concern, same separation intelligence_write.py's
     never-silently-drop convention already uses for sanity failures).
+
+    SYSTEM PROMPT SELECTION (2026-10-02): CACHED_SYSTEM_BLOCKS_WITH_
+    PRIOR_HISTORY only when prior_history is not None, CACHED_SYSTEM_
+    BLOCKS (today's exact, unchanged text) otherwise -- every EXISTING
+    caller passes prior_history=None (it's hardcoded at the one real
+    call site, api/curate_home_shelves.py), so every call made before
+    this addition, and every call still made while that stays
+    hardcoded, sends byte-identical system-prompt bytes to today. See
+    test_story_interrogation.py's own prompt-identity test for the
+    direct proof, not just this comment's claim.
     """
     input_contract = build_interrogation_input(story, prior_history, market_data)
     user_prompt = json.dumps(input_contract)
+    system_blocks_for_call = CACHED_SYSTEM_BLOCKS_WITH_PRIOR_HISTORY if prior_history is not None else CACHED_SYSTEM_BLOCKS
 
     try:
-        response = call_claude_with_tool(api_key, CACHED_SYSTEM_BLOCKS, user_prompt, INTERROGATION_TOOL_SCHEMA, max_tokens=MAX_TOKENS)
+        response = call_claude_with_tool(api_key, system_blocks_for_call, user_prompt, INTERROGATION_TOOL_SCHEMA, max_tokens=MAX_TOKENS)
     except ValueError as e:
         print(f"[story_interrogation] API call failed: {e!r}", flush=True)
         return None
@@ -970,7 +1074,7 @@ def interrogate_story(
         print(f"[story_interrogation] {label} violation(s), retrying once: {violations}", flush=True)
         try:
             response = call_claude_with_tool(
-                api_key, CACHED_SYSTEM_BLOCKS, _retry_prompt(input_contract, violations), INTERROGATION_TOOL_SCHEMA,
+                api_key, system_blocks_for_call, _retry_prompt(input_contract, violations), INTERROGATION_TOOL_SCHEMA,
                 max_tokens=MAX_TOKENS,
             )
         except ValueError as e:

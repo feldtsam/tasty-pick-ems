@@ -121,6 +121,7 @@ import pandas as pd
 from divisions import DIVISIONS
 from editorial_lenses import is_masked_fallback
 from normalize import build_reference_scale, fill_neutral, percentile_lookup
+from player_season_history import build_player_history_package
 from redzone import add_kickoff_utc
 from shelves import CONFIG as SHELVES_CONFIG
 from shelves import (
@@ -1127,6 +1128,41 @@ def _market_data_for_candidate(price_history_rows: list, max_checkpoints: int = 
     }
 
 
+def _player_history_for_candidate(
+    player_id: str, season: int, as_of_week: int, rows_by_player: dict, reconciled_weeks: list,
+) -> dict | None:
+    """
+    Reduces one candidate's real Table 1 (nfl_player_season_evidence) rows
+    into Interrogation's own prior_history shape via build_player_history_
+    package() -- same real "reduce this candidate's own slice of an
+    already-fetched batch" shape _market_data_for_candidate() already uses
+    for nfl_price_history, not a new pattern invented for this input.
+
+    as_of_week is the SEASON'S latest RECONCILED week (max(reconciled_
+    weeks)), NEVER this curation run's own `week` -- that's the UPCOMING,
+    pre-game slate being curated, which by definition has no real Table 1
+    row yet for anyone. See build_player_history_package's own docstring
+    for the same point made from the pure-function side; this is the
+    caller enforcing it.
+
+    Returns None -- never an all-null-shaped package -- for a player with
+    zero real rows (genuinely no Table 1 history yet), same "honest
+    absence, never a fabricated/empty-but-present shape" convention
+    _market_data_for_candidate() already established for price history.
+    This is a deliberate CALLER decision: build_player_history_package()
+    itself always returns a real (if mostly-null) dict even for zero rows
+    -- it's this function's job to decide that an all-empty package isn't
+    worth handing to the model as if it were real signal.
+    """
+    rows = rows_by_player.get(player_id) or []
+    if not rows:
+        return None
+    package = build_player_history_package(player_id, season, as_of_week, rows, reconciled_weeks)
+    if not package["weeks_present"]:
+        return None
+    return package
+
+
 def _real(value) -> float | None:
     """None for missing/NaN, the real float value otherwise -- same
     honest-None convention as nfl_tension.py's own _real (duplicated,
@@ -1319,6 +1355,7 @@ def _interrogate_one_candidate(
     key: tuple, weekly_lookup: dict, anthropic_api_key: str,
     max_retries: int = 2, retry_backoff_seconds: float = 1.0,
     price_history_by_player: dict = None, stats: dict = None,
+    player_history_context: dict = None,
 ) -> dict:
     """
     Runs ONE candidate's Interrogation call in isolation -- the unit of
@@ -1359,6 +1396,19 @@ def _interrogate_one_candidate(
     input-starvation finding, not a speculative enrichment) and what's
     still NOT wired (a live per-request fetch in api/index.py). None by
     default -- market_data stays None, same as before this existed.
+
+    player_history_context: {"rows_by_player": {player_id: [real Table 1
+    row, ...]}, "season": int, "as_of_week": int, "reconciled_weeks":
+    [int, ...]}, optional -- None by default, and gated end-to-end behind
+    INTERROGATION_PLAYER_HISTORY_ENABLED (default off) at the one real
+    caller in api/index.py, same as market_data's own real/dormant split
+    above. Reduced per-candidate via _player_history_for_candidate() into
+    prior_history -- see that function's own docstring for why as_of_week
+    must be the season's latest RECONCILED week, never this curation
+    run's own upcoming `week`. None by default -- prior_history stays
+    None, byte-identical to every call before this existed (see story_
+    interrogation.py's own CACHED_SYSTEM_BLOCKS/CACHED_SYSTEM_BLOCKS_
+    WITH_PRIOR_HISTORY split, which depends on this staying true).
     """
     player_id, event_id = key
     full_row = weekly_lookup.get(player_id)
@@ -1366,6 +1416,15 @@ def _interrogate_one_candidate(
     market_data = None
     if price_history_by_player is not None:
         market_data = _market_data_for_candidate(price_history_by_player.get(player_id))
+    prior_history = None
+    if player_history_context is not None:
+        prior_history = _player_history_for_candidate(
+            player_id,
+            player_history_context["season"],
+            player_history_context["as_of_week"],
+            player_history_context["rows_by_player"],
+            player_history_context["reconciled_weeks"],
+        )
     story_input = {
         "intelligence_family": "nfl_picks",
         "entity": {
@@ -1385,7 +1444,7 @@ def _interrogate_one_candidate(
     backoff = retry_backoff_seconds
     while True:
         try:
-            result = interrogate_story(story_input, anthropic_api_key, prior_history=None, market_data=market_data)
+            result = interrogate_story(story_input, anthropic_api_key, prior_history=prior_history, market_data=market_data)
         except Exception as e:
             print(
                 f"[shape_content_draft_rows] interrogate_story raised for {key!r} "
@@ -1433,7 +1492,7 @@ def _interrogate_one_candidate(
 
 def _interrogate_unique_candidates(
     capped_assignments: pd.DataFrame, weekly_lookup: dict, anthropic_api_key: str = None, config: dict = CONFIG,
-    price_history_by_player: dict = None, stats: dict = None,
+    price_history_by_player: dict = None, stats: dict = None, player_history_context: dict = None,
 ) -> dict:
     """
     Candidate-level Interrogation — called ONCE per (player_id, event_id),
@@ -1658,6 +1717,7 @@ def _interrogate_unique_candidates(
                 executor.submit(
                     _interrogate_one_candidate, key, weekly_lookup, anthropic_api_key,
                     price_history_by_player=price_history_by_player, stats=stats,
+                    player_history_context=player_history_context,
                 ): key
                 for key in selected_keys
             }
@@ -1798,7 +1858,7 @@ def shape_content_draft_rows(
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
     history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None, config: dict = CONFIG,
     shelves_to_process: list = None, avoid_headlines: list = None, avoid_opening_phrases: list = None,
-    price_history_by_player: dict = None, run_start: float = None,
+    price_history_by_player: dict = None, run_start: float = None, player_history_context: dict = None,
 ) -> dict:
     """
     WRITER-LOOP CONCURRENCY (runtime ceiling fix, 2026-09) -- the real,
@@ -2082,6 +2142,7 @@ def shape_content_draft_rows(
     interrogation_by_candidate = _interrogate_unique_candidates(
         capped_assignments, weekly_lookup, anthropic_api_key, config,
         price_history_by_player=price_history_by_player, stats=interrogation_stats,
+        player_history_context=player_history_context,
     )
 
     # REAL CROSS-BATCH VARIETY STATE (NFL Content Generation V1, Part 1)
@@ -2651,7 +2712,7 @@ def curate_nfl_shelves(
     schedules: pd.DataFrame = None, anthropic_api_key: str = None, prior_assignments: dict = None,
     history_weekly: pd.DataFrame = None, pbp: pd.DataFrame = None,
     shelves_to_process: list = None, avoid_headlines: list = None, avoid_opening_phrases: list = None,
-    run_start: float = None,
+    run_start: float = None, player_history_context: dict = None,
 ) -> dict:
     """
     The full pipeline: eligibility -> home-shelf assignment (real
@@ -2740,6 +2801,7 @@ def curate_nfl_shelves(
         history_weekly=history_weekly, pbp=pbp, config=config,
         shelves_to_process=shelves_to_process, avoid_headlines=avoid_headlines,
         avoid_opening_phrases=avoid_opening_phrases, run_start=run_start,
+        player_history_context=player_history_context,
     )
     shelf_signal_history_rows = shape_shelf_signal_history_rows(home_assignments, season, week)
     atl_start = time.monotonic()

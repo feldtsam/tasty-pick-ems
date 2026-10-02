@@ -2,13 +2,10 @@
 Regression coverage for player_season_history.py — the deterministic
 Follow the Story history-package builder. Offline, synthetic-fixture
 cases for build_player_history_package() itself (a pure function, no
-network needed to test it), plus one real-network case for
-read_player_season_evidence_rows(), skipped (not failed) on a real
-network/route failure — same convention every other real-network check
-in this codebase already uses. The matching read route (nfl-player-
-season-evidence-read.ts) has been built but not deployed as of this
-writing, so that one case is EXPECTED to report skipped today; it starts
-actually validating the real route the moment a later commit ships it.
+network needed to test it), plus real-network cases for both read
+functions (single-player and whole-season), skipped (not failed) on a
+real network/route failure or a missing secret — same convention every
+other real-network check in this codebase already uses.
 
 Run: python3 nfl/test_player_season_history.py
 """
@@ -22,6 +19,8 @@ from player_season_history import (
     RECENT_N_WEEKS,
     build_player_history_package,
     read_player_season_evidence_rows,
+    read_player_season_evidence_rows_for_season,
+    reconciled_weeks_from_redzone_weekly_rows,
 )
 
 
@@ -219,6 +218,61 @@ def run_real_season_evidence_read_route():
         return check(f"REAL season_evidence read check (skipped -- {type(e).__name__}: {e})", True)
 
 
+def run_reconciled_weeks_from_redzone_weekly_rows():
+    print("\n" + "=" * 70)
+    print("reconciled_weeks_from_redzone_weekly_rows -- pure, offline")
+    print("=" * 70)
+
+    ok = True
+    ok &= check(
+        "distinct weeks, sorted, deduplicated across multiple players sharing the same real weeks",
+        reconciled_weeks_from_redzone_weekly_rows([
+            {"player_id": "A", "week": 3}, {"player_id": "B", "week": 1}, {"player_id": "C", "week": 3}, {"player_id": "A", "week": 2},
+        ]) == [1, 2, 3],
+    )
+    ok &= check("an empty row list is an empty reconciled-weeks list, not an error", reconciled_weeks_from_redzone_weekly_rows([]) == [])
+    ok &= check(
+        "a row with no real week value is skipped, not treated as week None/0",
+        reconciled_weeks_from_redzone_weekly_rows([{"player_id": "A", "week": None}, {"player_id": "B", "week": 2}]) == [2],
+    )
+    return ok
+
+
+def run_real_season_wide_read_route():
+    print("\n" + "=" * 70)
+    print("REAL: read_player_season_evidence_rows_for_season() -- the whole-")
+    print("season path the real Interrogation fetch actually uses")
+    print("=" * 70)
+
+    import os
+    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+    if not secret:
+        return check("REAL whole-season read check (skipped -- no NFL_PIPELINE_WEBHOOK_SECRET in this environment)", True)
+
+    try:
+        result = read_player_season_evidence_rows_for_season(2024, secret)
+        if not result["ok"]:
+            return check(
+                f"REAL whole-season read check (skipped -- route not live yet, auth mismatch, or MAX_PAGES "
+                f"exceeded: status={result['status_code']} error={result['error']!r})",
+                True,
+            )
+        ok = True
+        ok &= check("REAL: the real route returned ok=True", result["ok"] is True)
+        ok &= check("REAL: rows is a real list (possibly empty), spanning more than one player if any real data exists", isinstance(result["rows"], list))
+        if result["rows"]:
+            distinct_players = {r["player_id"] for r in result["rows"]}
+            ok &= check(
+                f"REAL: a whole-season read returns more than one distinct player_id when real rows exist "
+                f"(got {len(distinct_players)} distinct players) -- proof this is really the season-wide "
+                f"path, not an accidentally-filtered single-player result",
+                len(distinct_players) > 1,
+            )
+        return ok
+    except Exception as e:
+        return check(f"REAL whole-season read check (skipped -- {type(e).__name__}: {e})", True)
+
+
 if __name__ == "__main__":
     results = [
         run_full_history(),
@@ -229,7 +283,9 @@ if __name__ == "__main__":
         run_null_snap_share(),
         run_all_zeros_in_present_week(),
         run_defensive_filtering_by_player_and_season(),
+        run_reconciled_weeks_from_redzone_weekly_rows(),
         run_real_season_evidence_read_route(),
+        run_real_season_wide_read_route(),
     ]
     print()
     if all(results):

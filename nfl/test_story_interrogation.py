@@ -19,10 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "newsletter"))
 
 import story_interrogation as si
 from story_interrogation import (
+    CACHED_SYSTEM_BLOCKS,
+    CACHED_SYSTEM_BLOCKS_WITH_PRIOR_HISTORY,
     INTERROGATION_TOOL_SCHEMA,
     READER_FRAMING_LANGUAGE,
     RELATIONSHIP_NOT_ESTABLISHED_LANGUAGE,
     SYSTEM_PROMPT,
+    SYSTEM_PROMPT_WITH_PRIOR_HISTORY,
     _dict_field,
     _entity_display_name,
     build_interrogation_input,
@@ -617,6 +620,92 @@ if __name__ == "__main__":
         and "durability" in f7["primary_alternate"]["selection_reason"]
         and len(f7["challenge"]["alternate_explanations"]) == 2,  # still exhaustive -- nothing pruned
     ))
+
+    # ============================================================
+    # PRIOR_HISTORY PROMPT IDENTITY (Follow the Story, 2026-10-02) --
+    # proves the flag-off / prior_history=None path sends the exact same
+    # system-prompt bytes as before this addition existed, by intercepting
+    # what interrogate_story() actually hands call_claude_with_tool, not
+    # by re-deriving the claim from source inspection alone.
+    # ============================================================
+    results.append(check(
+        "SYSTEM_PROMPT itself carries no detailed prior_history guidance -- only the pre-existing generic "
+        "'whatever fields are populated' mention; the new section/task additions live only in the second variant",
+        "## Reading prior_history" not in SYSTEM_PROMPT
+        and "single-week\noutlier" not in SYSTEM_PROMPT
+        and "consistency with its own recent_weeks" not in SYSTEM_PROMPT,
+    ))
+    results.append(check(
+        "SYSTEM_PROMPT_WITH_PRIOR_HISTORY is strictly SYSTEM_PROMPT plus real content, not a different base text",
+        SYSTEM_PROMPT_WITH_PRIOR_HISTORY != SYSTEM_PROMPT
+        and SYSTEM_PROMPT_WITH_PRIOR_HISTORY.startswith(SYSTEM_PROMPT.split("## Task 1")[0])
+        and "## Reading prior_history" in SYSTEM_PROMPT_WITH_PRIOR_HISTORY,
+    ))
+    results.append(check(
+        "the with-variant never splits a sentence across the insertion seam (a real bug caught while building this)",
+        "must be\n\nWhen prior_history" not in SYSTEM_PROMPT_WITH_PRIOR_HISTORY
+        and "must be\ndetermined INDEPENDENTLY" in SYSTEM_PROMPT_WITH_PRIOR_HISTORY,
+    ))
+    results.append(check(
+        "no doubled blank line at any of the three insertion seams",
+        "\n\n\n" not in SYSTEM_PROMPT_WITH_PRIOR_HISTORY,
+    ))
+
+    _captured_system_blocks = {}
+
+    def _fake_call_claude_with_tool(api_key, system_blocks_arg, user_prompt, tool_schema, max_tokens=None):
+        _captured_system_blocks["value"] = system_blocks_arg
+        return {
+            "challenge": {"alternate_explanations": []},
+            "primary_alternate": None,
+            "confirmation": {
+                "supporting_signals": "nothing else in the input",
+                "contradicting_signals": "nothing in the input",
+                "market_reaction": "not available",
+            },
+            "judgment": {
+                "what_we_know": "a baseline test record",
+                "what_we_dont_know": "nothing relevant to this check",
+                "evidence_significance": "no real interpretation needed for this check",
+            },
+            "signal_verdict": "UNRESOLVED",
+            "relationship_established": "No real alternate explanation existed to test, so nothing establishes a relationship here.",
+        }
+
+    _original_call_claude_with_tool = si.call_claude_with_tool
+    si.call_claude_with_tool = _fake_call_claude_with_tool
+    try:
+        fixture_story = {
+            "intelligence_family": "nfl_picks",
+            "entity": {"type": "player", "player_id": "00-TEST", "player_name": "Test Player"},
+            "headline": "Test headline",
+            "hero_metric": None,
+            "time_window": None,
+            "sample_size": None,
+            "supporting_evidence": None,
+            "related_players": [],
+        }
+
+        interrogate_story(fixture_story, "fake-api-key", prior_history=None)
+        results.append(check(
+            "prior_history=None (today's hardcoded default at the one real call site) sends CACHED_SYSTEM_BLOCKS exactly -- byte-identical to before this addition existed",
+            _captured_system_blocks["value"] == CACHED_SYSTEM_BLOCKS,
+        ))
+
+        interrogate_story(fixture_story, "fake-api-key", prior_history={"weeks_present": [3], "coverage": "1 of 1 reconciled weeks"})
+        results.append(check(
+            "a real prior_history dict sends CACHED_SYSTEM_BLOCKS_WITH_PRIOR_HISTORY, not the base blocks",
+            _captured_system_blocks["value"] == CACHED_SYSTEM_BLOCKS_WITH_PRIOR_HISTORY
+            and _captured_system_blocks["value"] != CACHED_SYSTEM_BLOCKS,
+        ))
+
+        interrogate_story(fixture_story, "fake-api-key")
+        results.append(check(
+            "omitting prior_history entirely (the real default) is identical to passing prior_history=None explicitly",
+            _captured_system_blocks["value"] == CACHED_SYSTEM_BLOCKS,
+        ))
+    finally:
+        si.call_claude_with_tool = _original_call_claude_with_tool
 
     print()
     if all(results):

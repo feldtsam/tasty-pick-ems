@@ -44,6 +44,24 @@ MISSING_VS_BYE_NOTE = (
 )
 
 
+def reconciled_weeks_from_redzone_weekly_rows(rows: list) -> list:
+    """
+    Pure helper: the real `reconciled_weeks` input build_player_history_
+    package() needs, derived from reconcile_week.read_player_redzone_
+    weekly_rows(season, secret)'s own real row list (already live, already
+    used by Role Changes/Defensive Trends generation -- no new route
+    needed for this half of the history package, only for the whole-
+    season Table 1 read itself). Confirmed the right source in the plan
+    this was built from: reconcile_week() unconditionally writes real
+    rows to nfl_player_redzone_weekly on every successful run (it raises
+    otherwise), so the distinct weeks present there are a direct,
+    unconditional "this week was reconciled" signal -- unlike nfl_stub_
+    weeks.reconciled, which only ever gets set for a week that went
+    through the OPTIONAL pre-game stub mechanism first.
+    """
+    return sorted({r["week"] for r in rows if r.get("week") is not None})
+
+
 def _metric_row(row: dict) -> dict:
     """Pulls just the five real Table 1 metrics off a raw row dict, each
     left exactly as stored -- None stays None (a real, honest null, e.g.
@@ -56,7 +74,16 @@ def build_player_history_package(
     player_id: str, season: int, as_of_week: int, rows: list, reconciled_weeks: list,
 ) -> dict:
     """
-    Pure, offline-testable. `rows` is defensively filtered to this
+    Pure, offline-testable. `as_of_week` is whatever the CALLER says it
+    is -- this function makes no assumption about what it represents.
+    The real Interrogation caller (api/curate_home_shelves.py) must pass
+    max(reconciled_weeks) here, NOT the week currently being curated: the
+    curation week is the UPCOMING slate (pre-game, not yet played), so a
+    player has no real Table 1 row for it by definition, and no amount of
+    real history changes that. The most recently RECONCILED week is the
+    real "as of now" point this package should describe.
+
+    `rows` is defensively filtered to this
     player_id/season (a caller can pass a raw, unfiltered read-route
     response without pre-filtering it correctly first) and to week <=
     as_of_week (this package describes what was knowable AS OF that week
@@ -129,26 +156,24 @@ def build_player_history_package(
 DEFAULT_NFL_PLAYER_SEASON_EVIDENCE_READ_URL = "https://tastypickems.com/api/public/nfl-player-season-evidence-read"
 
 
-def read_player_season_evidence_rows(player_id: str, season: int, secret: str, read_url: str = None) -> dict:
+def _call_season_evidence_read(payload: dict, secret: str, read_url: str = None) -> dict:
     """
-    One signed POST (body {"player_id", "season"}), returns {"ok": bool,
-    "error": str|None, "status_code": int|None, "rows": [...]} for every
-    real nfl_player_season_evidence row for this player/season -- same
-    real sign+POST+capture-response reuse of forward_to_lovable every
-    other read route in this codebase already uses (see reconcile_week.
-    read_player_redzone_weekly_rows for the direct precedent this mirrors).
+    Shared signed-POST + response-parsing core for both the single-player
+    and whole-season reads below -- the only real difference between them
+    is whether `payload` has a `player_id` key at all (the route's own
+    RequestSchema treats it as optional; see nfl-player-season-evidence-
+    read.ts's own module docstring). Same real sign+POST+capture-response
+    reuse of forward_to_lovable every other read route in this codebase
+    already uses (see reconcile_week.read_player_redzone_weekly_rows for
+    the direct precedent this mirrors).
 
-    A real "zero rows" response (this player/season has no reconciled
-    weeks yet, or never had a real red-zone touch) is a genuine, valid
-    outcome (rows=[]), not an error -- same "no rows is valid" convention
-    every other read route in this codebase already uses.
-
-    NOT YET LIVE as of this writing -- the matching route (nfl-player-
-    season-evidence-read.ts) has been built but not deployed (no commit/
-    push made building this module). A real call here will fail (404 or
-    connection error) until that route ships; callers should expect and
-    handle that the same honest way every other real-network call in
-    this codebase already does, not treat it as a surprise.
+    ok:False from the route itself (not just a transport failure) is
+    treated as a real failure here too, same as any other error -- this
+    matters specifically for the whole-season path, where the route
+    returns ok:False on purpose when it hits its own MAX_PAGES bound
+    without ever seeing a short page (cannot confirm every real row was
+    fetched). That must never be read back here as "zero rows" or as a
+    partial-but-usable result -- it's a failed fetch, full stop.
     """
     import sys
     from pathlib import Path
@@ -158,7 +183,7 @@ def read_player_season_evidence_rows(player_id: str, season: int, secret: str, r
     url = read_url or resolve_url_env(
         "LOVABLE_NFL_PLAYER_SEASON_EVIDENCE_READ_URL", DEFAULT_NFL_PLAYER_SEASON_EVIDENCE_READ_URL,
     )
-    result = forward_to_lovable({"player_id": player_id, "season": season}, secret, url)
+    result = forward_to_lovable(payload, secret, url)
     if not result["success"]:
         return {"ok": False, "error": result["error"], "status_code": result["status_code"], "rows": []}
     try:
@@ -178,3 +203,46 @@ def read_player_season_evidence_rows(player_id: str, season: int, secret: str, r
         "ok": True, "error": None, "status_code": result["status_code"],
         "rows": body.get("player_season_evidence", []),
     }
+
+
+def read_player_season_evidence_rows(player_id: str, season: int, secret: str, read_url: str = None) -> dict:
+    """
+    Returns {"ok": bool, "error": str|None, "status_code": int|None,
+    "rows": [...]} for every real nfl_player_season_evidence row for this
+    ONE player/season -- unpaginated (confirmed live-deployed: a real call
+    against this route returns a real signed response as of this writing,
+    e.g. a real 401 on a secret mismatch, not a 404 -- the route itself is
+    live, separate from whether any given caller's secret matches today).
+
+    A real "zero rows" response (this player/season has no reconciled
+    weeks yet, or never had a real red-zone touch) is a genuine, valid
+    outcome (rows=[]), not an error -- same "no rows is valid" convention
+    every other read route in this codebase already uses.
+    """
+    return _call_season_evidence_read({"player_id": player_id, "season": season}, secret, read_url)
+
+
+def read_player_season_evidence_rows_for_season(season: int, secret: str, read_url: str = None) -> dict:
+    """
+    Returns {"ok": bool, "error": str|None, "status_code": int|None,
+    "rows": [...]} for EVERY real nfl_player_season_evidence row for the
+    WHOLE season, across every player -- the one real read Interrogation's
+    per-curation-run history fetch needs (fetched ONCE for the whole
+    candidate pool, never once per candidate -- see the real time-budget
+    math in the plan this was built from for why a per-candidate read was
+    rejected).
+
+    No `player_id` in the request body at all -- the route's own
+    RequestSchema treats an omitted player_id as "whole season," not an
+    empty string (an empty string would fail that schema's own .min(1)
+    check). Paginated on the route's own side via .range(); this function
+    doesn't paginate anything itself, it just forwards whatever the route
+    already assembled.
+
+    ok:False here (including the route's own MAX_PAGES-exceeded case)
+    means the caller must leave prior_history at None for every candidate
+    this run -- never attempt to use a partial `rows` list, since there
+    isn't one: `rows` is always [] on any ok:False response, by
+    _call_season_evidence_read's own contract above.
+    """
+    return _call_season_evidence_read({"season": season}, secret, read_url)

@@ -114,7 +114,11 @@ from market_value import (
     snapshot_scoring_inputs,
 )
 from build_stub_week import build_stub_week
-from reconcile_week import reconcile_week, week_is_complete
+from player_season_history import (
+    read_player_season_evidence_rows_for_season,
+    reconciled_weeks_from_redzone_weekly_rows,
+)
+from reconcile_week import read_player_redzone_weekly_rows, reconcile_week, week_is_complete
 from stub_store import shape_stub_rows, stub_week_snapshot, write_stub_rows
 from nfl_grade_bookmarks_live import grade_nfl_bookmarks_for_pending
 from nfl_grade_bookmarks_correction import grade_nfl_bookmarks_for_correction
@@ -1367,6 +1371,70 @@ def curate_and_write_drafts_endpoint():
     print(f"[curate-and-write-drafts] season={season} week={week} "
           f"prior_assignments_players={len(prior_assignments)}", flush=True)
 
+    # PLAYER HISTORY CONTEXT (Follow the Story, Interrogation prior_history
+    # -- 2026-10-02, flag default OFF). Gated end-to-end behind
+    # INTERROGATION_PLAYER_HISTORY_ENABLED: unset/anything other than "true"
+    # means player_history_context stays None, which means every candidate's
+    # own prior_history stays None, which means interrogate_story() sends
+    # the exact same CACHED_SYSTEM_BLOCKS bytes it always has -- see story_
+    # interrogation.py's own prompt-identity test for the direct proof this
+    # depends on, not just this comment's claim.
+    #
+    # ONE season-wide read for the whole candidate pool, not one read per
+    # candidate -- see the real time-budget math this was built from
+    # (api/curate_home_shelves.py's own interrogation_max_concurrency/
+    # writer_loop_deadline_seconds comments) for why a per-candidate read
+    # was rejected. Both real reads needed already exist and are already
+    # live elsewhere in this codebase (read_player_redzone_weekly_rows for
+    # Role Changes/Defensive Trends, the new nfl-player-season-evidence-read
+    # route's own whole-season path) -- nothing here is a new live call
+    # shape, just a new combination of two existing ones.
+    #
+    # A read failure (either real read) or zero reconciled weeks collapses
+    # to player_history_context=None -- honest absence, same "no real data
+    # yet -> None, never a partial/guessed shape" convention every other
+    # optional enrichment in this function already uses.
+    player_history_context = None
+    if os.environ.get("INTERROGATION_PLAYER_HISTORY_ENABLED") == "true":
+        history_secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+        if not history_secret:
+            print(f"[curate-and-write-drafts] season={season} week={week} "
+                  f"player_history_skipped reason=no_secret", flush=True)
+        else:
+            _t = time.monotonic()
+            try:
+                redzone_result = read_player_redzone_weekly_rows(season, history_secret)
+                if not redzone_result["ok"]:
+                    raise RuntimeError(f"redzone weekly read failed: {redzone_result['error']!r}")
+                reconciled_weeks = reconciled_weeks_from_redzone_weekly_rows(redzone_result["rows"])
+
+                if not reconciled_weeks:
+                    print(f"[curate-and-write-drafts] season={season} week={week} "
+                          f"player_history_skipped reason=no_reconciled_weeks_yet", flush=True)
+                else:
+                    season_evidence_result = read_player_season_evidence_rows_for_season(season, history_secret)
+                    if not season_evidence_result["ok"]:
+                        raise RuntimeError(
+                            f"season evidence whole-season read failed: {season_evidence_result['error']!r}",
+                        )
+                    rows_by_player: dict = {}
+                    for row in season_evidence_result["rows"]:
+                        rows_by_player.setdefault(row["player_id"], []).append(row)
+                    player_history_context = {
+                        "rows_by_player": rows_by_player,
+                        "season": season,
+                        "as_of_week": max(reconciled_weeks),
+                        "reconciled_weeks": reconciled_weeks,
+                    }
+                    print(f"[curate-and-write-drafts] season={season} week={week} "
+                          f"player_history_loaded players={len(rows_by_player)} "
+                          f"reconciled_weeks={len(reconciled_weeks)} as_of_week={max(reconciled_weeks)}", flush=True)
+            except Exception as e:
+                print(f"[curate-and-write-drafts] season={season} week={week} "
+                      f"player_history_read_failed error={e!r} — prior_history stays None this run", flush=True)
+                player_history_context = None
+            _stage("player_history_read", _t)
+
     _curate_start = time.monotonic()
     try:
         result = curate_nfl_shelves(
@@ -1374,6 +1442,7 @@ def curate_and_write_drafts_endpoint():
             prior_assignments=prior_assignments,
             shelves_to_process=shelves_to_process, avoid_headlines=avoid_headlines_seed,
             avoid_opening_phrases=avoid_opening_phrases_seed, run_start=run_start,
+            player_history_context=player_history_context,
         )
     except Exception as e:
         print(f"[curate-and-write-drafts] season={season} week={week} status=error error={e!r}", flush=True)
