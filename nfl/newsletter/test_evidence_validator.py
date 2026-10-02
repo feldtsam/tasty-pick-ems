@@ -594,6 +594,114 @@ if __name__ == "__main__":
         contract_with_notes["passed"] is True and contract_with_notes["scoring_language_leak"] == [],
     ))
 
+    # ============================================================
+    # Deterministic grounded arithmetic (claim traceability, v1): a
+    # number that matches nothing directly may pass as DERIVED when it
+    # is the difference or sum of exactly two grounded, same-unit values
+    # from ONE referenced story's own record. Computed by the validator,
+    # never assumed. Real fixture records plus synthetic mini-records.
+    # ============================================================
+    import json as _json
+    import evidence_validator as _ev
+    from pathlib import Path as _Path
+
+    _fx = {f["fixture_id"]: {**f, "entity": {"player_name": f["entity"]}}
+           for f in _json.loads((_Path(__file__).resolve().parent / "fixture_v2.json").read_text())}
+    _f1, _f7 = _fx["fixture_1"], _fx["fixture_7"]
+
+    def _numeric(text, stories):
+        return [x for x in check_claim_traceability(text, stories) if x["claim_type"] == "numeric"]
+
+    # --- the run-12 case: "a 29-point swing" on fixture 7 (81% -> 52% is 29 points) ---
+    swing = _numeric("a 29-point swing in one game", [_f7])
+    r.append(check(
+        "DERIVED: '29-point swing' on fixture 7 passes as a derived claim (81 - 52 = 29)",
+        len(swing) == 1 and swing[0]["status"] == "pass" and swing[0]["grounding"] == "derived",
+    ))
+    r.append(check(
+        "DERIVED: the result records the provenance exactly -- derived_from [81, 52], operation 'difference', value 29, units 'percentage points'",
+        swing and swing[0]["derived_from"] == [81, 52] and swing[0]["operation"] == "difference"
+        and swing[0]["value"] == 29 and swing[0]["units"] == "percentage points" and swing[0]["story_id"] == "SYNTHETIC-FIXTURE-7",
+    ))
+    r.append(check(
+        "a directly grounded number is still reported as grounding='direct', never as derived",
+        all(x["grounding"] == "direct" for x in _numeric("81% of the snaps", [_f7])),
+    ))
+
+    # --- operands from DIFFERENT stories never combine: 25 = 83% (fixture 7) - 58% (fixture 1) ---
+    cross = _numeric("a 25-point gap", [_f1, _f7])
+    r.append(check(
+        "a number that is the difference of two grounded values from DIFFERENT stories still FAILS (25 = 83% from fixture 7 minus 58% from fixture 1)",
+        len(cross) == 1 and cross[0]["status"] == "fail" and "not the difference or sum" in cross[0]["detail"],
+    ))
+    r.append(check(
+        "...and the same number is not derivable within either story alone (so the cross-story pair was the only candidate)",
+        _ev._derive(25.0, "count", False, [_f1]) is None and _ev._derive(25.0, "count", False, [_f7]) is None,
+    ))
+
+    # --- no derivation at all still fails ---
+    r.append(check(
+        "a number matching no direct value and no derivation still FAILS ('91%' on fixture 1)",
+        _numeric("rose to 91%", [_f1])[0]["status"] == "fail",
+    ))
+
+    # --- ratios are NOT derivable in v1 ---
+    r.append(check(
+        "RATIO: the literal '81/52' in prose produces no ratio claim -- its two tokens ground individually as real values, and the quotient 1.56 is below the small-number floor so it is never checked (not a derivation path)",
+        [x["status"] for x in _numeric("roughly 81/52 lopsided", [_f7])] == ["pass", "pass"]
+        and all(x["grounding"] == "direct" for x in _numeric("roughly 81/52 lopsided", [_f7]))
+        and _numeric("a 1.56 ratio", [_f7]) == [],
+    ))
+    r.append(check(
+        "RATIO: a ratio above the floor (17.9 = 340/19 on fixture 7) still FAILS -- only +/- of two operands derives, never a quotient",
+        _numeric("about 17.9 times", [_f7])[0]["status"] == "fail",
+    ))
+
+    # --- unit compatibility is enforced, both ways ---
+    r.append(check(
+        "UNITS: 57 = 68% - 11 (a count) on fixture 1 does NOT derive -- operands must share a unit",
+        _numeric("a 57-point move", [_f1])[0]["status"] == "fail",
+    ))
+    counts_only = {"intelligence_story_id": "S-COUNTS", "interrogation": {"change": {"magnitude": "56 carries down to 44 carries"}}}
+    r.append(check(
+        "UNITS: a '%'-expressed claim never derives from count operands ('12%' vs 56 and 44 carries)",
+        _numeric("fell 12%", [counts_only])[0]["status"] == "fail",
+    ))
+    r.append(check(
+        "UNITS: the same plain-number claim DOES derive from those count operands ('12' = 56 - 44, units 'count')",
+        (lambda x: x["status"] == "pass" and x["units"] == "count" and x["derived_from"] == [56, 44])(_numeric("fell by 12 carries", [counts_only])[0]),
+    ))
+
+    # --- sum, and the percent label distinction ---
+    total = _numeric("a combined 82% share", [_f1])  # 24% + 58%
+    r.append(check(
+        "SUM: '82%' on fixture 1 derives as the sum of 24% and 58%, units 'percent' (a sum of percentages is still a percent)",
+        total[0]["status"] == "pass" and total[0]["operation"] == "sum" and total[0]["derived_from"] == [58, 24] and total[0]["units"] == "percent",
+    ))
+
+    # --- odds stay exact: no tolerance on a derived odds move ---
+    odds_story = {"intelligence_story_id": "S-ODDS", "interrogation": {"confirmation": {"market_reaction": "moved from +340 to +230"}}}
+    r.append(check(
+        "ODDS: '+110' derives exactly as the difference of +340 and +230 (units 'odds points')",
+        (lambda x: x["status"] == "pass" and x["operation"] == "difference" and x["units"] == "odds points")(_numeric("a +110 move", [odds_story])[0]),
+    ))
+    r.append(check(
+        "ODDS: '+111' does NOT derive -- odds keep exact matching, no rounding tolerance on derived values either",
+        _numeric("a +111 move", [odds_story])[0]["status"] == "fail",
+    ))
+
+    # --- the validator computes; it never accepts because operands merely exist ---
+    r.append(check(
+        "COMPUTES: with 81 and 52 present, 30 (off by one beyond tolerance) is NOT accepted -- the arithmetic is checked, not the operands' existence",
+        _ev._derive(30.0, "count", False, [_f7]) is None or _ev._derive(30.0, "count", False, [_f7])["value"] != 29,
+    ))
+
+    # --- refactor safety: _real_number_pool is now a projection of the typed entries ---
+    r.append(check(
+        "REFACTOR: _real_number_pool(stories) equals the union of _story_number_entries values -- the flat pool every other check reads is unchanged in content",
+        _ev._real_number_pool([_f1, _f7]) == {v for s in (_f1, _f7) for v, _u in _ev._story_number_entries(s)},
+    ))
+
     print()
     p = sum(r)
     print(f"{p}/{len(r)} checks passed")

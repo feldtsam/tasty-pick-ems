@@ -201,46 +201,132 @@ def _real_number_pool(stories: list[dict]) -> set[float]:
     systematically false-fail real, honest interrogation-informed prose
     in production.
     """
-    pool: set[float] = set()
-    for story in stories:
-        for key in ("trend_strength", "completeness", "confidence", "sample_size"):
-            v = story.get(key)
-            if v is not None:
-                pool.add(float(v))
-        primary = story.get("primary_signal") or {}
-        if primary.get("value") is not None:
-            pool.add(float(primary["value"]))
-        for text in story.get("supporting_evidence") or []:
-            for _, value, _ in _extract_numbers(str(text)):
-                pool.add(value)
-        for rp in story.get("related_players") or []:
-            note = rp.get("note")
-            if note:
-                for _, value, _ in _extract_numbers(str(note)):
-                    pool.add(value)
+    return {value for story in stories for value, _unit in _story_number_entries(story)}
 
-        interrogation = story.get("interrogation") or {}
-        change = interrogation.get("change") or {}
-        for text in (change.get("magnitude"), change.get("what_changed")):
-            if text:
-                for _, value, _ in _extract_numbers(str(text)):
-                    pool.add(value)
-        context = interrogation.get("context") or {}
-        if context.get("prior_baseline"):
-            for _, value, _ in _extract_numbers(str(context["prior_baseline"])):
-                pool.add(value)
-        confirmation = interrogation.get("confirmation") or {}
-        for text in (confirmation.get("market_reaction"), confirmation.get("supporting_signals"), confirmation.get("contradicting_signals")):
-            if text:
-                for _, value, _ in _extract_numbers(str(text)):
-                    pool.add(value)
-        challenge = interrogation.get("challenge") or {}
-        for alt in challenge.get("alternate_explanations", []):
-            for text in (alt.get("result"), alt.get("evidence")):
-                if text:
-                    for _, value, _ in _extract_numbers(str(text)):
-                        pool.add(value)
-    return pool
+
+# Unit classes for deterministic grounded arithmetic. A number carries the
+# unit it was EXPRESSED in: "81%" is percent, "+340" is odds, "67" is a
+# count/plain number. Scalar scored fields (completeness, confidence,
+# trend_strength, sample_size, primary_signal.value) are stored as bare
+# numbers, so they are classed as "count" -- conservative on purpose:
+# completeness is conceptually a percentage, but this check never guesses
+# a unit the record didn't state.
+def _unit_of(matched_text: str) -> str:
+    if matched_text.endswith("%"):
+        return "percent"
+    if matched_text[:1] in "+-":
+        return "odds"
+    return "count"
+
+
+def _story_number_entries(story: dict) -> set[tuple[float, str]]:
+    """
+    Every real (value, unit) pair reachable from ONE story object's own
+    record -- the same fields _real_number_pool() has always read (that
+    function is now a flat projection of this one, so the two can never
+    drift), but kept per-story and unit-tagged so grounded arithmetic can
+    insist both operands come from the SAME record with the SAME unit.
+    """
+    entries: set[tuple[float, str]] = set()
+
+    def _add_text(text) -> None:
+        if text:
+            for matched, value, _exact in _extract_numbers(str(text)):
+                entries.add((value, _unit_of(matched)))
+
+    for key in ("trend_strength", "completeness", "confidence", "sample_size"):
+        v = story.get(key)
+        if v is not None:
+            entries.add((float(v), "count"))
+    primary = story.get("primary_signal") or {}
+    if primary.get("value") is not None:
+        entries.add((float(primary["value"]), "count"))
+    for text in story.get("supporting_evidence") or []:
+        _add_text(text)
+    for rp in story.get("related_players") or []:
+        _add_text(rp.get("note"))
+
+    interrogation = story.get("interrogation") or {}
+    change = interrogation.get("change") or {}
+    _add_text(change.get("magnitude"))
+    _add_text(change.get("what_changed"))
+    context = interrogation.get("context") or {}
+    _add_text(context.get("prior_baseline"))
+    confirmation = interrogation.get("confirmation") or {}
+    for text in (confirmation.get("market_reaction"), confirmation.get("supporting_signals"), confirmation.get("contradicting_signals")):
+        _add_text(text)
+    challenge = interrogation.get("challenge") or {}
+    for alt in challenge.get("alternate_explanations", []):
+        _add_text(alt.get("result"))
+        _add_text(alt.get("evidence"))
+    return entries
+
+
+# Result-unit label for a derived claim, by operand unit and operation. A
+# difference of two percentages is percentage POINTS (81% - 52% = 29
+# points, not 29%); a sum of two percentages is still a percent.
+_DERIVED_UNIT_LABEL = {
+    ("percent", "difference"): "percentage points",
+    ("percent", "sum"): "percent",
+    ("odds", "difference"): "odds points",
+    ("odds", "sum"): "odds",
+    ("count", "difference"): "count",
+    ("count", "sum"): "count",
+}
+
+
+def _as_number(v: float):
+    return int(v) if float(v).is_integer() else v
+
+
+def _derive(value: float, claim_unit: str, exact_required: bool, stories: list[dict]) -> dict | None:
+    """
+    Deterministic grounded arithmetic (v1): is `value` the DIFFERENCE or
+    SUM of exactly two grounded numbers from ONE referenced story's own
+    record, with compatible units? Returns the derivation record or None.
+
+    Rules, all enforced here rather than trusted:
+      - both operands come from the same story object (never one from
+        each of two stories in the pool);
+      - both operands share a unit; the claim may be expressed in that
+        unit, or as a plain number when the operands are percentages or
+        odds (a difference of two percentages is naturally written as
+        "29 points", not "29%"). A "%"-expressed claim never derives from
+        count operands, and vice versa;
+      - the validator COMPUTES |a - b| and a + b and compares to the
+        claim within the same tolerance plain grounding uses (exact for
+        odds) -- a number is never accepted merely because two operands
+        that could produce it happen to exist;
+      - exactly two operands, one operation. No ratios, no products, no
+        multi-step chains -- those are not derivable in this version and
+        fail as before.
+    Deterministic choice when several pairs match: smallest error, then
+    difference before sum, then the pair with the larger operands.
+    """
+    best = None
+    for story in stories:
+        entries = sorted(_story_number_entries(story), key=lambda e: (-e[0], e[1]))
+        story_id = story.get("intelligence_story_id") or story.get("id")
+        for i, (a, ua) in enumerate(entries):
+            for b, ub in entries[i + 1:]:
+                if ua != ub:
+                    continue
+                if claim_unit != ua and not (claim_unit == "count" and ua in ("percent", "odds")):
+                    continue
+                for operation, computed in (("difference", abs(a - b)), ("sum", a + b)):
+                    err = abs(value - computed)
+                    if (err != 0) if exact_required else (err > _ROUNDING_TOLERANCE):
+                        continue
+                    key = (err, 0 if operation == "difference" else 1, -max(a, b), -min(a, b))
+                    if best is None or key < best[0]:
+                        best = (key, {
+                            "derived_from": [_as_number(max(a, b)), _as_number(min(a, b))],
+                            "operation": operation,
+                            "value": _as_number(computed),
+                            "units": _DERIVED_UNIT_LABEL[(ua, operation)],
+                            "story_id": story_id,
+                        })
+    return best[1] if best else None
 
 
 def _grounds(value: float, exact_required: bool, pool: set[float]) -> bool:
@@ -335,16 +421,44 @@ def check_claim_traceability(text: str, stories: list[dict]) -> list[dict]:
 
     for matched_text, value, exact_required in _extract_numbers(text):
         grounded = _grounds(value, exact_required, number_pool)
+        if grounded:
+            results.append({
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": matched_text,
+                "status": "pass",
+                "grounding": "direct",
+                "detail": f"{matched_text!r} matches a real value in the referenced story objects.",
+            })
+            continue
+        # Deterministic grounded arithmetic: not a direct match, but the
+        # difference or sum of exactly two grounded numbers from ONE
+        # referenced story's own record, same unit -- see _derive().
+        derivation = _derive(value, _unit_of(matched_text), exact_required, stories)
+        if derivation is not None:
+            results.append({
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": matched_text,
+                "status": "pass",
+                "grounding": "derived",
+                **derivation,
+                "detail": (
+                    f"{matched_text!r} is the {derivation['operation']} of two grounded values from the same "
+                    f"story record ({derivation['derived_from'][0]} and {derivation['derived_from'][1]}, "
+                    f"{derivation['units']}) — computed by the validator, not assumed."
+                ),
+            })
+            continue
         results.append({
             "check": "claim_traceability",
             "claim_type": "numeric",
             "claim_text": matched_text,
-            "status": "pass" if grounded else "fail",
+            "status": "fail",
             "detail": (
-                f"{matched_text!r} matches a real value in the referenced story objects."
-                if grounded else
                 f"{matched_text!r} does not match any real value across the referenced story objects "
-                f"(checked {'exact' if exact_required else f'within +/-{_ROUNDING_TOLERANCE}'} tolerance) — "
+                f"(checked {'exact' if exact_required else f'within +/-{_ROUNDING_TOLERANCE}'} tolerance), "
+                f"and is not the difference or sum of two same-unit values from any one referenced record — "
                 f"looks invented or misstated."
             ),
         })
