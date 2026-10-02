@@ -430,6 +430,194 @@ if __name__ == "__main__":
         and result["judgment"] == {"what_we_know": None, "what_we_dont_know": None, "evidence_significance": None},
     ))
 
+    # ============================================================
+    # Primary-alternate signal (INTERROGATION_VERSION v3_primary_alternate):
+    # schema, Task 1b instruction, output-consistency scan, reshaping,
+    # retry wiring, and the fixture that carries it. Model mocked
+    # throughout -- no network.
+    # ============================================================
+    P = " ".join(SYSTEM_PROMPT.split())  # whitespace-normalized: the prompt wraps mid-sentence
+    scan_pa = si.scan_primary_alternate_consistency
+
+    alt_items = alt_schema["items"]
+    results.append(check(
+        "schema: alternate_explanations[].alternate_id is declared AND required",
+        "alternate_id" in alt_items["properties"] and "alternate_id" in alt_items["required"],
+    ))
+    top = INTERROGATION_TOOL_SCHEMA["input_schema"]
+    results.append(check(
+        "schema: top-level primary_alternate is declared, nullable, required, with alternate_id + selection_reason both required",
+        "primary_alternate" in top["required"]
+        and set(top["properties"]["primary_alternate"]["type"]) == {"object", "null"}
+        and set(top["properties"]["primary_alternate"]["required"]) == {"alternate_id", "selection_reason"},
+    ))
+    results.append(check(
+        "schema: alternate_explanations still has no minItems/maxItems -- exhaustiveness and the empty-array allowance are unchanged",
+        "minItems" not in alt_schema and "maxItems" not in alt_schema,
+    ))
+    results.append(check(
+        "prompt: Task 1b states the criterion -- most important to interpreting a meaningful change, NOT the most plausible, the one that would most seriously change the interpretation",
+        "most important to interpreting whether the detected signal represents a meaningful change" in P
+        and "NOT the most plausible alternate" in P
+        and "would most seriously change the interpretation of the signal" in P,
+    ))
+    results.append(check(
+        "prompt: Task 1b says the selection prunes nothing, the NOT_TESTABLE rule is unchanged, and primary_alternate is null when the array is empty",
+        "prunes nothing" in P and "NOT_TESTABLE rule above is unchanged" in P
+        and "When alternate_explanations is empty, primary_alternate is null" in P,
+    ))
+    results.append(check(
+        "prompt: alternate_id is defined as a label, not a rank; the existing exhaustiveness instruction is still present verbatim",
+        "not a rank" in P and "Do not manufacture one" in SYSTEM_PROMPT
+        and "rather than silently dropping the explanation from the array" in P,
+    ))
+    results.append(check("INTERROGATION_VERSION bumped for the schema change", si.INTERROGATION_VERSION == "v3_primary_alternate"))
+
+    def _alt(aid, status="WEAKENED"):
+        return {"alternate_id": aid, "explanation": "e", "evidence": "v", "test": "t", "result": "r", "status": status}
+
+    def _resp(alts, primary):
+        return {
+            "challenge": {"alternate_explanations": alts}, "primary_alternate": primary,
+            "confirmation": {"supporting_signals": "s", "contradicting_signals": "c", "market_reaction": "m"},
+            "judgment": {"what_we_know": "k", "what_we_dont_know": "d", "evidence_significance": "x"},
+            "signal_verdict": "UNRESOLVED", "relationship_established": None,
+        }
+
+    story_stub = {"intelligence_family": "nfl_picks", "entity": {"type": "player", "player_id": "P1"}, "headline": "h",
+                  "hero_metric": None, "time_window": None, "sample_size": None, "supporting_evidence": None, "related_players": []}
+
+    clean = _resp([_alt("alt_1"), _alt("alt_2")], {"alternate_id": "alt_2", "selection_reason": "why"})
+    results.append(check("scan: resolving primary_alternate + unique ids -> clean", scan_pa(clean) == []))
+    results.append(check("scan: empty array + null primary -> clean", scan_pa(_resp([], None)) == []))
+    dangling = scan_pa(_resp([_alt("alt_1")], {"alternate_id": "alt_9", "selection_reason": "why"}))
+    results.append(check(
+        "scan: a primary_alternate.alternate_id that resolves to no entry is a violation on primary_alternate.alternate_id",
+        any(v["field"] == "primary_alternate.alternate_id" and "does not resolve" in v["phrase"] for v in dangling),
+    ))
+    results.append(check(
+        "scan: non-empty array with a null primary -> violation (required when the array is non-empty)",
+        any(v["field"] == "primary_alternate" and "required when alternate_explanations is non-empty" in v["phrase"]
+            for v in scan_pa(_resp([_alt("alt_1")], None))),
+    ))
+    results.append(check(
+        "scan: empty array with a non-null primary -> violation (must be null)",
+        any("must be null" in v["phrase"] for v in scan_pa(_resp([], {"alternate_id": "alt_1", "selection_reason": "x"}))),
+    ))
+    results.append(check(
+        "scan: duplicate alternate_ids -> violation (a pointer target must be unambiguous)",
+        any(v["phrase"] == "duplicate alternate_id" and v["text"] == "alt_1"
+            for v in scan_pa(_resp([_alt("alt_1"), _alt("alt_1")], {"alternate_id": "alt_1", "selection_reason": "x"}))),
+    ))
+    results.append(check(
+        "scan: an entry missing alternate_id -> violation naming its index",
+        any(v["field"] == "challenge.alternate_explanations[0].alternate_id"
+            for v in scan_pa(_resp([{"explanation": "e", "status": "WEAKENED"}], {"alternate_id": "alt_1", "selection_reason": "x"}))),
+    ))
+    results.append(check(
+        "scan: empty selection_reason -> violation",
+        any(v["field"] == "primary_alternate.selection_reason"
+            for v in scan_pa(_resp([_alt("alt_1")], {"alternate_id": "alt_1", "selection_reason": ""}))),
+    ))
+    results.append(check(
+        "scan: wrong-typed challenge (a string) degrades to 'empty array' -- null primary is clean, no crash",
+        scan_pa({"challenge": "oops", "primary_alternate": None}) == [],
+    ))
+
+    # --- reshaping keeps the new fields (and the existing key filter no longer drops alternate_id) ---
+    orig_call = si.call_claude_with_tool
+    si.call_claude_with_tool = lambda *a, **kw: clean
+    try:
+        result = interrogate_story(story_stub, "fake-key")
+    finally:
+        si.call_claude_with_tool = orig_call
+    results.append(check(
+        "reshaping: alternate_id survives the per-entry key filter, primary_alternate is returned top-level with exactly its two keys, version is v3",
+        result is not None
+        and [a["alternate_id"] for a in result["challenge"]["alternate_explanations"]] == ["alt_1", "alt_2"]
+        and result["primary_alternate"] == {"alternate_id": "alt_2", "selection_reason": "why"}
+        and result["interrogation_version"] == "v3_primary_alternate",
+    ))
+    si.call_claude_with_tool = lambda *a, **kw: _resp([], None)
+    try:
+        result_empty = interrogate_story(story_stub, "fake-key")
+    finally:
+        si.call_claude_with_tool = orig_call
+    results.append(check(
+        "reshaping: empty array -> primary_alternate is None (present as a key, not missing)",
+        result_empty is not None and "primary_alternate" in result_empty and result_empty["primary_alternate"] is None,
+    ))
+
+    # --- wiring: the scan rides the same one-shot retry as the other three ---
+    calls = {"n": 0}
+
+    def dangling_call(*a, **kw):
+        calls["n"] += 1
+        return _resp([_alt("alt_1")], {"alternate_id": "alt_9", "selection_reason": "why"})
+
+    si.call_claude_with_tool = dangling_call
+    try:
+        result_bad = interrogate_story(story_stub, "fake-key")
+    finally:
+        si.call_claude_with_tool = orig_call
+    results.append(check(
+        "wiring: a dangling primary_alternate.alternate_id triggers exactly one retry and, if it persists, returns None -- never a record pointing at nothing",
+        result_bad is None and calls["n"] == 2,
+    ))
+    seq = [
+        _resp([_alt("alt_1")], {"alternate_id": "alt_9", "selection_reason": "why"}),
+        _resp([_alt("alt_1")], {"alternate_id": "alt_1", "selection_reason": "why"}),
+    ]
+    calls2 = {"n": 0}
+
+    def fixed_on_retry(*a, **kw):
+        out = seq[calls2["n"]]
+        calls2["n"] += 1
+        return out
+
+    si.call_claude_with_tool = fixed_on_retry
+    try:
+        result_fixed = interrogate_story(story_stub, "fake-key")
+    finally:
+        si.call_claude_with_tool = orig_call
+    results.append(check(
+        "wiring: a retry that resolves the id is accepted (two calls, real record returned)",
+        result_fixed is not None and result_fixed["primary_alternate"]["alternate_id"] == "alt_1" and calls2["n"] == 2,
+    ))
+    retry_text = si._retry_prompt({"x": 1}, dangling)
+    results.append(check(
+        "retry prompt quotes the structural problem back (field + problem), no longer worded as 'language rules'",
+        "primary_alternate.alternate_id" in retry_text and "does not resolve" in retry_text and "language rules" not in retry_text,
+    ))
+
+    # --- the fixture carries the signal correctly, and the scan agrees ---
+    fixtures = __import__("json").loads((Path(__file__).resolve().parent / "newsletter" / "fixture_v2.json").read_text())
+    ok_all = len(fixtures) == 7
+    for f in fixtures:
+        intr = f["interrogation"]
+        alts = intr["challenge"]["alternate_explanations"]
+        ids = [a.get("alternate_id") for a in alts]
+        if alts:
+            ok_all &= all(isinstance(x, str) and x for x in ids) and len(set(ids)) == len(ids)
+            ok_all &= isinstance(intr.get("primary_alternate"), dict) and intr["primary_alternate"]["alternate_id"] in ids \
+                and bool(intr["primary_alternate"]["selection_reason"].strip())
+        else:
+            ok_all &= "primary_alternate" in intr and intr["primary_alternate"] is None
+        ok_all &= intr["interrogation_version"] == "v3_primary_alternate"
+        ok_all &= scan_pa(intr) == []
+    results.append(check(
+        "fixture_v2.json: all 7 interrogations carry unique alternate_ids and a resolving primary_alternate (null exactly when the array is empty), the v3 label, and pass the scan",
+        ok_all,
+    ))
+    f7 = next(f for f in fixtures if f["fixture_id"] == "fixture_7")["interrogation"]
+    results.append(check(
+        "fixture 7: primary_alternate is the coach's stated-plan alternate (alt_1), chosen on the interpretation criterion, with the reason recorded",
+        f7["primary_alternate"]["alternate_id"] == "alt_1"
+        and f7["challenge"]["alternate_explanations"][0]["explanation"].startswith("The head coach")
+        and "durability" in f7["primary_alternate"]["selection_reason"]
+        and len(f7["challenge"]["alternate_explanations"]) == 2,  # still exhaustive -- nothing pruned
+    ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")

@@ -316,7 +316,19 @@ from evidence_validator import CONFIDENCE_ESCALATING_LANGUAGE  # noqa: E402
 # gated on) -- safe to change. Bump this again on the next real prompt/
 # schema change; this string existing is only useful if it's actually
 # kept current, which it wasn't from v1 through everything above.
-INTERROGATION_VERSION = "v2_relationship_established"
+#
+# Bumped to v3 (2026-10-01): primary-alternate signal. Real schema change
+# -- alternate_explanations[].alternate_id (required) and a top-level
+# primary_alternate {alternate_id, selection_reason} (required; null when
+# the array is empty) -- plus the Task 1b instruction that selects it and
+# a new output-consistency scan (scan_primary_alternate_consistency).
+# Motivation: the Weekly Editor Agent narrated every tested alternate in
+# three of three runs after being told to reveal only the most important
+# one, and the investigation found no layer (this schema, EPS, the
+# runner) carried any signal about which alternate that was -- all
+# alternates were handed over as interchangeable peers. The array itself
+# stays exhaustive; this adds a pointer, it prunes nothing.
+INTERROGATION_VERSION = "v3_primary_alternate"
 
 # card_writer_common.MAX_TOKENS (1024, its own module default) truncates
 # a real Story Interrogation response before `judgment` -- confirmed
@@ -366,6 +378,9 @@ For each real, checkable alternate explanation visible in the provided data
 - run that test against the input data and state the result in plain language
 - assign exactly one status: SUPPORTED, WEAKENED, UNRESOLVED, or NOT_TESTABLE
   (defined below)
+- assign a short, stable alternate_id in array order: alt_1, alt_2, alt_3, ...
+  An alternate_id is a label so other fields can point at an entry. It is not
+  a rank and carries no meaning about importance or plausibility.
 
 If there is no real alternate explanation visible in the input data, return an
 empty array. Do not manufacture one. An empty array is a correct, complete
@@ -382,6 +397,27 @@ Status definitions:
   support running the test (e.g. missing prior-week data, sample too small).
   Use this rather than guessing, and rather than silently dropping the
   explanation from the array.
+
+## Task 1b — primary_alternate
+
+After the array is complete, select exactly one of its entries as the
+primary_alternate: {alternate_id, selection_reason}.
+
+The primary alternate is the tested alternate explanation most important to
+interpreting whether the detected signal represents a meaningful change. It is
+NOT the most plausible alternate, and it is not the one with the strongest or
+weakest status. The alternate that, if true, would most seriously change the
+interpretation of the signal is the one to select.
+
+selection_reason is one sentence stating why that alternate carries the most
+interpretive weight — what it would mean for the signal if it were true.
+
+This selection prunes nothing. alternate_explanations stays exhaustive exactly
+as Task 1 requires, every entry keeps its own tested status, and the
+NOT_TESTABLE rule above is unchanged. primary_alternate.alternate_id must be
+the alternate_id of an entry actually present in the array.
+
+When alternate_explanations is empty, primary_alternate is null.
 
 ## Task 2 — confirmation
 
@@ -602,6 +638,10 @@ INTERROGATION_TOOL_SCHEMA = {
                         "items": {
                             "type": "object",
                             "properties": {
+                                "alternate_id": {
+                                    "type": "string",
+                                    "description": "Short, stable label in array order (alt_1, alt_2, ...). A pointer target for primary_alternate, not a rank.",
+                                },
                                 "explanation": {"type": "string"},
                                 "evidence": {"type": "string"},
                                 "test": {"type": "string"},
@@ -611,11 +651,20 @@ INTERROGATION_TOOL_SCHEMA = {
                                     "enum": ["SUPPORTED", "WEAKENED", "UNRESOLVED", "NOT_TESTABLE"],
                                 },
                             },
-                            "required": ["explanation", "evidence", "test", "result", "status"],
+                            "required": ["alternate_id", "explanation", "evidence", "test", "result", "status"],
                         },
                     }
                 },
                 "required": ["alternate_explanations"],
+            },
+            "primary_alternate": {
+                "type": ["object", "null"],
+                "description": "The tested alternate most important to interpreting whether the signal is a meaningful change -- the one that, if true, would most seriously change the interpretation. NOT the most plausible. null when alternate_explanations is empty. See Task 1b in the system prompt.",
+                "properties": {
+                    "alternate_id": {"type": "string", "description": "Must equal the alternate_id of an entry present in challenge.alternate_explanations."},
+                    "selection_reason": {"type": "string", "description": "One sentence: why this alternate carries the most interpretive weight."},
+                },
+                "required": ["alternate_id", "selection_reason"],
             },
             "confirmation": {
                 "type": "object",
@@ -645,7 +694,7 @@ INTERROGATION_TOOL_SCHEMA = {
                 "description": "ONLY when signal_verdict is UNRESOLVED: is the underlying claimed relationship/gap itself real (true, judged from raw signal magnitudes) even though its explanation/durability/meaning isn't, or is there insufficient evidence the relationship exists at all (false)? null when signal_verdict is SURVIVES or FAILS. See Task 4b in the system prompt.",
             },
         },
-        "required": ["challenge", "confirmation", "judgment", "signal_verdict", "relationship_established"],
+        "required": ["challenge", "primary_alternate", "confirmation", "judgment", "signal_verdict", "relationship_established"],
     },
 }
 
@@ -756,6 +805,57 @@ def scan_relationship_established_for_contradiction(response: dict) -> list[dict
     ]
 
 
+def scan_primary_alternate_consistency(response: dict) -> list[dict]:
+    """[{field, phrase, text}, ...] -- the output-side validation for the
+    primary-alternate signal (Task 1b). Same violation shape as the other
+    three scans so it rides the same one-shot retry. Empty list = clean.
+
+    Checks, in order:
+      - every alternate_explanations[] entry carries a non-empty string
+        alternate_id, and no two entries share one (a pointer target has
+        to be unambiguous);
+      - empty array -> primary_alternate must be null;
+      - non-empty array -> primary_alternate must be an object whose
+        alternate_id resolves to an entry actually in the array, with a
+        non-empty selection_reason.
+    `phrase` carries the problem description rather than a matched word,
+    so _retry_prompt quotes it back to the model the same way."""
+    violations: list[dict] = []
+    alts = _dict_field(response, "challenge").get("alternate_explanations")
+    alts = alts if isinstance(alts, list) else []
+    ids: list = []
+    for i, alt in enumerate(alts):
+        aid = alt.get("alternate_id") if isinstance(alt, dict) else None
+        ids.append(aid)
+        if not isinstance(aid, str) or not aid.strip():
+            violations.append({"field": f"challenge.alternate_explanations[{i}].alternate_id",
+                               "phrase": "missing alternate_id", "text": repr(aid)})
+    real_ids = [x for x in ids if isinstance(x, str) and x.strip()]
+    for dup in sorted({x for x in real_ids if real_ids.count(x) > 1}):
+        violations.append({"field": "challenge.alternate_explanations[].alternate_id",
+                           "phrase": "duplicate alternate_id", "text": dup})
+
+    primary = response.get("primary_alternate")
+    if not alts:
+        if primary is not None:
+            violations.append({"field": "primary_alternate",
+                               "phrase": "must be null when alternate_explanations is empty", "text": repr(primary)})
+        return violations
+    if not isinstance(primary, dict):
+        violations.append({"field": "primary_alternate",
+                           "phrase": "missing -- required when alternate_explanations is non-empty", "text": repr(primary)})
+        return violations
+    pid = primary.get("alternate_id")
+    if pid not in real_ids:
+        violations.append({"field": "primary_alternate.alternate_id",
+                           "phrase": "does not resolve to any alternate_explanations[].alternate_id", "text": repr(pid)})
+    reason = primary.get("selection_reason")
+    if not isinstance(reason, str) or not reason.strip():
+        violations.append({"field": "primary_alternate.selection_reason",
+                           "phrase": "missing selection_reason", "text": repr(reason)})
+    return violations
+
+
 def _entity_display_name(entity: dict | None) -> str:
     if not entity:
         return "unknown entity"
@@ -811,13 +911,18 @@ def build_interrogation_input(story: dict, prior_history: dict = None, market_da
 
 
 def _retry_prompt(original_input: dict, violations: list[dict]) -> str:
-    quoted = "\n".join(f"- {v['field']}: {v['text']!r} (contains: {v['phrase']!r})" for v in violations)
+    # Wording generalized from "language rules"/"contains" when the
+    # primary-alternate consistency scan was added: that scan's violations
+    # are structural (a dangling alternate_id, a null where an object is
+    # required), not a banned word, and its `phrase` is a problem
+    # description rather than matched text. The three language scans read
+    # the same way under this wording.
+    quoted = "\n".join(f"- {v['field']}: {v['text']!r} (problem: {v['phrase']!r})" for v in violations)
     return (
         f"{json.dumps(original_input)}\n\n"
-        "Your previous response violated the language rules in the system prompt. "
-        "Rewrite ONLY the following fields to remove the violating language — "
-        "keep the same real claims, grounded in the same input data, just "
-        "without these words/phrases:\n"
+        "Your previous response violated the rules in the system prompt. "
+        "Fix ONLY the following fields — keep the same real claims, grounded "
+        "in the same input data, just without these problems:\n"
         f"{quoted}\n\n"
         "Return the complete record again (every field, not just the ones "
         "being fixed) via the same tool."
@@ -857,6 +962,7 @@ def interrogate_story(
         (scan_for_confidence_escalation, "confidence-escalation"),
         (scan_evidence_significance_for_reader_framing, "reader-framing"),
         (scan_relationship_established_for_contradiction, "relationship-established-contradiction"),
+        (scan_primary_alternate_consistency, "primary-alternate-consistency"),
     ):
         violations = scan_fn(response)
         if not violations:
@@ -907,10 +1013,17 @@ def interrogate_story(
         "context": input_contract["context"],
         "challenge": {
             "alternate_explanations": [
-                {k: alt.get(k) for k in ("explanation", "evidence", "test", "result", "status")}
+                {k: alt.get(k) for k in ("alternate_id", "explanation", "evidence", "test", "result", "status")}
                 for alt in _dict_field(response, "challenge").get("alternate_explanations") or []
             ],
         },
+        # Reshaped to exactly its two declared keys, or None. Reached only
+        # after scan_primary_alternate_consistency passed (or was clean),
+        # so a non-null value here already resolves to a real entry above.
+        "primary_alternate": (
+            {k: response["primary_alternate"].get(k) for k in ("alternate_id", "selection_reason")}
+            if isinstance(response.get("primary_alternate"), dict) else None
+        ),
         "confirmation": {
             k: _dict_field(response, "confirmation").get(k)
             for k in ("supporting_signals", "contradicting_signals", "market_reaction")

@@ -1,0 +1,160 @@
+{
+  "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+  "sections": [
+    {
+      "section_type": "from_the_desk",
+      "stories": [
+        {
+          "headline": "Nobody issues a press release when a depth chart changes",
+          "body": "Teams are remarkably polite about not telling us what they've decided. There's no memo when a backfield changes hands, no press conference announcing that a tight end has become more important than he used to be. They just keep putting the player on the field until the rest of us are forced to notice.\n\nThis week gave me two versions of that same quiet announcement, and one deliberately loud one that didn't match the tape. I'll take all three. I'd rather watch usage than listen to someone explain it to me.",
+          "intelligence_story_ids": [],
+          "player_ids": [],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "big_one",
+      "stories": [
+        {
+          "headline": "The coach said 'share the workload.' The tape said otherwise.",
+          "body": "I try not to make too much of a single game. One week of anything is usually noise wearing a costume. But this one came with its own built-in control group: a head coach, on the record, describing a backfield as a split, the same week his own usage pattern said the opposite.\n\nThibodeaux went from a near-even 52/48 committee to 81% of the snaps. Okonkwo didn't just see fewer plays overall — he was confined almost entirely to third-down and two-minute work, the packages you give a back you're not building around that week. That's not what a rotation looks like. The four games before this one showed alternating series. This one didn't.\n\nI also wanted to know if a 13-point final margin explained it — garbage-time workloads are their own kind of noise. It didn't hold up. Thibodeaux's share was within four points of itself in each half, whether the game was within one score or already decided. Whatever happened here, it wasn't the scoreboard doing the deciding.\n\nSo what's left is the coach's own words, sitting there unresolved. He said the backfield would stay a split. His own team's usage, for one game, looked nothing like one. I don't think \"share the workload\" was a lie — postgame quotes rarely are, and rarely aren't, either. I think it's a sentence that hasn't been tested yet. There's exactly one game of evidence for what comes next, and I'm not going to pretend that's more than it is.\n\nThe market didn't wait for the coach to clarify. Thibodeaux moved from +340 to +230 in 48 hours; Okonkwo drifted out to +520. That's a market making its own read of the tape, not the transcript.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-7"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-7"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 74,
+            "evidence_strength": 66,
+            "betting_relevance": 79,
+            "novelty": 70,
+            "story_tension": 86,
+            "audience_relevance": 50,
+            "eps_total": 73.4
+          }
+        }
+      ],
+      "cross_references": [
+        {
+          "text": "If you want to see what the same kind of shift looks like once it's survived more than one week, the Keane situation below is the multi-game version of this question.",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+        }
+      ]
+    },
+    {
+      "section_type": "what_changed",
+      "stories": [
+        {
+          "headline": "Keane's goal-line role survived the obvious explanation",
+          "body": "Three weeks ago the incumbent back controlled better than two-thirds of the goal-line work. Now it's Keane, and by enough that it stopped looking like noise two games ago.\n\nThe easy explanation was sitting right there: the incumbent was limited by an ankle issue the week this started. Convenient, tidy, and exactly the kind of thing that should make you check before you believe it. So I checked. He returned to full practice participation the following week, and Keane still took five of the next seven goal-line opportunities. Whatever this is, it outlasted its own best excuse.\n\nSnap share and red-zone targets moved with it, not just the touches that are easiest to notice. The market has already started pricing it — the touchdown number moved from +650 to +400 — which tells me I'm not the only one who looked twice. What I don't know yet is whether this is a permanent handoff or an extended trial that ends the moment the incumbent has a good week. Three games is enough to take seriously. It isn't enough to call settled.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        },
+        {
+          "headline": "Osei's role gave some of itself back — not all of it",
+          "body": "This is the less satisfying version of a role story, and I think the less satisfying version is usually the more honest one. Osei's red-zone snap share tripled while the starting tight end was out with a hamstring injury, which is exactly what you'd expect and not especially interesting on its own. The interesting part is what happened when the starter came back.\n\nIt didn't fully revert. Osei's share dropped from 34% back toward the original baseline, but only to 26% — not the 12% he started at. That's a real retreat, not a mirage, so I'm not going to pretend the injury explanation was wrong. It was partly right. The offense has also leaned on two-tight-end red-zone packages more since the starter returned than it did in the first five weeks of the season, which is the kind of detail that makes a partial reversion look like a decision rather than residue.\n\nThe price moved modestly — +1100 to +850 — which is about the right amount of market reaction for a story that's genuinely half-resolved. I'd be suspicious of a bigger move on evidence this mixed.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-5"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 44,
+            "evidence_strength": 58,
+            "betting_relevance": 49,
+            "novelty": 47,
+            "story_tension": 61,
+            "audience_relevance": 25,
+            "eps_total": 49.5
+          }
+        },
+        {
+          "headline": "Carolina's slot coverage: soft spot, or just a tough two weeks?",
+          "body": "Opposing slot receivers have beaten expectation against Carolina in two of the last three games, which is the sort of thing that invites a tidy \"defensive weakness\" headline. I went looking for a cleaner answer and didn't find one, which is itself worth saying out loud instead of quietly picking the more interesting version.\n\nBoth of the elevated games came against two of the better slot receivers in the league this season. That's a real competing explanation — opponent quality, not scheme. So I checked the one game that stayed at expectation: it came against a bottom-half slot receiver. That's consistent with either story. A weak defense would also look fine against a weak receiver. It doesn't separate the two explanations — it just confirms I don't have enough to pick one.\n\nI'd rather tell you that plainly than round it up into a trend.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "who_it_affects",
+      "stories": [],
+      "cross_references": [
+        {
+          "text": "Thibodeaux and Okonkwo are the two names whose weekly value just got a lot less stable — one trending toward a lead role, the other toward a change-of-pace one, both only one game into it.",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-7"
+        },
+        {
+          "text": "Keane's the name to watch if you track goal-line work specifically — the incumbent back is the one losing value here, even though nobody's written his obituary yet.",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+        }
+      ]
+    },
+    {
+      "section_type": "tasty_connection",
+      "stories": [],
+      "cross_references": []
+    }
+  ],
+  "watchlist_populated": false,
+  "notes_for_human_reviewer": "This is Calibration Fixture V2 \\u2014 a new calibration test of the newly added EPS-consumption behavior (Step 1 / Step 2 gate-reading / eps_scores copy-not-compute), not a reproduction or re-confirmation of the original two-round voice/structure calibration. Flagging specifically for that review, plus several close calls:\n\n1. BIG ONE vs WATCHLIST choice: Fixtures 1 and 7 are both big_one_eligible AND watchlist_eligible, with very close composite scores (76.75 vs 73.4). I chose Fixture 7 (Thibodeaux) for the Big One over Fixture 1 (Keane) because its tension is more immediate and reader-facing (coach's own words contradicted by same-week usage, two independently tested and weakened alternates) even though Fixture 1 has a marginally higher EPS total and a longer survival window. This is an editorial judgment call, not a scoring one \\u2014 flagging in case a reviewer would weight it the other way. Per the one-treatment rule, Fixture 1 got a full What Changed entry and only a cross-reference in the Big One section; Fixture 7 appears nowhere else.\n\n2. WATCHLIST: No section included. After the Big One (Fixture 7) and What Changed (Fixtures 1, 5, 4) claimed their stories, nothing remaining has watchlist_eligible == true \\u2014 Fixtures 2, 3, 6 are all ineligible, and Fixtures 1/7 already received primary treatment elsewhere. Per the hard rule against structural symmetry, I left it out rather than force a cross-reference-only or thin entry.\n\n3. EXCLUDED STORIES: Fixtures 2 (Rhoads \\u2014 stable price, no underlying change) and 6 (Voss \\u2014 normal price noise despite very high audience_relevance) were both evaluated as confirmation-of-steady-state stories with low significance/novelty/tension. Per the decision table (\\\"low evidence + low editorial value\\\" / \\\"high audience relevance alone doesn't rescue a non-story\\\"), I didn't publish either \\u2014 included here only so the exclusion reasoning is visible. Fixture 3 (Denver red-zone pass rate) failed the Big One gate (big_one_eligible: false) and also isn't watchlist_eligible, and its own interrogation marks the sample NOT_TESTABLE against a game-script confound, so I excluded it as well rather than stretch it into a Watchlist filler.\n\n4. TASTY CONNECTION: Left empty per the fixture note \\u2014 no live_picks data exists for this synthetic run, so inventing a connection would violate the no-manufactured-evidence rule. Recording this as an honest empty section, not an oversight.\n\n5. WHO IT AFFECTS: No independent story here beyond what's already fully told in the Big One and first What Changed entry, so I used cross-references only rather than writing thin duplicate narration for players who already got full treatment elsewhere.\n\n6. Per Step 1, all eps_scores entries above are verbatim copies of each Story Object's upstream eps.dimensions and composite_score \\u2014 I did not recompute or adjust any value, including for stories I ultimately chose not to feature.\n\nPlease specifically sanity-check this draft for the five regression risks named in the calibration scope (system-state narration leaking into prose, score-sorted-instead-of-judged selection, reduced reasoning visibility, overconfident tone from leaning on EPS, general voice drift) since that's the explicit purpose of this run.",
+  "_validation": {
+    "passed": true,
+    "retry_fired": false,
+    "attempts": [
+      {
+        "attempt": 1,
+        "block_index": 0,
+        "passed": true,
+        "hard_errors": [],
+        "shape_errors": [],
+        "repairs": []
+      }
+    ],
+    "repairs": []
+  }
+}

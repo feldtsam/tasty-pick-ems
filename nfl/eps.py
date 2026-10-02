@@ -96,6 +96,45 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
 
 
+def _primary_alternate_lead(interrogation: dict, alternates: list) -> str | None:
+    """
+    The leading clause of the evidence_strength rationale when the
+    interrogation carries a resolvable primary_alternate (INTERROGATION_
+    VERSION v3_primary_alternate, story_interrogation.py Task 1b):
+    "primary alternate <id> <STATUS> -- <selection_reason>; <N> other
+    alternate(s) <STATUS>, ...". Returns None -- and the caller falls
+    back to the pre-v3 wording unchanged -- when the record predates v3
+    (no primary_alternate key), carries null (empty array), or points at
+    an alternate_id with no matching entry (the interrogation layer
+    validates that on output, but EPS can be handed hand-edited or
+    legacy data and must never describe a pointer it can't resolve).
+
+    This changes only what is COMMUNICATED about the alternates. The
+    score math above/below is untouched: every alternate's status still
+    adds its own adjustment, count-additively, exactly as before.
+    """
+    primary = interrogation.get("primary_alternate")
+    if not isinstance(primary, dict):
+        return None
+    pid = primary.get("alternate_id")
+    entry = next((a for a in alternates if isinstance(a, dict) and a.get("alternate_id") == pid), None)
+    if entry is None:
+        return None
+    reason = (primary.get("selection_reason") or "").strip().rstrip(".")
+    lead = f"primary alternate {pid} {entry.get('status')}" + (f" -- {reason}" if reason else "")
+    others = [a for a in alternates if a is not entry]
+    if not others:
+        return f"{lead}; no other alternates"
+    from collections import Counter
+
+    counts = Counter(str(a.get("status")) for a in others if isinstance(a, dict))
+    summary = ", ".join(
+        f"{n} other alternate{'s' if n != 1 else ''} {status}"
+        for status, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    return f"{lead}; {summary}"
+
+
 def compute_evidence_strength(story: dict, interrogation: dict | None) -> dict:
     """
     {score, rationale, computation: "deterministic"} — pure function,
@@ -104,6 +143,17 @@ def compute_evidence_strength(story: dict, interrogation: dict | None) -> dict:
     pre-interrogation base value with no adjustment -- EPS degrades
     gracefully here, never blocks, matching §10's own "less informed,
     not absent" instruction.
+
+    RATIONALE, v3 interrogations: when the record carries a resolvable
+    primary_alternate, the rationale LEADS with it (id, status,
+    selection_reason), then summarizes the remaining alternates by count
+    and status, then keeps the base note and the numeric adjustment
+    total exactly as before -- see _primary_alternate_lead. Downstream
+    readers (the Weekly Editor Agent reads this string inside
+    eps.dimensions) previously saw every alternate enumerated as an
+    interchangeable peer, which is one of the places the "narrate every
+    branch" behavior was being fed from. Pre-v3 records (no
+    primary_alternate key) get the previous wording, byte-for-byte.
     """
     completeness = story.get("completeness")
     confidence = story.get("confidence")
@@ -120,7 +170,8 @@ def compute_evidence_strength(story: dict, interrogation: dict | None) -> dict:
     else:
         adjustment = 0.0
         adj_notes = []
-        for alt in interrogation.get("challenge", {}).get("alternate_explanations", []):
+        alternates = interrogation.get("challenge", {}).get("alternate_explanations", []) or []
+        for alt in alternates:
             status = alt.get("status")
             delta = _STATUS_ADJUSTMENTS.get(status, 0)
             adjustment += delta
@@ -131,6 +182,9 @@ def compute_evidence_strength(story: dict, interrogation: dict | None) -> dict:
             rationale = f"{base_note}, adjusted {adjustment:+.0f} from challenge status(es): {', '.join(adj_notes)}."
         else:
             rationale = f"{base_note}. No challenge status moved the score (empty alternate_explanations, or all NOT_TESTABLE)."
+        lead = _primary_alternate_lead(interrogation, alternates)
+        if lead is not None:
+            rationale = f"{lead}. {rationale}"
 
     evidence_classification = story.get("evidence_classification")
     if evidence_classification == "limited":
@@ -285,7 +339,21 @@ data" as itself evidence of novelty.
 This is the dimension most directly grounded in Story Interrogation. Your
 rationale must cite specific content from interrogation.challenge or
 interrogation.confirmation — a real alternate explanation that was tested, a
-real contradicting signal, a real ambiguity. You are PROHIBITED from citing
+real contradicting signal, a real ambiguity.
+
+Which tested alternate to cite: when interrogation.primary_alternate is
+present and not null, cite THAT one — the entry in
+challenge.alternate_explanations whose alternate_id matches
+primary_alternate.alternate_id. It is the alternate the interrogation judged
+most important to interpreting whether the signal is a meaningful change
+(not the most plausible one), and primary_alternate.selection_reason states
+why. Fall back to citing any tested alternate only when primary_alternate is
+null — an empty alternate_explanations array, or an older interrogation
+record that has no primary_alternate field at all. A real contradicting
+signal or a real ambiguity from interrogation.confirmation may be cited
+alongside it either way.
+
+You are PROHIBITED from citing
 anything for Story Tension that is not present in interrogation.challenge or
 interrogation.confirmation. Do not manufacture tension from the headline,
 story text, or your own sense that something seems interesting — if
@@ -416,7 +484,16 @@ def _story_tension_grounded_in_interrogation(rationale: str, interrogation: dict
     """
     if interrogation is None:
         return False
-    source_text = json.dumps(interrogation.get("challenge", {})) + " " + json.dumps(interrogation.get("confirmation", {}))
+    # primary_alternate (v3 interrogations) is included in the source
+    # text: the rubric now tells the scorer to cite the primary alternate,
+    # and its selection_reason is real interrogation output -- a rationale
+    # grounded in that sentence is grounded, not manufactured. Absent or
+    # null on pre-v3 records -> contributes nothing, same check as before.
+    source_text = (
+        json.dumps(interrogation.get("challenge", {})) + " "
+        + json.dumps(interrogation.get("confirmation", {})) + " "
+        + json.dumps(interrogation.get("primary_alternate") or {})
+    )
     source_words = set(re.findall(r"[a-z]{5,}", source_text.lower()))
     rationale_words = set(re.findall(r"[a-z]{5,}", rationale.lower()))
     overlap = source_words & rationale_words

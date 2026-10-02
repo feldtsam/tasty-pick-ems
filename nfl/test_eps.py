@@ -232,6 +232,138 @@ if __name__ == "__main__":
         not _valid_semantic_response_shape(["not", "a", "dict"]),
     ))
 
+    # ============================================================
+    # primary_alternate consumption (interrogation v3_primary_alternate):
+    # what the evidence_strength rationale COMMUNICATES changes; the
+    # scoring math does not. Pre-v3 records keep the previous wording.
+    # ============================================================
+    import eps as _eps
+
+    v3_alts = [
+        {"alternate_id": "alt_1", "explanation": "coach's stated plan", "evidence": "q", "test": "t", "result": "r", "status": "WEAKENED"},
+        {"alternate_id": "alt_2", "explanation": "game script", "evidence": "q", "test": "t", "result": "r", "status": "WEAKENED"},
+    ]
+    v3_interrogation = {
+        "challenge": {"alternate_explanations": v3_alts},
+        "primary_alternate": {"alternate_id": "alt_1", "selection_reason": "If true, the split returns next week and the durability claim fails."},
+    }
+    pre_v3_same_statuses = {"challenge": {"alternate_explanations": [dict(a) for a in v3_alts]}}  # no primary_alternate key at all
+    es_v3 = compute_evidence_strength(base_story, v3_interrogation)
+    es_pre = compute_evidence_strength(base_story, pre_v3_same_statuses)
+    results.append(check(
+        "math unchanged: a v3 record scores identically to the same statuses without primary_alternate (count-additive, +8 per WEAKENED)",
+        es_v3["score"] == es_pre["score"] == 86.0,
+    ))
+    results.append(check(
+        "v3 rationale LEADS with the primary alternate: alternate_id, status, selection_reason",
+        es_v3["rationale"].startswith("primary alternate alt_1 WEAKENED -- If true, the split returns next week and the durability claim fails"),
+    ))
+    results.append(check(
+        "v3 rationale summarizes the remaining alternates by count and status",
+        "; 1 other alternate WEAKENED." in es_v3["rationale"],
+    ))
+    results.append(check(
+        "v3 rationale keeps the numeric adjustment total and the per-status notes",
+        "adjusted +16 from challenge status(es): WEAKENED (+8), WEAKENED (+8)" in es_v3["rationale"],
+    ))
+    results.append(check(
+        "pre-v3 record (no primary_alternate key): the previous wording, no 'primary alternate' lead, no error",
+        es_pre["rationale"].startswith("base (confidence 70.0 + completeness 70.0) / 2 = 70.0, adjusted +16")
+        and "primary alternate" not in es_pre["rationale"],
+    ))
+    mixed = {
+        "challenge": {"alternate_explanations": [
+            {"alternate_id": "alt_1", "status": "WEAKENED"}, {"alternate_id": "alt_2", "status": "SUPPORTED"},
+            {"alternate_id": "alt_3", "status": "NOT_TESTABLE"}, {"alternate_id": "alt_4", "status": "NOT_TESTABLE"},
+        ]},
+        "primary_alternate": {"alternate_id": "alt_2", "selection_reason": "the one that would most seriously change the read"},
+    }
+    es_mixed = compute_evidence_strength(base_story, mixed)
+    results.append(check(
+        "the primary may be a SUPPORTED alternate: the lead reports ITS status; others grouped by count, most frequent first",
+        es_mixed["rationale"].startswith(
+            "primary alternate alt_2 SUPPORTED -- the one that would most seriously change the read; "
+            "2 other alternates NOT_TESTABLE, 1 other alternate WEAKENED."
+        ),
+    ))
+    results.append(check("mixed-status math unchanged (+8 -15 +0 +0 = -7)", es_mixed["score"] == 63.0))
+    single = {
+        "challenge": {"alternate_explanations": [{"alternate_id": "alt_1", "status": "UNRESOLVED"}]},
+        "primary_alternate": {"alternate_id": "alt_1", "selection_reason": "only one"},
+    }
+    results.append(check(
+        "single-alternate v3 record reads 'no other alternates'",
+        "primary alternate alt_1 UNRESOLVED -- only one; no other alternates. base (" in compute_evidence_strength(base_story, single)["rationale"],
+    ))
+    null_primary_empty = {"challenge": {"alternate_explanations": []}, "primary_alternate": None}
+    results.append(check(
+        "v3 record with an empty array and primary_alternate null: the previous empty-array wording, unchanged",
+        compute_evidence_strength(base_story, null_primary_empty)["rationale"] == es_empty["rationale"],
+    ))
+    dangling = {"challenge": {"alternate_explanations": [dict(a) for a in v3_alts]},
+                "primary_alternate": {"alternate_id": "alt_9", "selection_reason": "x"}}
+    es_dangling = compute_evidence_strength(base_story, dangling)
+    results.append(check(
+        "a primary_alternate that resolves to no entry falls back to the previous wording (never describes a pointer it can't resolve), score unchanged",
+        "primary alternate" not in es_dangling["rationale"] and es_dangling["score"] == es_pre["score"],
+    ))
+    all_nt = {"challenge": {"alternate_explanations": [{"alternate_id": "alt_1", "status": "NOT_TESTABLE"}]},
+              "primary_alternate": {"alternate_id": "alt_1", "selection_reason": "r"}}
+    es_all_nt = compute_evidence_strength(base_story, all_nt)
+    results.append(check(
+        "v3 record whose only alternate is NOT_TESTABLE: primary lead, then the previous 'no challenge status moved the score' note",
+        es_all_nt["rationale"].startswith("primary alternate alt_1 NOT_TESTABLE -- r; no other alternates. base (")
+        and "No challenge status moved the score" in es_all_nt["rationale"],
+    ))
+    es_v3_limited = compute_evidence_strength(limited_story, v3_interrogation)
+    results.append(check(
+        "evidence_classification=limited still caps the score and still appends its note after the primary-led rationale",
+        es_v3_limited["score"] <= LIMITED_EVIDENCE_CAP
+        and es_v3_limited["rationale"].startswith("primary alternate alt_1")
+        and "hard-caps the score" in es_v3_limited["rationale"],
+    ))
+
+    # --- Story Tension rubric (SYSTEM_PROMPT) ---
+    P = " ".join(_eps.SYSTEM_PROMPT.split())  # whitespace-normalized: the prompt wraps mid-sentence
+    results.append(check(
+        "rubric: Story Tension tells the scorer to cite the primary alternate when present, matched by alternate_id",
+        "when interrogation.primary_alternate is present and not null, cite THAT one" in P
+        and "whose alternate_id matches primary_alternate.alternate_id" in P,
+    ))
+    results.append(check(
+        "rubric: falls back to any tested alternate only when primary_alternate is null (empty array, or a pre-v3 record with no field)",
+        "Fall back to citing any tested alternate only when primary_alternate is null" in P
+        and "no primary_alternate field at all" in P,
+    ))
+    results.append(check(
+        "rubric: the PROHIBITED clause and the interrogation:null cap are unchanged",
+        "You are PROHIBITED from citing anything for Story Tension that is not present in interrogation.challenge or interrogation.confirmation" in P
+        and "Cap your Story Tension score at 40 or below" in P,
+    ))
+
+    # --- grounding guard now sources primary_alternate text too ---
+    terse = {
+        "challenge": {"alternate_explanations": [
+            {"alternate_id": "alt_1", "explanation": "x", "evidence": "y", "test": "z", "result": "r", "status": "WEAKENED"}]},
+        "confirmation": {"supporting_signals": "s", "contradicting_signals": "c", "market_reaction": "m"},
+        "primary_alternate": {"alternate_id": "alt_1", "selection_reason": "coach stated workload plan negates durability outright"},
+    }
+    cites_reason = "The coach's stated workload plan negates durability outright."
+    results.append(check(
+        "grounding guard: a Story Tension rationale grounded in primary_alternate.selection_reason is recognized as grounded",
+        _story_tension_grounded_in_interrogation(cites_reason, terse),
+    ))
+    results.append(check(
+        "grounding guard: the same rationale is NOT grounded against a pre-v3 record lacking that text -- the new source is what grounds it",
+        not _story_tension_grounded_in_interrogation(cites_reason, {k: v for k, v in terse.items() if k != "primary_alternate"}),
+    ))
+    results.append(check(
+        "grounding guard: existing grounded / ungrounded / None behavior unchanged",
+        _story_tension_grounded_in_interrogation(grounded_rationale, real_interrogation)
+        and not _story_tension_grounded_in_interrogation(ungrounded_rationale, real_interrogation)
+        and _story_tension_grounded_in_interrogation("anything", None) is False,
+    ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")

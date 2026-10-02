@@ -1,0 +1,394 @@
+{
+  "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+  "sections": [
+    {
+      "section_type": "from_the_desk",
+      "stories": [
+        {
+          "headline": "Nobody holds a press conference to announce a demotion",
+          "body": "Teams are remarkably consistent about saying one thing and doing another. Not out of dishonesty, usually — more that the plan on the whiteboard and the plan that survives a Sunday afternoon aren't always the same plan.\n\nThis week gave me two backfields that quietly stopped being committees, a defense that might have a problem or might just have played two good receivers, and a price that sat so still for so long it practically became the news itself.\n\nI'm not in the business of telling you which one is real. I'm in the business of telling you which ones are worth watching closely enough to find out.",
+          "intelligence_story_ids": [],
+          "player_ids": [],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "big_one",
+      "stories": [
+        {
+          "headline": "The coach said \"share the workload.\" The tape disagreed.",
+          "body": "After the game, the coach called it a split backfield. Still is, he said — they'll share the workload.\n\nI went looking for the share. Thibodeaux played 81% of the snaps. Okonkwo, healthy, no injury designation, still running his usual special-teams reps, got 13 — and every one of them came in a third-down or two-minute package. That's not a committee leaning one direction for a week. That's a specific, deliberate role: third downs and nothing else.\n\nTwo explanations would let this be nothing. Maybe it was just the game plan for one opponent, and the series would show the two backs alternating like they had all season. They didn't — Thibodeaux took every early-down series after the first, both goal-line looks, and the whole four-minute drill. Maybe it was the scoreboard — a lopsided game letting one back take over once it was out of reach. Except the split was 79% in the first half, when the game was still within a score, and 83% in the second. If anything, it got more lopsided when the outcome was least decided.\n\nSo I'm left with a coach's quote and a snap sheet that don't agree, and only the snap sheet comes with a mirror image: Okonkwo's share fell by almost exactly what Thibodeaux's rose, which is usage changing hands, not simply more plays to go around. The market has already made its own decision — Thibodeaux's price dropped from +340 to +230 inside two days, Okonkwo's drifted out to +520.\n\nWhat I don't have is a second game. One result, however clean, is one result. If the coach is right and this rebalances next week, I'll say so. If it doesn't, the quote will have told us more about what coaches say than what they do.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-7"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-7"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 74,
+            "evidence_strength": 66,
+            "betting_relevance": 79,
+            "novelty": 70,
+            "story_tension": 86,
+            "audience_relevance": 50,
+            "eps_total": 73.4
+          }
+        }
+      ],
+      "cross_references": [
+        {
+          "text": "It's the second backfield this week where the snap sheet moved faster than anyone announced it.",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+        }
+      ]
+    },
+    {
+      "section_type": "what_changed",
+      "stories": [
+        {
+          "headline": "Keane's goal-line role survived the easiest excuse available",
+          "body": "The tidy explanation for Keane's rise — goal-line share up from 24% to 58% over three games — was always going to be the incumbent's ankle. He was limited in practice the week this started. Explanations like that usually resolve themselves: the veteran gets healthy, the committee resets, everyone moves on.\n\nHe did get healthy. Full practice participation, Week 5. Keane kept 5 of his next 7 goal-line opportunities anyway. Snap share and red-zone targets rose with it, not just the carries. The market, for what it's worth, already noticed — the touchdown price nearly halved.\n\nWhat I don't know yet is whether this is a permanent decision or an extended look that ends the moment Keane has a quiet week. Three games is enough to take seriously. It isn't enough to stop checking.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        },
+        {
+          "headline": "Osei kept more of the role than the injury explains",
+          "body": "When a backup tight end's red-zone snaps triple while the starter is hurt, that's not a story — that's just how backups work. The story is what happens when the starter comes back.\n\nOsei's share dropped from 34% to 26% after the starting TE returned. That's a real reversion, and I want to be honest about that: the injury explanation wasn't eliminated, only weakened. But 26% isn't 12%, where this started, and the offense has used more two-tight-end red-zone personnel since the starter's return than it did in the season's first five weeks — which suggests the extra role isn't just leftover inertia from the injury, but something the staff is choosing to keep using.\n\nCall it a partial result, honestly arrived at. Some of this looks durable. Some of it looks like it already reverted. I'd rather tell you that than round it off in either direction.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-5"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 44,
+            "evidence_strength": 58,
+            "betting_relevance": 49,
+            "novelty": 47,
+            "story_tension": 61,
+            "audience_relevance": 25,
+            "eps_total": 49.5
+          }
+        },
+        {
+          "headline": "Carolina's slot coverage: vulnerability, or just a tough two weeks?",
+          "body": "Slot receivers have beaten expectation against Carolina in two of the last three games, after a month of playing roughly to expectation. The obvious question is whether that's a defense with a real hole in it, or a defense that happened to run into two of the better slot receivers in the league in the same month.\n\nI checked the one game that would separate those two stories: the week Carolina held at expectation. If this were really about Carolina, that game should have come against a decent slot receiver too. It didn't — it came against one of the league's weaker ones. Which means the data lines up with either explanation equally well. That's not a weak case for a vulnerability. It's a genuinely unresolved one, and those aren't the same thing.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "market_knows_something",
+      "stories": [
+        {
+          "headline": "Rhoads' price stopped moving, and that's the whole story",
+          "body": "Three books, two weeks, the same narrow band. Nothing about Rhoads' role moved in that window either — targets and usage sat flat right alongside the price. Ordinarily I'd go looking for the gap between what changed and what the market noticed. There isn't one here. The role didn't move, and the market didn't move. That agreement, between three independent books and an unchanged role, is itself worth noting — not because it predicts anything, but because it tells you the price you're looking at right now is one the market has actually settled on, not one it's still arguing about.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-2"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-2"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 22,
+            "evidence_strength": 71,
+            "betting_relevance": 28,
+            "novelty": 18,
+            "story_tension": 15,
+            "audience_relevance": 40,
+            "eps_total": 31.85
+          }
+        }
+      ],
+      "cross_references": []
+    },
+    {
+      "section_type": "who_it_affects",
+      "stories": [],
+      "cross_references": [
+        {
+          "text": "Two backfields, two backs losing the argument",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-7"
+        },
+        {
+          "text": "Two backfields, two backs losing the argument",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+        }
+      ]
+    },
+    {
+      "section_type": "tasty_connection",
+      "stories": [],
+      "cross_references": []
+    },
+    {
+      "section_type": "watchlist",
+      "stories": [],
+      "cross_references": [
+        {
+          "text": "Keane, if the role holds a fourth week",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+        },
+        {
+          "text": "Carolina's slot coverage, against a real test",
+          "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-4"
+        }
+      ]
+    }
+  ],
+  "watchlist_populated": true,
+  "notes_for_human_reviewer": "This is Fixture V2 — a new calibration test for the EPS-consumption behavior (Step 1, gate-reading in Step 2, eps_scores copy-not-compute), not a reproduction of the original two-round voice calibration. Flagging for review:\n\n1. BIG ONE vs. FIXTURE-1 call: Both Fixture 1 (Keane) and Fixture 7 (Thibodeaux) are big_one_eligible and watchlist_eligible, with Fixture 1 actually scoring slightly higher on eps_total (76.75 vs 73.4). I chose Fixture 7 for the Big One because its story_tension dimension is highest in the set (86) and rests on a genuinely rarer hook — a direct, on-record coach quote contradicted by usage data, tested against two alternate explanations rather than one. This is a comparative editorial judgment per the decision table, not a sort-by-eps_total choice; flagging it explicitly since the two composite scores are close enough that a reviewer might expect the higher-scoring story in that slot.\n\n2. Fixture 1, having received the Big One treatment, was excluded from Watchlist stories[] per the one-treatment rule despite independently clearing watchlist_eligible — it appears in Watchlist only as a forward-looking note I judged distinct enough from the Big One's own content to be worth a short follow-up line, plus a cross_reference from the Big One section. If that Watchlist entry reads as a second treatment of the same story rather than a genuinely forward-looking item (next week's open question), it should be cut rather than kept — this is the closest call in the issue regarding the no-second-treatment rule.\n\n3. Fixture 3 (Denver pass rate) excluded entirely — fails big_one_eligible and watchlist_eligible, and per the decision table (low evidence, NOT_TESTABLE confound) doesn't clear the bar for a What Changed slot either. Not published anywhere, per rubric.\n\n4. Fixture 6 (Voss) excluded from Market Knows Something — big_one_eligible but composite is low (24.5) and the story itself is explicitly \"ordinary market noise\" per its own interrogation judgment; including it would be padding a section with high audience_relevance but no real signal. Fixture 2 (Rhoads) was the stronger market story available this week despite also being a \"stable state\" story, since at least its evidence_strength (71) and clean-convergence narrative gave it something to say.\n\n5. Tasty Connection is empty, as instructed by live_picks_note — no live picks exist in this fixture, so nothing was invented.\n\n6. All eps_scores fields are verbatim copies of each Story Object's upstream eps.dimensions scores and composite_score — none were recomputed or adjusted during drafting.\n\nPlease specifically check items 1 and 2 above against the calibration goals in Step 1/Step 2 before treating this run as a clean pass.",
+  "_validation": {
+    "passed": true,
+    "retry_fired": false,
+    "attempts": [
+      {
+        "attempt": 1,
+        "block_index": 0,
+        "passed": true,
+        "hard_errors": [],
+        "shape_errors": [],
+        "repairs": [
+          {
+            "where": "who_it_affects.stories[0]",
+            "action": "demoted_entry_to_cross_references",
+            "duplicates": [
+              {
+                "intelligence_story_id": "SYNTHETIC-FIXTURE-7",
+                "treated_in": "big_one"
+              },
+              {
+                "intelligence_story_id": "SYNTHETIC-FIXTURE-1",
+                "treated_in": "what_changed"
+              }
+            ],
+            "removed_entry": {
+              "headline": "Two backfields, two backs losing the argument",
+              "body": "Okonkwo and the Denver incumbent back aren't in the same building, but they're having the same week. Both were the established option. Both just watched a teammate's role expand at their direct expense, not through added snaps for the offense but through a reallocation of the snaps already there. Okonkwo at least kept his special-teams work and his health; that's not nothing, and it's part of why this isn't a clean story yet. Worth remembering that the player losing a role rarely gets a quote about it — the usage says it before anyone does.",
+              "intelligence_story_ids": [
+                "SYNTHETIC-FIXTURE-7",
+                "SYNTHETIC-FIXTURE-1"
+              ],
+              "player_ids": [
+                "SYNTHETIC-PLAYER-7",
+                "SYNTHETIC-PLAYER-1"
+              ],
+              "pick_ids": [],
+              "eps_scores": {
+                "significance": 0,
+                "evidence_strength": 0,
+                "betting_relevance": 0,
+                "novelty": 0,
+                "story_tension": 0,
+                "audience_relevance": 0,
+                "eps_total": 0
+              }
+            }
+          },
+          {
+            "where": "watchlist.stories[0]",
+            "action": "demoted_entry_to_cross_references",
+            "duplicates": [
+              {
+                "intelligence_story_id": "SYNTHETIC-FIXTURE-1",
+                "treated_in": "what_changed"
+              }
+            ],
+            "removed_entry": {
+              "headline": "Keane, if the role holds a fourth week",
+              "body": "I've already walked through why the injury explanation doesn't cover what happened here. What I haven't seen is a fourth game. Three is a pattern. Four would be closer to a conclusion.",
+              "intelligence_story_ids": [
+                "SYNTHETIC-FIXTURE-1"
+              ],
+              "player_ids": [
+                "SYNTHETIC-PLAYER-1"
+              ],
+              "pick_ids": [],
+              "eps_scores": {
+                "significance": 78,
+                "evidence_strength": 74,
+                "betting_relevance": 81,
+                "novelty": 66,
+                "story_tension": 83,
+                "audience_relevance": 55,
+                "eps_total": 76.75
+              }
+            }
+          },
+          {
+            "where": "watchlist.stories[1]",
+            "action": "demoted_entry_to_cross_references",
+            "duplicates": [
+              {
+                "intelligence_story_id": "SYNTHETIC-FIXTURE-4",
+                "treated_in": "what_changed"
+              }
+            ],
+            "removed_entry": {
+              "headline": "Carolina's slot coverage, against a real test",
+              "body": "The data can't currently tell the vulnerability story apart from the opponent-quality story. The next game against another good slot receiver will. I'm not calling this a weakness yet — I'm calling it a question with a scheduled answer.",
+              "intelligence_story_ids": [
+                "SYNTHETIC-FIXTURE-4"
+              ],
+              "player_ids": [
+                "SYNTHETIC-TEAM-CAR"
+              ],
+              "pick_ids": [],
+              "eps_scores": {
+                "significance": 48,
+                "evidence_strength": 44,
+                "betting_relevance": 51,
+                "novelty": 55,
+                "story_tension": 57,
+                "audience_relevance": 30,
+                "eps_total": 48.15
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "repairs": [
+      {
+        "where": "who_it_affects.stories[0]",
+        "action": "demoted_entry_to_cross_references",
+        "duplicates": [
+          {
+            "intelligence_story_id": "SYNTHETIC-FIXTURE-7",
+            "treated_in": "big_one"
+          },
+          {
+            "intelligence_story_id": "SYNTHETIC-FIXTURE-1",
+            "treated_in": "what_changed"
+          }
+        ],
+        "removed_entry": {
+          "headline": "Two backfields, two backs losing the argument",
+          "body": "Okonkwo and the Denver incumbent back aren't in the same building, but they're having the same week. Both were the established option. Both just watched a teammate's role expand at their direct expense, not through added snaps for the offense but through a reallocation of the snaps already there. Okonkwo at least kept his special-teams work and his health; that's not nothing, and it's part of why this isn't a clean story yet. Worth remembering that the player losing a role rarely gets a quote about it — the usage says it before anyone does.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-7",
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-7",
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 0,
+            "evidence_strength": 0,
+            "betting_relevance": 0,
+            "novelty": 0,
+            "story_tension": 0,
+            "audience_relevance": 0,
+            "eps_total": 0
+          }
+        }
+      },
+      {
+        "where": "watchlist.stories[0]",
+        "action": "demoted_entry_to_cross_references",
+        "duplicates": [
+          {
+            "intelligence_story_id": "SYNTHETIC-FIXTURE-1",
+            "treated_in": "what_changed"
+          }
+        ],
+        "removed_entry": {
+          "headline": "Keane, if the role holds a fourth week",
+          "body": "I've already walked through why the injury explanation doesn't cover what happened here. What I haven't seen is a fourth game. Three is a pattern. Four would be closer to a conclusion.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "player_ids": [
+            "SYNTHETIC-PLAYER-1"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 78,
+            "evidence_strength": 74,
+            "betting_relevance": 81,
+            "novelty": 66,
+            "story_tension": 83,
+            "audience_relevance": 55,
+            "eps_total": 76.75
+          }
+        }
+      },
+      {
+        "where": "watchlist.stories[1]",
+        "action": "demoted_entry_to_cross_references",
+        "duplicates": [
+          {
+            "intelligence_story_id": "SYNTHETIC-FIXTURE-4",
+            "treated_in": "what_changed"
+          }
+        ],
+        "removed_entry": {
+          "headline": "Carolina's slot coverage, against a real test",
+          "body": "The data can't currently tell the vulnerability story apart from the opponent-quality story. The next game against another good slot receiver will. I'm not calling this a weakness yet — I'm calling it a question with a scheduled answer.",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-4"
+          ],
+          "player_ids": [
+            "SYNTHETIC-TEAM-CAR"
+          ],
+          "pick_ids": [],
+          "eps_scores": {
+            "significance": 48,
+            "evidence_strength": 44,
+            "betting_relevance": 51,
+            "novelty": 55,
+            "story_tension": 57,
+            "audience_relevance": 30,
+            "eps_total": 48.15
+          }
+        }
+      }
+    ]
+  }
+}

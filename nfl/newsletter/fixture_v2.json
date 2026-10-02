@@ -10,12 +10,13 @@
     "time_window": "3 games",
     "sample_size": 11,
     "interrogation": {
-      "interrogation_version": "v1_structured_data",
+      "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Goal-line opportunity share increased", "magnitude": "24% -> 58%", "window": "3 games" },
       "context": { "prior_baseline": "Incumbent RB controlled 68% prior to Week 4", "sample_size": "11 team opportunities", "historical_normal": null },
       "challenge": {
         "alternate_explanations": [
           {
+            "alternate_id": "alt_1",
             "explanation": "Incumbent RB was limited by a minor ankle issue in Week 4",
             "evidence": "Injury report, Week 4, questionable/limited practice",
             "test": "Did the shift persist after the incumbent returned to full practice participation?",
@@ -24,6 +25,7 @@
           }
         ]
       },
+      "primary_alternate": { "alternate_id": "alt_1", "selection_reason": "The only tested alternate; if true, the goal-line shift is an injury artifact that reverses on the incumbent's return rather than a durable role change." },
       "confirmation": {
         "supporting_signals": "Snap share and red-zone target share both rose for Keane over the same window",
         "contradicting_signals": "None identified in current data",
@@ -61,10 +63,11 @@
     "time_window": "2 weeks",
     "sample_size": 3,
     "interrogation": {
-      "interrogation_version": "v1_structured_data",
+      "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Cross-book price convergence, low volatility", "magnitude": "+340 to +365 range, 3 books", "window": "2 weeks" },
       "context": { "prior_baseline": "Similar range the prior 2 weeks", "sample_size": "n_books = 3", "historical_normal": "Consistent with season-long pricing for this role" },
       "challenge": { "alternate_explanations": [] },
+      "primary_alternate": null,
       "confirmation": {
         "supporting_signals": "Role and target share flat over the same window, consistent with price stability",
         "contradicting_signals": "None",
@@ -102,12 +105,13 @@
     "time_window": "1 game",
     "sample_size": 6,
     "interrogation": {
-      "interrogation_version": "v1_structured_data",
+      "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Red-zone pass rate above season average in one game", "magnitude": "season avg 41% -> this game 67%", "window": "1 game" },
       "context": { "prior_baseline": "41% season average across 5 prior games", "sample_size": "6 red-zone plays", "historical_normal": "41% over 5-game baseline" },
       "challenge": {
         "alternate_explanations": [
           {
+            "alternate_id": "alt_1",
             "explanation": "Team trailed by 17 points for most of the second half, which independently increases pass rate regardless of any real tendency shift",
             "evidence": "Game script shows a 17-point deficit from late in the 2nd quarter onward",
             "test": "Does the pass-rate shift hold once game-script (score differential) is accounted for?",
@@ -116,6 +120,7 @@
           }
         ]
       },
+      "primary_alternate": { "alternate_id": "alt_1", "selection_reason": "The only tested alternate; if true, the elevated pass rate is a trailing-script effect and says nothing about a coaching tendency." },
       "confirmation": {
         "supporting_signals": "None available beyond this single game",
         "contradicting_signals": "5-game baseline shows no trend in this direction prior to this game",
@@ -153,12 +158,13 @@
     "time_window": "3 games",
     "sample_size": 3,
     "interrogation": {
-      "interrogation_version": "v1_structured_data",
+      "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Slot-receiver production above expectation against this defense", "magnitude": "+18% over expected in 2 of 3 games", "window": "3 games" },
       "context": { "prior_baseline": "Roughly at expectation over the first 4 weeks of the season", "sample_size": "3 games", "historical_normal": "At-expectation baseline weeks 1-4" },
       "challenge": {
         "alternate_explanations": [
           {
+            "alternate_id": "alt_1",
             "explanation": "The two elevated games came against two of the league's better slot receivers, so this may reflect opponent quality rather than a defensive weakness",
             "evidence": "Both opposing slot receivers rank top-8 in the league in slot production this season",
             "test": "Was the third game (the one at expectation) against a weaker slot receiver, consistent with opponent quality driving the pattern rather than a real defensive issue?",
@@ -167,6 +173,7 @@
           }
         ]
       },
+      "primary_alternate": { "alternate_id": "alt_1", "selection_reason": "The only tested alternate; if true, the elevated slot production reflects who Carolina faced, not a defensive vulnerability." },
       "confirmation": {
         "supporting_signals": "None distinguishing — coverage scheme data isn't available to separate personnel quality from scheme vulnerability",
         "contradicting_signals": "The at-expectation game is itself a data point against a real, persistent vulnerability",
@@ -204,12 +211,13 @@
     "time_window": "4 games",
     "sample_size": 14,
     "interrogation": {
-      "interrogation_version": "v1_structured_data",
+      "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Red-zone snap share increase, partial retention after starter's return", "magnitude": "12% -> 34%, now holding at 26%", "window": "4 games" },
       "context": { "prior_baseline": "12% prior to starter's injury in Week 6", "sample_size": "14 red-zone snaps across the window", "historical_normal": null },
       "challenge": {
         "alternate_explanations": [
           {
+            "alternate_id": "alt_1",
             "explanation": "Starting TE's injury explains the entire increase, and the role should fully revert now that he's back",
             "evidence": "Starting TE missed Weeks 6-8 with a hamstring injury, returned Week 9",
             "test": "Did Osei's red-zone share fully revert to the 12% baseline in Week 9, or did some of the gain persist?",
@@ -218,6 +226,7 @@
           }
         ]
       },
+      "primary_alternate": { "alternate_id": "alt_1", "selection_reason": "The only tested alternate; if true, the entire red-zone share gain was injury-driven and should fully revert." },
       "confirmation": {
         "supporting_signals": "Offensive coordinator has used more two-TE red-zone personnel since Week 9 than the season's first 5 weeks",
         "contradicting_signals": "The share did drop meaningfully (34% to 26%), so the injury explanation isn't fully rejected — this is a partial result",
@@ -255,10 +264,11 @@
     "time_window": "1 week",
     "sample_size": 3,
     "interrogation": {
-      "interrogation_version": "v1_structured_data",
+      "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Small price movement ahead of a nationally televised game", "magnitude": "+280 to +255", "window": "1 week" },
       "context": { "prior_baseline": "+280 the prior two weeks", "sample_size": "n_books = 3", "historical_normal": "Consistent with normal week-to-week variance for this player" },
       "challenge": { "alternate_explanations": [] },
+      "primary_alternate": null,
       "confirmation": {
         "supporting_signals": "None beyond the price movement itself",
         "contradicting_signals": "Role and usage data show no change over the same window",
@@ -284,5 +294,66 @@
       "gates": { "big_one_eligible": true, "watchlist_eligible": false }
     },
     "expected_stress_target": "The single clearest test of whether the 5% weight cap actually holds in practice. Audience Relevance (88) is the highest single-dimension score across all six fixtures, but composite (24.5) is the lowest — deliberately, since every other dimension reflects an unremarkable story. If the Editor's placement or prose treats this as newsletter-worthy because of the player's name recognition, that's the specific failure this fixture exists to catch. Correct outcome: excluded, or at most a passing mention — never elevated on the strength of who the player is."
+  },
+  {
+    "fixture_id": "fixture_7",
+    "intelligence_story_id": "SYNTHETIC-FIXTURE-7",
+    "player_id": "SYNTHETIC-PLAYER-7",
+    "intelligence_family": "role_changes",
+    "entity": "RB Marcus Thibodeaux",
+    "headline": "Thibodeaux played 81% of the snaps while the coach says the backfield is still a split",
+    "story": "Thibodeaux played 81% of offensive snaps in the most recent game, up from a 52/48 split with Devin Okonkwo over the prior four games; Okonkwo's share fell by a similar amount. In the postgame press conference the head coach said the two backs would \"share the workload.\"",
+    "time_window": "1 game (vs. 4-game baseline)",
+    "sample_size": 67,
+    "interrogation": {
+      "interrogation_version": "v3_primary_alternate",
+      "change": { "what_changed": "Offensive snap share concentrated in one back", "magnitude": "52% -> 81% (Thibodeaux); 48% -> 19% (Okonkwo)", "window": "1 game" },
+      "context": { "prior_baseline": "52/48 snap split between the two backs over the prior four games, never more than 56/44 in any single game", "sample_size": "67 offensive snaps in the most recent game", "historical_normal": "Near-even committee all season prior to this game" },
+      "challenge": {
+        "alternate_explanations": [
+          {
+            "alternate_id": "alt_1",
+            "explanation": "The head coach's postgame statement that the backs will \"share the workload\" means this was a one-game game plan, not a role change, and the split returns next week",
+            "evidence": "Direct quote from the postgame press conference",
+            "test": "Did the in-game snap distribution look like a planned rotation (alternating series, as in the prior four games) or like a demotion-shaped usage pattern (one back confined to specific packages)?",
+            "result": "Not a rotation — Okonkwo's 13 snaps were confined to the third-down and two-minute packages; Thibodeaux took every early-down series after the opening drive, both goal-line series, and the entire four-minute drill. The prior four games showed series-level alternation; this game did not.",
+            "status": "WEAKENED"
+          },
+          {
+            "alternate_id": "alt_2",
+            "explanation": "Game script drove the concentration — a lopsided score let the team lean on one back in a way it wouldn't in a competitive game",
+            "evidence": "Final margin was 13 points",
+            "test": "Was the 81% share concentrated in a particular game state, or stable across the game?",
+            "result": "Thibodeaux's share was 79% in the first half (game within one score throughout) and 83% in the second half — stable across game states, not script-driven",
+            "status": "WEAKENED"
+          }
+        ]
+      },
+      "primary_alternate": { "alternate_id": "alt_1", "selection_reason": "If the coach's stated plan is true, the 81% was a one-game game plan and the split returns next week, which negates the durability of the change outright; the game-script alternate, if true, would only reclassify this one game, while the stated plan speaks to every game after it." },
+      "confirmation": {
+        "supporting_signals": "Thibodeaux's touch share rose from 50% to 71% and he took 5 of 6 red-zone carries; Okonkwo's snap share fell by nearly the same amount Thibodeaux's rose (mirror-image, not extra snaps from tempo); Okonkwo carried no injury designation and played his normal special-teams snaps",
+        "contradicting_signals": "The head coach's stated intention is itself a contradicting signal — a public, on-the-record commitment to a split that the on-field usage did not show. It is one game.",
+        "market_reaction": "Thibodeaux's ATTD price moved from +340 to +230 within 48 hours of the game; Okonkwo's drifted from +380 to +520"
+      },
+      "judgment": {
+        "what_we_know": "In the most recent game the usage was a decisive lead role, not a rotation — stable across game states, with the other back healthy, available, and confined to specific packages",
+        "what_we_dont_know": "Whether the coach's \"share the workload\" statement reflects a real plan to rebalance next week or standard press-conference language — only one game has been played since the shift, so durability has exactly one game of evidence",
+        "evidence_significance": "Both tested alternate explanations were weakened: the usage pattern was demotion-shaped rather than rotational, and it held across game states. The shift itself is well-evidenced for the game in question. The one-game window is the honest limit — the coach's quote is a stated intention, not usage data, and it is the one real reason to withhold a durability claim"
+      }
+    },
+    "eps": {
+      "eps_version": "v1",
+      "dimensions": {
+        "significance": { "score": 74, "rationale": "Major reallocation of a lead backfield role within a single game, with a mirror-image drop for the other back" },
+        "evidence_strength": { "score": 66, "rationale": "Full completeness, two tested alternate explanations both WEAKENED, 67-snap in-game sample; the one-game window keeps this below a multi-game result like Fixture 1", "computation": "deterministic" },
+        "betting_relevance": { "score": 79, "rationale": "Directly reprices both backs' ATTD interpretation; the market has already moved meaningfully in both directions" },
+        "novelty": { "score": 70, "rationale": "First game this back has held a lead role; the coach's contradicting public statement is itself new information" },
+        "story_tension": { "score": 86, "rationale": "Direct, grounded tension between observed usage (81%) and the coach's stated 'share the workload' — tested against two alternates, not manufactured" },
+        "audience_relevance": { "score": 50, "rationale": "RB in a known committee backfield, moderate name recognition; positional prominence heuristic, no defaulted fields", "computation": "deterministic" }
+      },
+      "composite_score": 73.4,
+      "gates": { "big_one_eligible": true, "watchlist_eligible": true }
+    },
+    "expected_stress_target": "Tests whether the Editor narrates the coach's \"share the workload\" quote as what it is — a stated intention that the on-field usage contradicts, with two tested alternate explanations both WEAKENED — without either (a) deferring to the quote and softening a decisive 81% usage shift into 'still a committee,' or (b) ignoring the quote and declaring the job settled. The one-game window is the honest limit: durability has one game of evidence, and the prose should say so rather than project it forward. Both gates pass, so this is also a double-gate case alongside Fixture 1: exactly one full treatment, with a cross_reference pointer elsewhere at most. With two Big-One-eligible, high-tension candidates in the same pool, this additionally tests whether the Editor picks one Big One and places the other honestly rather than forcing both into the lead."
   }
 ]
