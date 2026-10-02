@@ -32,7 +32,6 @@ import nfl_data_py as nfl
 import pandas as pd
 
 from redzone import (
-    add_carries,
     add_defensive_matchup_context,
     add_depth_chart_rank,
     add_environment_data,
@@ -43,6 +42,8 @@ from redzone import (
     add_snap_shares,
     aggregate_redzone_allowed,
     aggregate_redzone_game,
+    aggregate_whole_game_carries,
+    aggregate_whole_game_targets,
     build_id_crosswalk,
 )
 from scoring import (
@@ -226,12 +227,17 @@ def run_pipeline(
     step to one copy and forgets the other) is exactly the risk this
     closes.
 
-    weekly_stats: nflverse's player_stats release (load_weekly_stats),
-    the source add_carries reads `carries` from — required, same as
-    every other real data source here (pbp/snap_counts/etc.), not
-    optional. Every caller of run_pipeline() resolves it the same
-    `if weekly_stats is None: weekly_stats = load_weekly_stats(...)`
-    way those other sources already are.
+    weekly_stats: UNUSED here as of 2026-10-02 (see add_carries' own
+    docstring) — kept as a required parameter so every existing caller's
+    own `if weekly_stats is None: weekly_stats = load_weekly_stats(...)`
+    resolution keeps working unchanged; `carries` is now sourced from
+    aggregate_whole_game_carries(pbp) instead, same real pbp every other
+    step here already reads, with no nflverse-player_stats-release
+    dependency. Not removed from the signature — changing it would be a
+    real, rippling signature change across all three real callers
+    (backfill_redzone.py's own __main__, scripts/build_stub_week.py,
+    scripts/reconcile_week.py) for a parameter that costs nothing left in
+    place unused.
 
     extra_offense_rows / extra_defense_rows: optional skeleton rows
     (matching aggregate_redzone_game's / aggregate_redzone_allowed's own
@@ -261,7 +267,22 @@ def run_pipeline(
         weekly = pd.concat([weekly, extra_offense_rows], ignore_index=True)
 
     weekly = add_snap_shares(weekly, snap_counts, id_crosswalk)
-    weekly = add_carries(weekly, weekly_stats)
+    # carries/targets: both pbp-derived, whole-game (not red-zone-scoped)
+    # metrics merged directly onto `weekly` here so nfl_player_season_
+    # evidence (Follow the Story V1, Table 1) has real values to persist —
+    # see aggregate_whole_game_carries'/aggregate_whole_game_targets' own
+    # docstrings for why each replaces/extends its prior source. Plain
+    # left merges, same NaN-on-no-match philosophy every other add_* step
+    # here already uses — a player with zero real carries/targets that
+    # game (e.g. a pure blocker, or a non-target-receiving lineman
+    # scramble) correctly gets NaN, not a fabricated 0.
+    carries = aggregate_whole_game_carries(pbp)
+    weekly = weekly.merge(carries, on=["player_id", "season", "week"], how="left")
+    targets = aggregate_whole_game_targets(pbp)
+    weekly = weekly.merge(
+        targets[["game_id", "player_id", "season", "week", "targets", "target_share"]],
+        on=["game_id", "player_id", "season", "week"], how="left",
+    )
     # Must run before add_depth_chart_rank/add_injury_context — both now
     # join on position_group (in addition to player_id/season/week/team)
     # to resolve a player with a genuine multi-position depth-chart

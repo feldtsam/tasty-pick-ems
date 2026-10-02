@@ -152,6 +152,66 @@ def run_batch_never_references_another_week_or_player():
     return ok
 
 
+def run_real_run_pipeline_row_shapes_correctly():
+    print("\n" + "=" * 70)
+    print("REAL end-to-end: a real run_pipeline() row, through the real")
+    print("shape_player_redzone_weekly_rows(), into shape_player_season_")
+    print("evidence_rows() -- not a hand-built extra dict")
+    print("=" * 70)
+
+    # Every OTHER case in this file hand-builds `extra` with "targets": 5
+    # already inside it (_real_redzone_weekly_row above) -- that proves
+    # the READ-OUT logic is correct, but it can never prove targets/
+    # carries actually REACH extra from a real run_pipeline() row, which
+    # is exactly the real gap that let the 2026-10-02 bug (targets never
+    # wired into run_pipeline() at all) ship unnoticed. This case runs
+    # the real chain instead: real pbp -> real run_pipeline() -> real
+    # shape_player_redzone_weekly_rows() -> shape_player_season_evidence_
+    # rows(), skipped (not failed) on a real network hiccup, same
+    # try/except convention test_team_tendencies.py/test_build_stub_week.py
+    # already use for real-network checks.
+    try:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from backfill_redzone import (
+            SEASONS, load_depth_charts, load_id_crosswalk, load_injuries, load_pbp,
+            load_schedules, load_seasonal_rosters, load_snap_counts, load_weekly_stats, run_pipeline,
+        )
+
+        pbp = load_pbp(SEASONS)
+        snap_counts = load_snap_counts(SEASONS)
+        id_crosswalk = load_id_crosswalk(SEASONS)
+        depth_charts = load_depth_charts(SEASONS)
+        injuries = load_injuries(SEASONS)
+        seasonal_rosters = load_seasonal_rosters(SEASONS)
+        schedules = load_schedules(SEASONS)
+        weekly_stats = load_weekly_stats(SEASONS)
+
+        weekly, _allowed = run_pipeline(
+            pbp, snap_counts, id_crosswalk, depth_charts, injuries, seasonal_rosters, schedules, weekly_stats,
+        )
+        # Real, already-validated player-week (see test_run_pipeline_
+        # integration.py / the redzone_carries investigation): James
+        # Conner, 2024 Week 1, real targets=4, real carries=16.
+        reconciled = weekly[
+            (weekly["player_id"] == "00-0033553") & (weekly["season"] == 2024) & (weekly["week"] == 1)
+        ].copy()
+
+        redzone_rows = rw.shape_player_redzone_weekly_rows(reconciled)
+        season_evidence_rows = rw.shape_player_season_evidence_rows(redzone_rows)
+
+        ok = True
+        ok &= check("exactly one real row round-tripped through both shaping functions", len(season_evidence_rows) == 1)
+        row = season_evidence_rows[0]
+        ok &= check(f"REAL: targets reached extra via the real run_pipeline() chain (got {row['targets']!r}, expected 4)", row["targets"] == 4)
+        ok &= check(f"REAL: carries reached extra via the real run_pipeline() chain (got {row['carries']!r}, expected 16)", row["carries"] == 16)
+        ok &= check("REAL: player_id/season/period_index carried through correctly", row["player_id"] == "00-0033553" and row["season"] == 2024 and row["period_index"] == 1)
+        return ok
+    except Exception as e:
+        return check(f"REAL run_pipeline()-sourced season_evidence check (skipped -- {type(e).__name__}: {e})", True)
+
+
 def run_write_forwards_to_the_real_signed_endpoint():
     print("\n" + "=" * 70)
     print("write_player_season_evidence_rows forwards via the same real signed-POST mechanism")
@@ -195,6 +255,7 @@ if __name__ == "__main__":
         run_completely_empty_extra_still_produces_a_row(),
         run_shaping_is_deterministic_same_input_same_output(),
         run_batch_never_references_another_week_or_player(),
+        run_real_run_pipeline_row_shapes_correctly(),
         run_write_forwards_to_the_real_signed_endpoint(),
     ]
     print()

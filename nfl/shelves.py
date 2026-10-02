@@ -195,12 +195,37 @@ def add_whole_game_target_share_trend(weekly: pd.DataFrame, pbp: pd.DataFrame) -
     reimplementing trend math a second time — only the raw target_share
     column and the choice to call it on a non-red-zone-scoped table are
     new.
+
+    SKIPS re-deriving/re-merging `targets`/`target_share` when `weekly`
+    already carries them (true for any `weekly` built from run_pipeline()
+    as of 2026-10-02 — see backfill_redzone.run_pipeline, which now merges
+    aggregate_whole_game_targets(pbp) onto `weekly` directly for Table 1
+    persistence). Only `target_share_trend` gets merged in that case —
+    re-merging `targets`/`target_share` too would collide with the
+    columns already there (pandas would silently rename both to a _x/_y
+    pair instead of raising, which is the real reason this needed a fix
+    rather than being harmless to leave alone).
+
+    The rolling-window computation below still runs against a FRESH,
+    full, non-red-zone-scoped `aggregate_whole_game_targets(pbp)` call
+    either way — not against `weekly` itself — because `weekly`'s own row
+    population is red-zone-touch-scoped (aggregate_redzone_game's base
+    population), strictly narrower than the whole-game target population
+    this trend is supposed to roll over. Rolling on `weekly` directly
+    would silently drop any game where a player was targeted but had no
+    red-zone touch from that player's own last3/season_avg history,
+    changing real target_share_trend values, not just column plumbing —
+    confirmed by direct comparison before/after this change on the real
+    2024 Week 1/Week 9-10 fixtures (see PR notes), not assumed.
     """
     targets = aggregate_whole_game_targets(pbp)
     targets = add_rolling_windows(targets, metrics=["target_share"], group_cols=["player_id", "season"])
     targets["target_share_trend"] = (targets["target_share_last3"] - targets["target_share_season_avg"]).round(3)
 
-    keep = ["game_id", "player_id", "season", "week", "targets", "target_share", "target_share_trend"]
+    already_has_targets = "targets" in weekly.columns and "target_share" in weekly.columns
+    keep = ["game_id", "player_id", "season", "week", "target_share_trend"]
+    if not already_has_targets:
+        keep = keep[:-1] + ["targets", "target_share", "target_share_trend"]
     return weekly.merge(targets[keep], on=["game_id", "player_id", "season", "week"], how="left")
 
 

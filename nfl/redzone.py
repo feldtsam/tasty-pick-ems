@@ -174,13 +174,15 @@ def aggregate_whole_game_targets(pbp: pd.DataFrame) -> pd.DataFrame:
     touch-share trend is deliberately red-zone-scoped — the right choice
     for its own purpose, just not this one).
 
-    Deliberately kept OUT of the scored pipeline (run_pipeline, scoring.py)
-    — this is shelf-display-layer data, not a pillar input. Reuses _touches
-    (already validated, already the source every other aggregation in this
-    file is built from) rather than re-parsing pbp; the only new logic here
-    is restricting to touch_type == "target" (receiving only — target
-    share is a receiving-hierarchy concept, rushing touches don't belong
-    in this denominator) and NOT restricting by yardline_100 at all.
+    `targets`/`target_share` (NOT target_share_trend — that stays a
+    shelf-layer-only rolling computation, see shelves.add_whole_game_
+    target_share_trend) are now ALSO merged into run_pipeline()'s own
+    `weekly`, so nfl_player_season_evidence has a real targets value to
+    persist — this was the real gap traced and fixed 2026-10-02 (targets
+    was never reaching `weekly`/`reconciled` at all, despite the persistence
+    layer already having a column reserved for it). Still reused as-is at
+    the shelf layer for target_share_trend — one real implementation, two
+    consumers, not duplicated.
     """
     touches = _touches(pbp)
     targets = touches[touches["touch_type"] == "target"]
@@ -194,6 +196,45 @@ def aggregate_whole_game_targets(pbp: pd.DataFrame) -> pd.DataFrame:
     out = by_player.merge(team_targets, on=["game_id", "posteam"], how="left")
     out["target_share"] = (out["targets"] / out["team_targets"]).round(3)
     return out
+
+
+def aggregate_whole_game_carries(pbp: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per (player_id, season, week) with whole-game rush-attempt
+    volume ("carries"), computed directly from the same real play-by-play
+    `_touches()` already builds -- the pbp-native replacement for
+    add_carries()'s old nflverse-weekly-stats join (see that function's
+    own docstring for why it's now unused: nflverse's player_stats release
+    for 2025/2026 doesn't exist yet, confirmed live against the real
+    nflverse-data GitHub release, so that join had nothing to match against
+    for the current season; this aggregation has no such external
+    dependency, since it reads the same pbp run_pipeline() already has).
+
+    VALIDATED against nflverse's own real `carries` definition, not
+    assumed: plain rush_attempt==1 matches nflverse's real player_stats_
+    2024 carries on 612/619 (98.9%) of real 2024-week-1/2 player-weeks: all
+    7 mismatches were nflverse undercounting by exactly 1 relative to a
+    player's real two-point-conversion rush attempt (confirmed at the play
+    level -- a PAT2 play is tagged rush_attempt==1 in pbp, but nflverse's
+    own box-score `carries` stat excludes two-point tries). Excluding
+    two_point_attempt==1 as well closes the gap completely: 100.00% exact
+    match across the REAL FULL 2024 regular season (5,340 real player-week
+    rows, all 18 weeks, zero mismatches) -- confirmed directly, not
+    estimated from the 2-week sample alone. qb_kneel was tested too and
+    made the match rate WORSE when excluded (kneel-tagged plays are not
+    what nflverse's own definition excludes) -- deliberately NOT filtered
+    here, despite being an intuitive-looking candidate.
+
+    Keyed on (player_id, season, week) only -- no game_id/posteam, matching
+    add_carries()'s own original join grain exactly (a player has at most
+    one real game in a given (season, week), so this loses no information
+    relative to a game_id-scoped key).
+    """
+    touches = _touches(pbp)
+    rushes = touches[(touches["touch_type"] == "rush") & (touches["two_point_attempt"] != 1)]
+
+    keys = ["player_id", "season", "week"]
+    return rushes.groupby(keys).size().rename("carries").reset_index()
 
 
 def _position_lookup(seasonal_rosters: pd.DataFrame) -> pd.DataFrame:
@@ -462,6 +503,21 @@ def add_snap_shares(weekly: pd.DataFrame, snap_counts: pd.DataFrame, id_crosswal
 
 def add_carries(weekly: pd.DataFrame, weekly_stats: pd.DataFrame) -> pd.DataFrame:
     """
+    NO LONGER CALLED from run_pipeline() (2026-10-02) -- confirmed live
+    that nflverse has not published a player_stats release for 2025 or
+    2026 at all (checked the real nflverse-data GitHub release directly:
+    newest asset is player_stats_2024.parquet), so this join had zero
+    weekly_stats rows to match against for the current season, producing
+    an honestly-null-but-present `carries` column on every current-season
+    row. aggregate_whole_game_carries() (above) replaces it as run_
+    pipeline()'s actual carries source -- pbp-derived, no dependency on
+    nflverse's player_stats publication cadence, and validated at 100%
+    exact match against nflverse's own real `carries` definition across
+    the full 2024 season. Left in place, unused by run_pipeline(), rather
+    than deleted: still a real, independently correct nflverse-sourced
+    carries computation, kept as a cross-check / fallback reference and
+    still covered by its own test_redzone_carries.py suite.
+
     Join whole-game rush-attempt volume (nfl_data_py.import_weekly_data,
     sourced from nflverse's player_stats release) onto the red zone
     weekly table by (player_id, season, week).
