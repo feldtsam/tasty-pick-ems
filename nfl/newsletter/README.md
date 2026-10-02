@@ -20,6 +20,10 @@ this file just tracks what's actually landed here vs. what's still open.
   genuinely new prompt text implementing the EPS-consumption contract
   (EPS spec §11), landed in this repo and now run once against Fixture
   V2 (see gap below for the real, honest status of that run).
+- **`mr_pick_ems_golden_set.md`** — the Mr. Pick Ems Golden Set (voice
+  regression suite) that governs `weekly_editor_agent_prompt_v2.md`:
+  approved passages the prompt is tested against; a passage is promoted
+  only from a story entry with zero Evidence Validator hard fails.
 - **`fixture_v2.json`** — six synthetic stress cases built to test
   discrimination (not just recognition) once real interrogation/EPS
   content exists — see the fixture spec for the full design. Real
