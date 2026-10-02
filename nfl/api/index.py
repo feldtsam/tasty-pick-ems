@@ -113,6 +113,12 @@ from market_value import (
     parse_attd_event,
     snapshot_scoring_inputs,
 )
+from backfill_season_evidence import (
+    backfill_season_evidence_rows,
+    reconciled_weeks_present_for_season,
+    validate_backfill_request_shape,
+    validate_backfill_weeks,
+)
 from build_stub_week import build_stub_week
 from player_season_history import (
     read_player_season_evidence_rows_for_season,
@@ -644,6 +650,111 @@ def reconcile_week_health_check():
                  "runs reconciliation. Only calls reconcile_week() (destructive: upserts this week's "
                  "rows into nfl_player_redzone_weekly and flags nfl_stub_weeks.reconciled) once every "
                  "game is confirmed final.",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+@app.route("/api/backfill-season-evidence", methods=["POST"])
+def backfill_season_evidence_endpoint():
+    """
+    One-off Table 1 (nfl_player_season_evidence) backfill for past weeks
+    reconciled before that table existed. NOT reconcile_week() — see
+    scripts/backfill_season_evidence.py's own module docstring for
+    exactly what this deliberately does NOT repeat (the market-value
+    join against current odds, rewriting nfl_player_redzone_weekly,
+    mark_stub_week_reconciled()). Writes ONLY to nfl_player_season_
+    evidence.
+
+    POST body: {"season": int, "weeks": [int, ...]} — at most
+    MAX_WEEKS_PER_CALL (3) weeks, no duplicates, every week a real
+    integer >= 1 (checked BEFORE any real read — see validate_backfill_
+    request_shape). A malformed request returns 400 and touches no data.
+
+    AUTH: check_pipeline_secret() — same small-fixed-trigger reasoning as
+    /api/reconcile-week. The real write-signing secret (NFL_PIPELINE_
+    WEBHOOK_SECRET) is never supplied by the caller — it's resolved
+    inside write_player_season_evidence_rows() from this deployed
+    function's own environment, exactly like reconcile_week() already
+    does; the caller only ever needs PIPELINE_INCOMING_SECRET to trigger
+    this at all.
+
+    WEEK GUARD, server-side, after the shape check above: each requested
+    week must be BOTH present in the real nfl_player_redzone_weekly rows
+    for this season AND strictly earlier than the latest week present
+    there (the live edge of the season is never backfill-eligible) — see
+    validate_backfill_weeks's own docstring for why that source, not
+    nfl_stub_weeks.reconciled. A week failing either check is rejected
+    and reported back, not silently dropped; the backfill still runs for
+    whichever requested weeks DO pass, if any do.
+
+    A real write failure is a real 500, never a 200 — this endpoint's
+    entire purpose is the Table 1 write, the opposite of reconcile_
+    week()'s own deliberately-non-fatal treatment of that same write
+    (there it's a bonus; here it's the only point).
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True) or {}
+    season = data.get("season")
+    weeks = data.get("weeks")
+
+    shape_error = validate_backfill_request_shape(season, weeks)
+    if shape_error:
+        return jsonify({"status": "error", "error": shape_error}), 400
+
+    secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
+    if not secret:
+        return jsonify({"error": "NFL_PIPELINE_WEBHOOK_SECRET is not configured"}), 500
+
+    try:
+        reconciled_weeks_present = reconciled_weeks_present_for_season(season, secret)
+    except Exception as e:
+        print(f"[backfill-season-evidence] season={season} weeks={weeks} "
+              f"redzone_weekly_read_failed error={e!r}", flush=True)
+        return jsonify({"status": "error", "season": season, "error": str(e)}), 500
+
+    week_check = validate_backfill_weeks(weeks, reconciled_weeks_present)
+    if not week_check["accepted"]:
+        print(f"[backfill-season-evidence] season={season} weeks={weeks} "
+              f"status=rejected rejected={week_check['rejected']}", flush=True)
+        return jsonify({
+            "status": "rejected", "season": season, "weeks_requested": weeks,
+            "rejected_weeks": week_check["rejected"],
+        }), 422
+
+    try:
+        result = backfill_season_evidence_rows(season, week_check["accepted"], secret)
+    except Exception as e:
+        print(f"[backfill-season-evidence] season={season} weeks={week_check['accepted']} "
+              f"status=error error={e!r}", flush=True)
+        return jsonify({
+            "status": "error", "season": season, "weeks_requested": weeks,
+            "rejected_weeks": week_check["rejected"], "error": str(e),
+        }), 500
+
+    print(f"[backfill-season-evidence] season={season} weeks={week_check['accepted']} "
+          f"status=success rows_written={result['rows_written']} "
+          f"rejected_weeks={week_check['rejected']}", flush=True)
+    return jsonify({
+        "status": "success",
+        "season": season,
+        "weeks_written": week_check["accepted"],
+        "rows_written": result["rows_written"],
+        "rows_written_by_week": result["rows_written_by_week"],
+        "rejected_weeks": week_check["rejected"],
+    }), 200
+
+
+@app.route("/api/backfill-season-evidence", methods=["GET"])
+def backfill_season_evidence_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"season\": int, \"weeks\": [int, ...]} (max 3, no duplicates, >= 1). Backfills "
+                 "nfl_player_season_evidence ONLY, for weeks already present in nfl_player_redzone_weekly "
+                 "and strictly earlier than the latest such week. Never calls reconcile_week(), never "
+                 "writes to nfl_player_redzone_weekly or nfl_stub_weeks, never touches market value.",
         "deployed_via": "github-auto-deploy",
     })
 
