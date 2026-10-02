@@ -198,15 +198,64 @@ def shape_player_season_evidence_rows(redzone_weekly_rows: list) -> list:
     attempted here, and explicitly not blocking this pass.
 
     Each of the five metrics is read independently from `extra` via
-    NFL_PLAYER_SEASON_EVIDENCE_METRIC_KEYS and left as None when absent
-    -- a real, honest null (e.g. carries for a receiver who never
-    rushed, or snap_share when the PFR crosswalk didn't resolve that
-    player), never a reason to drop the row or fabricate a 0.
+    NFL_PLAYER_SEASON_EVIDENCE_METRIC_KEYS. snap_share/red_zone_
+    opportunities/goal_line_opportunities are left as None when absent
+    -- a real, honest null (e.g. snap_share when the PFR crosswalk
+    didn't resolve that player), never a reason to drop the row or
+    fabricate a 0.
+
+    targets/carries are the one exception, REAL FIX 2026-10-02 (not the
+    original design -- confirmed via a real trace against live 2026 Week
+    3 data: 159 rows, every one a player with >=1 real red-zone touch,
+    zero rows with a real carries=0, yet 73 rows missing carries
+    entirely): for THIS function's input specifically (always reconcile_
+    week()'s own `reconciled` -- a real, already-played game, never a
+    build_stub_week.py stub row), an absent targets or carries means a
+    real zero, not an unknown. aggregate_redzone_game's own base
+    population guarantees every row has >=1 real counted touch (rush or
+    target) somewhere in `_touches(pbp)`, so a player already in this
+    population who's missing from the whole-game carries/targets
+    aggregation genuinely had zero of that touch type that game -- not
+    "absent from pbp" (structurally impossible for this population) and
+    not "data not yet published" (both aggregations read the same real
+    pbp already in hand, no external release dependency). Confirmed
+    directly against real play-by-play (2024 full season, 2,621 rows;
+    2026 season-to-date, 449 rows): the only row where BOTH come back
+    missing (Aaron Rodgers, 2026 Week 4, 00-0023459) is a real two-point-
+    conversion rush -- a genuine red-zone touch, but zero by definition
+    for both metrics (carries excludes 2pt attempts; he was never
+    targeted), so 0/0 is the textbook-correct value there too, not an
+    approximation.
+
+    NOT applied inside run_pipeline() itself, on purpose: run_pipeline()
+    is shared with scripts/build_stub_week.py, where targets/carries
+    NaN on a stub row means "game hasn't happened yet, genuinely
+    unknown" -- filling that to 0 there would silently assert "confirmed
+    zero production" for a future week's players. Scoping the fill to
+    here, operating only on reconcile_week()'s own already-shaped rows,
+    keeps that distinction intact with zero risk to the stub-week path.
+
+    target_share is NOT filled, deliberately -- it isn't one of this
+    table's five metrics (NFL_PLAYER_SEASON_EVIDENCE_METRIC_KEYS doesn't
+    include it), so this change doesn't touch it either way, but worth
+    stating explicitly: shelves._target_share_level_candidate gates a
+    real "Target Share" role-signal card on pd.notna(target_share), and
+    story_archetype._has_real_target_share_evidence treats a non-null
+    target_share as real evidence for a Target Magnet read -- filling a
+    confirmed-zero target_share would flip both from correctly
+    ineligible to eligible, a real shelf-output change this task never
+    asked for and explicitly must not cause.
 
     period_type is always "game" for V1 (period_index is the real week
     number) -- see the table's own migration for why this isn't a
     column literally named `week`.
     """
+    # The two whole-game pbp-derived metrics for which "absent" means a
+    # real, confirmed zero for this function's always-real-game input --
+    # see this function's own docstring. snap_share/rz_touches/gl_touches
+    # are deliberately NOT in this set; they stay honest nulls.
+    ZERO_WHEN_ABSENT = {"targets", "carries"}
+
     out = []
     for row in redzone_weekly_rows:
         extra = row.get("extra") or {}
@@ -217,7 +266,10 @@ def shape_player_season_evidence_rows(redzone_weekly_rows: list) -> list:
             "period_index": row["week"],
         }
         for extra_key, column_name in NFL_PLAYER_SEASON_EVIDENCE_METRIC_KEYS.items():
-            shaped[column_name] = extra.get(extra_key)
+            value = extra.get(extra_key)
+            if value is None and extra_key in ZERO_WHEN_ABSENT:
+                value = 0
+            shaped[column_name] = value
         out.append(shaped)
     return out
 
