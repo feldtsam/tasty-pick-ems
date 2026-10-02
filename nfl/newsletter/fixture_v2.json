@@ -9,6 +9,8 @@
     "story": "Keane's goal-line opportunity share has risen from 24% to 58% over three games, overtaking the incumbent back.",
     "time_window": "3 games",
     "sample_size": 11,
+    "completeness": 66,
+    "confidence": 66,
     "interrogation": {
       "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Goal-line opportunity share increased", "magnitude": "24% -> 58%", "window": "3 games" },
@@ -41,7 +43,7 @@
       "eps_version": "v1",
       "dimensions": {
         "significance": { "score": 78, "rationale": "Major role reallocation on a core scoring situation, sustained across 3 games" },
-        "evidence_strength": { "score": 74, "rationale": "Full completeness, WEAKENED alternate explanation, 11-opportunity sample", "computation": "deterministic" },
+        "evidence_strength": { "score": 74, "rationale": "primary alternate alt_1 WEAKENED -- The only tested alternate; if true, the goal-line shift is an injury artifact that reverses on the incumbent's return rather than a durable role change; no other alternates. base (confidence 66 + completeness 66) / 2 = 66.0, adjusted +8 from challenge status(es): WEAKENED (+8).", "computation": "deterministic" },
         "betting_relevance": { "score": 81, "rationale": "Directly reprices ATTD interpretation; market has already moved meaningfully" },
         "novelty": { "score": 66, "rationale": "First season this back has held a lead role; genuinely new information relative to prior_history" },
         "story_tension": { "score": 83, "rationale": "Grounded in a tested, WEAKENED alternate explanation plus supporting signal convergence" },
@@ -50,7 +52,7 @@
       "composite_score": 76.75,
       "gates": { "big_one_eligible": true, "watchlist_eligible": true }
     },
-    "expected_stress_target": "Confirms a genuinely strong, well-grounded story is recognized and eligible for the Big One — the baseline case every other fixture is contrasted against. Note: this fixture's gates are big_one_eligible: true AND watchlist_eligible: true simultaneously — it is also the double-gate stress case. Correct behavior is exactly one stories[] entry (Big One), with no second entry in Watchlist even though it independently clears that gate too. A cross_references[] pointer from Watchlist back to it is acceptable; a second full entry is not."
+    "expected_stress_target": "Confirms a genuinely strong, well-grounded story is recognized and eligible for the Big One — the baseline case every other fixture is contrasted against. Note: this fixture's gates are big_one_eligible: true AND watchlist_eligible: true simultaneously — it is also the double-gate stress case. Correct behavior is exactly one stories[] entry (Big One), with no second entry in Watchlist even though it independently clears that gate too. A cross_references[] pointer from Watchlist back to it is acceptable; a second full entry is not. NOTE: completeness and confidence on this fixture's Story Object are chosen to reproduce the authored evidence_strength score through the real compute_evidence_strength, not observed values."
   },
   {
     "fixture_id": "fixture_2",
@@ -62,6 +64,8 @@
     "story": "Rhoads' ATTD price has moved within a narrow band across three books for two straight weeks, with high agreement across books.",
     "time_window": "2 weeks",
     "sample_size": 3,
+    "completeness": 71,
+    "confidence": 71,
     "interrogation": {
       "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Cross-book price convergence, low volatility", "magnitude": "+340 to +365 range, 3 books", "window": "2 weeks" },
@@ -83,7 +87,7 @@
       "eps_version": "v1",
       "dimensions": {
         "significance": { "score": 22, "rationale": "No underlying change occurred — this is confirmation of stability, not a shift" },
-        "evidence_strength": { "score": 71, "rationale": "Full n_books coverage, no alternate explanation needed since nothing is being contested", "computation": "deterministic" },
+        "evidence_strength": { "score": 71, "rationale": "base (confidence 71 + completeness 71) / 2 = 71.0. No challenge status moved the score (empty alternate_explanations, or all NOT_TESTABLE).", "computation": "deterministic" },
         "betting_relevance": { "score": 28, "rationale": "Confirms existing interpretation rather than changing it" },
         "novelty": { "score": 18, "rationale": "Tells the reader nothing they didn't already know from the prior two weeks" },
         "story_tension": { "score": 15, "rationale": "No relationship or divergence between signals — confirmation, not tension" },
@@ -92,7 +96,7 @@
       "composite_score": 31.85,
       "gates": { "big_one_eligible": true, "watchlist_eligible": false }
     },
-    "expected_stress_target": "Evidence Strength is genuinely high here — this tests whether the Editor understands that clears the Big One evidence floor mechanically without being a Big One candidate in practice, since Significance/Tension are both low. If the Editor treats this as Big-One-worthy because the gate is technically open, that's a failure: gates are a floor, not a trigger. Correct placement is supporting context at most, more likely excluded as not worth a section given how little it tells the reader."
+    "expected_stress_target": "Evidence Strength is genuinely high here — this tests whether the Editor understands that clears the Big One evidence floor mechanically without being a Big One candidate in practice, since Significance/Tension are both low. If the Editor treats this as Big-One-worthy because the gate is technically open, that's a failure: gates are a floor, not a trigger. Correct placement is supporting context at most, more likely excluded as not worth a section given how little it tells the reader. NOTE: completeness and confidence on this fixture's Story Object are chosen to reproduce the authored evidence_strength score through the real compute_evidence_strength, not observed values."
   },
   {
     "fixture_id": "fixture_3",
@@ -104,6 +108,8 @@
     "story": "A single-week sample shows a higher pass rate inside the 10 than the season average.",
     "time_window": "1 game",
     "sample_size": 6,
+    "completeness": 21,
+    "confidence": 21,
     "interrogation": {
       "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Red-zone pass rate above season average in one game", "magnitude": "season avg 41% -> this game 67%", "window": "1 game" },
@@ -136,7 +142,7 @@
       "eps_version": "v1",
       "dimensions": {
         "significance": { "score": 24, "rationale": "One game, small sample, plausible confound — banded as small, not material" },
-        "evidence_strength": { "score": 21, "rationale": "NOT_TESTABLE status, single-game sample, real confound identified", "computation": "deterministic" },
+        "evidence_strength": { "score": 21, "rationale": "primary alternate alt_1 NOT_TESTABLE -- The only tested alternate; if true, the elevated pass rate is a trailing-script effect and says nothing about a coaching tendency; no other alternates. base (confidence 21 + completeness 21) / 2 = 21.0. No challenge status moved the score (empty alternate_explanations, or all NOT_TESTABLE).", "computation": "deterministic" },
         "betting_relevance": { "score": 45, "rationale": "Would matter if real, but confound means interpretation shouldn't change yet" },
         "novelty": { "score": 58, "rationale": "A real deviation from the 5-game baseline, even if its cause is unclear" },
         "story_tension": { "score": 62, "rationale": "Surface-level tension (baseline vs. this game) exists but is capped by the ungrounded/NOT_TESTABLE challenge" },
@@ -145,7 +151,7 @@
       "composite_score": 38.35,
       "gates": { "big_one_eligible": false, "watchlist_eligible": false }
     },
-    "expected_stress_target": "Evidence Strength (21) fails the Big One floor (40), so the gate correctly excludes it — but Novelty (58) and Story Tension (62) are both high enough that a naive 'exciting-sounding story' read could tempt the Editor toward the Big One anyway if it weren't respecting gates as authoritative. Watchlist also correctly fails since Evidence Strength (21) is below the Watchlist's own floor (25). Correct outcome: excluded entirely, or at most one flagged line in a lower section — never narrated as a discovered tendency shift."
+    "expected_stress_target": "Evidence Strength (21) fails the Big One floor (40), so the gate correctly excludes it — but Novelty (58) and Story Tension (62) are both high enough that a naive 'exciting-sounding story' read could tempt the Editor toward the Big One anyway if it weren't respecting gates as authoritative. Watchlist also correctly fails since Evidence Strength (21) is below the Watchlist's own floor (25). Correct outcome: excluded entirely, or at most one flagged line in a lower section — never narrated as a discovered tendency shift. NOTE: completeness and confidence on this fixture's Story Object are chosen to reproduce the authored evidence_strength score through the real compute_evidence_strength, not observed values."
   },
   {
     "fixture_id": "fixture_4",
@@ -157,6 +163,8 @@
     "story": "Opposing slot receivers have out-produced expectation against Carolina in 2 of the last 3 games.",
     "time_window": "3 games",
     "sample_size": 3,
+    "completeness": 47,
+    "confidence": 47,
     "interrogation": {
       "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Slot-receiver production above expectation against this defense", "magnitude": "+18% over expected in 2 of 3 games", "window": "3 games" },
@@ -189,7 +197,7 @@
       "eps_version": "v1",
       "dimensions": {
         "significance": { "score": 48, "rationale": "A real, meaningful deviation from baseline, banded as meaningful given the magnitude and 3-game window" },
-        "evidence_strength": { "score": 44, "rationale": "UNRESOLVED status — tested but inconclusive, small downward adjustment from base completeness", "computation": "deterministic" },
+        "evidence_strength": { "score": 44, "rationale": "primary alternate alt_1 UNRESOLVED -- The only tested alternate; if true, the elevated slot production reflects who Carolina faced, not a defensive vulnerability; no other alternates. base (confidence 47 + completeness 47) / 2 = 47.0, adjusted -3 from challenge status(es): UNRESOLVED (-3).", "computation": "deterministic" },
         "betting_relevance": { "score": 51, "rationale": "Would matter for opposing slot-receiver props if confirmed, but genuine ambiguity limits how strongly to lean on it" },
         "novelty": { "score": 55, "rationale": "A real deviation from the season's first-month baseline" },
         "story_tension": { "score": 57, "rationale": "Real tension between two plausible explanations that the data can't yet separate — grounded, not manufactured" },
@@ -198,7 +206,7 @@
       "composite_score": 48.15,
       "gates": { "big_one_eligible": true, "watchlist_eligible": true }
     },
-    "expected_stress_target": "Both gates pass, which is correct — this is a legitimately uncertain but real story, not a weak one. The test is whether the Editor's prose honestly represents the UNRESOLVED status (two plausible explanations, genuinely can't distinguish yet) rather than picking a side and writing it as either 'Carolina has a real weakness' or 'this is nothing, just matchups.' Correct placement is primarily the Watchlist — 'something worth tracking, not yet confirmed either way.' UPDATED (duplicate-detection two-case rule): a brief cross-reference to this story from another section (e.g. naming it in passing while covering something else) is now explicitly correct, not a violation — but only ONE section may give it a full treatment with its own eps_scores/provenance block. A second full retelling of the same argument in a different section (e.g. an independent What Changed entry making the same case a second time) is the actual failure this fixture now tests for."
+    "expected_stress_target": "Both gates pass, which is correct — this is a legitimately uncertain but real story, not a weak one. The test is whether the Editor's prose honestly represents the UNRESOLVED status (two plausible explanations, genuinely can't distinguish yet) rather than picking a side and writing it as either 'Carolina has a real weakness' or 'this is nothing, just matchups.' Correct placement is primarily the Watchlist — 'something worth tracking, not yet confirmed either way.' UPDATED (duplicate-detection two-case rule): a brief cross-reference to this story from another section (e.g. naming it in passing while covering something else) is now explicitly correct, not a violation — but only ONE section may give it a full treatment with its own eps_scores/provenance block. A second full retelling of the same argument in a different section (e.g. an independent What Changed entry making the same case a second time) is the actual failure this fixture now tests for. NOTE: completeness and confidence on this fixture's Story Object are chosen to reproduce the authored evidence_strength score through the real compute_evidence_strength, not observed values."
   },
   {
     "fixture_id": "fixture_5",
@@ -210,6 +218,8 @@
     "story": "Osei's red-zone snap share rose while the starting TE was out, and has only partially receded now that the starter is back.",
     "time_window": "4 games",
     "sample_size": 14,
+    "completeness": 50,
+    "confidence": 50,
     "interrogation": {
       "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Red-zone snap share increase, partial retention after starter's return", "magnitude": "12% -> 34%, now holding at 26%", "window": "4 games" },
@@ -242,7 +252,7 @@
       "eps_version": "v1",
       "dimensions": {
         "significance": { "score": 44, "rationale": "A real, moderate role change — meaningful but not major given the partial reversion" },
-        "evidence_strength": { "score": 58, "rationale": "WEAKENED status but with an honest contradicting signal noted, so the adjustment is moderate, not maximal", "computation": "deterministic" },
+        "evidence_strength": { "score": 58, "rationale": "primary alternate alt_1 WEAKENED -- The only tested alternate; if true, the entire red-zone share gain was injury-driven and should fully revert; no other alternates. base (confidence 50 + completeness 50) / 2 = 50.0, adjusted +8 from challenge status(es): WEAKENED (+8).", "computation": "deterministic" },
         "betting_relevance": { "score": 49, "rationale": "Real but modest reinterpretation of price, matching the modest market movement already observed" },
         "novelty": { "score": 47, "rationale": "Genuinely new information, though the magnitude is moderate rather than surprising" },
         "story_tension": { "score": 61, "rationale": "Grounded in a real, partial WEAKENED result — an honest 'partly durable, partly temporary' tension, not a clean survival story" },
@@ -251,7 +261,7 @@
       "composite_score": 49.5,
       "gates": { "big_one_eligible": true, "watchlist_eligible": false }
     },
-    "expected_stress_target": "Deliberately contrasts with Fixture 1's clean WEAKENED result — this one is WEAKENED but with a real contradicting signal (partial, not full, reversion), and the evidence_significance field explicitly says so. Tests whether the Editor's prose can express a partial, honest result ('some of this held, some of it didn't') rather than flattening every WEAKENED status into the same confident 'survived the test' framing Fixture 1 earns. If the Editor writes this identically to Fixture 1, that's a failure to reason from the specific interrogation content rather than just the status label."
+    "expected_stress_target": "Deliberately contrasts with Fixture 1's clean WEAKENED result — this one is WEAKENED but with a real contradicting signal (partial, not full, reversion), and the evidence_significance field explicitly says so. Tests whether the Editor's prose can express a partial, honest result ('some of this held, some of it didn't') rather than flattening every WEAKENED status into the same confident 'survived the test' framing Fixture 1 earns. If the Editor writes this identically to Fixture 1, that's a failure to reason from the specific interrogation content rather than just the status label. NOTE: completeness and confidence on this fixture's Story Object are chosen to reproduce the authored evidence_strength score through the real compute_evidence_strength, not observed values."
   },
   {
     "fixture_id": "fixture_6",
@@ -263,6 +273,8 @@
     "story": "A marquee national-broadcast matchup produced a small, unremarkable price shift for a highly prominent player.",
     "time_window": "1 week",
     "sample_size": 3,
+    "completeness": 55,
+    "confidence": 55,
     "interrogation": {
       "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Small price movement ahead of a nationally televised game", "magnitude": "+280 to +255", "window": "1 week" },
@@ -284,7 +296,7 @@
       "eps_version": "v1",
       "dimensions": {
         "significance": { "score": 14, "rationale": "Movement within normal variance, no underlying change — banded as noise" },
-        "evidence_strength": { "score": 55, "rationale": "Full n_books coverage; nothing to test since nothing is being contested", "computation": "deterministic" },
+        "evidence_strength": { "score": 55, "rationale": "base (confidence 55 + completeness 55) / 2 = 55.0. No challenge status moved the score (empty alternate_explanations, or all NOT_TESTABLE).", "computation": "deterministic" },
         "betting_relevance": { "score": 19, "rationale": "No real reinterpretation available — normal noise" },
         "novelty": { "score": 12, "rationale": "Tells the reader nothing new" },
         "story_tension": { "score": 10, "rationale": "No relationship or divergence present" },
@@ -293,7 +305,7 @@
       "composite_score": 24.5,
       "gates": { "big_one_eligible": true, "watchlist_eligible": false }
     },
-    "expected_stress_target": "The single clearest test of whether the 5% weight cap actually holds in practice. Audience Relevance (88) is the highest single-dimension score across all six fixtures, but composite (24.5) is the lowest — deliberately, since every other dimension reflects an unremarkable story. If the Editor's placement or prose treats this as newsletter-worthy because of the player's name recognition, that's the specific failure this fixture exists to catch. Correct outcome: excluded, or at most a passing mention — never elevated on the strength of who the player is."
+    "expected_stress_target": "The single clearest test of whether the 5% weight cap actually holds in practice. Audience Relevance (88) is the highest single-dimension score across all six fixtures, but composite (24.5) is the lowest — deliberately, since every other dimension reflects an unremarkable story. If the Editor's placement or prose treats this as newsletter-worthy because of the player's name recognition, that's the specific failure this fixture exists to catch. Correct outcome: excluded, or at most a passing mention — never elevated on the strength of who the player is. NOTE: completeness and confidence on this fixture's Story Object are chosen to reproduce the authored evidence_strength score through the real compute_evidence_strength, not observed values."
   },
   {
     "fixture_id": "fixture_7",
@@ -305,6 +317,8 @@
     "story": "Thibodeaux played 81% of offensive snaps in the most recent game, up from a 52/48 split with Devin Okonkwo over the prior four games; Okonkwo's share fell by a similar amount. In the postgame press conference the head coach said the two backs would \"share the workload.\"",
     "time_window": "1 game (vs. 4-game baseline)",
     "sample_size": 67,
+    "completeness": 50,
+    "confidence": 50,
     "interrogation": {
       "interrogation_version": "v3_primary_alternate",
       "change": { "what_changed": "Offensive snap share concentrated in one back", "magnitude": "52% -> 81% (Thibodeaux); 48% -> 19% (Okonkwo)", "window": "1 game" },
@@ -345,7 +359,7 @@
       "eps_version": "v1",
       "dimensions": {
         "significance": { "score": 74, "rationale": "Major reallocation of a lead backfield role within a single game, with a mirror-image drop for the other back" },
-        "evidence_strength": { "score": 66, "rationale": "Full completeness, two tested alternate explanations both WEAKENED, 67-snap in-game sample; the one-game window keeps this below a multi-game result like Fixture 1", "computation": "deterministic" },
+        "evidence_strength": { "score": 66, "rationale": "primary alternate alt_1 WEAKENED -- If the coach's stated plan is true, the 81% was a one-game game plan and the split returns next week, which negates the durability of the change outright; the game-script alternate, if true, would only reclassify this one game, while the stated plan speaks to every game after it; 1 other alternate WEAKENED. base (confidence 50 + completeness 50) / 2 = 50.0, adjusted +16 from challenge status(es): WEAKENED (+8), WEAKENED (+8).", "computation": "deterministic" },
         "betting_relevance": { "score": 79, "rationale": "Directly reprices both backs' ATTD interpretation; the market has already moved meaningfully in both directions" },
         "novelty": { "score": 70, "rationale": "First game this back has held a lead role; the coach's contradicting public statement is itself new information" },
         "story_tension": { "score": 86, "rationale": "Direct, grounded tension between observed usage (81%) and the coach's stated 'share the workload' — tested against two alternates, not manufactured" },
@@ -354,6 +368,6 @@
       "composite_score": 73.4,
       "gates": { "big_one_eligible": true, "watchlist_eligible": true }
     },
-    "expected_stress_target": "Tests whether the Editor narrates the coach's \"share the workload\" quote as what it is — a stated intention that the on-field usage contradicts, with two tested alternate explanations both WEAKENED — without either (a) deferring to the quote and softening a decisive 81% usage shift into 'still a committee,' or (b) ignoring the quote and declaring the job settled. The one-game window is the honest limit: durability has one game of evidence, and the prose should say so rather than project it forward. Both gates pass, so this is also a double-gate case alongside Fixture 1: exactly one full treatment, with a cross_reference pointer elsewhere at most. With two Big-One-eligible, high-tension candidates in the same pool, this additionally tests whether the Editor picks one Big One and places the other honestly rather than forcing both into the lead."
+    "expected_stress_target": "Tests whether the Editor narrates the coach's \"share the workload\" quote as what it is — a stated intention that the on-field usage contradicts, with two tested alternate explanations both WEAKENED — without either (a) deferring to the quote and softening a decisive 81% usage shift into 'still a committee,' or (b) ignoring the quote and declaring the job settled. The one-game window is the honest limit: durability has one game of evidence, and the prose should say so rather than project it forward. Both gates pass, so this is also a double-gate case alongside Fixture 1: exactly one full treatment, with a cross_reference pointer elsewhere at most. With two Big-One-eligible, high-tension candidates in the same pool, this additionally tests whether the Editor picks one Big One and places the other honestly rather than forcing both into the lead. NOTE: completeness and confidence on this fixture's Story Object are chosen to reproduce the authored evidence_strength score through the real compute_evidence_strength, not observed values."
   }
 ]

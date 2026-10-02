@@ -1,0 +1,1089 @@
+{
+  "blocked": true,
+  "reason": "Evidence Validator blocked this issue (BLOCKED: 2 hard fail(s), 18 flagged for human review, across 4 story entries); the issue and the full report are attached on this exception (.issue / .report) and under the issue's own _evidence_validation key.",
+  "issue": {
+    "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+    "sections": [
+      {
+        "section_type": "from_the_desk",
+        "stories": [
+          {
+            "headline": "On coaches who tell us one thing and backfields that tell us another",
+            "body": "A head coach stood at a podium this week and said his two running backs would share the workload. I believe he meant it when he said it. I'm just not sure the depth chart got the memo before he walked up there.\n\nThis happens more than you'd think. Somebody makes a decision on a Tuesday practice field, nobody issues a press release about it, and the rest of us are left reading snap counts like tea leaves until the pattern is too obvious to call a coincidence. My job, as far as I can tell, is to notice before the quote catches up to the usage — and to be honest about how often I'm wrong to notice early.\n\nTwo backfields this week. One coach's words, two very different bodies of evidence behind them. Let's get into it.",
+            "intelligence_story_ids": [],
+            "player_ids": [],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 0,
+              "evidence_strength": 0,
+              "betting_relevance": 0,
+              "novelty": 0,
+              "story_tension": 0,
+              "audience_relevance": 0,
+              "eps_total": 0
+            }
+          }
+        ],
+        "cross_references": []
+      },
+      {
+        "section_type": "big_one",
+        "stories": [
+          {
+            "headline": "Thibodeaux played 81% of the snaps. The coach says it's still a split.",
+            "body": "Here's what I keep coming back to: a coach saying the backfield will \"share the workload\" is not usage data. It's a sentence. And this week, the sentence and the snap sheet disagreed with each other rather badly.\n\nMarcus Thibodeaux played 81% of offensive snaps in the most recent game. For the previous four weeks, he and Devin Okonkwo had split things close to evenly — never more than a 56/44 game in either man's favor. Then, in one afternoon, Okonkwo's share fell from 48% to 19%, almost exactly the amount Thibodeaux gained. That symmetry matters to me. It isn't that Thibodeaux played more because the game ran long or the pace picked up. It's that Okonkwo specifically played less, in the same packages he'd normally cede anyway — third down, two-minute. Everything else went to Thibodeaux: the early downs, both goal-line series, the four-minute drill at the end.\n\nSo I asked the obvious question, the one the coach's own quote invites: is this a real shift, or just a lopsided final score letting one back eat up garbage-time snaps? It wasn't close to even in the first half either — 79% in a one-score game, 83% after it got comfortable. The split held regardless of how competitive the game was. That's usually the tell that a coach is managing workload by design, not by scoreboard.\n\nWhich leaves the coach's own words as the one honest complication here. He said \"share the workload.\" He may mean it next week. I only have one game of evidence that he doesn't, and one game is not a trend — it's a data point I'm choosing to take seriously because of how decisively it broke from four weeks of precedent. The market has already started pricing the new picture: Thibodeaux moved from +340 to +230, Okonkwo drifted the other way to +520. The book is making a bet on which version of the backfield is real. I'm not ready to make that bet yet. I am ready to stop pretending I didn't see it.",
+            "intelligence_story_ids": [
+              "SYNTHETIC-FIXTURE-7"
+            ],
+            "player_ids": [
+              "SYNTHETIC-PLAYER-7"
+            ],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 74,
+              "evidence_strength": 66,
+              "betting_relevance": 79,
+              "novelty": 70,
+              "story_tension": 86,
+              "audience_relevance": 50,
+              "eps_total": 73.4
+            }
+          }
+        ],
+        "cross_references": [
+          {
+            "text": "If you want to see what the same kind of role shift looks like once it's had three weeks instead of one, the goal-line situation below is worth a read — same shape of question, more time to answer it.",
+            "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-1"
+          }
+        ]
+      },
+      {
+        "section_type": "what_changed",
+        "stories": [
+          {
+            "headline": "Keane's goal-line role has quietly taken over — and the injury excuse already expired",
+            "body": "I'm always suspicious of a role change that lines up neatly with somebody else's injury. It's the easiest alternate explanation there is, and usually the correct one: guy gets hurt, backup fills in, starter heals, things revert. So when Dorsey Keane's goal-line share jumped from 24% to 58% over three games, the first thing I wanted to know wasn't whether it happened. It was whether it would survive the incumbent coming back healthy.\n\nIt did. The incumbent returned to full practice in Week 5. Keane still took 5 of 7 goal-line opportunities in Weeks 5 and 6. That's the part that changes my read on this — not the share itself, but the fact that the easy explanation for the share stopped being available and the share didn't move. Snap share and red-zone target share both climbed for Keane over the same stretch, which at least points in a consistent direction rather than one metric doing all the work.\n\nWhat I don't know yet is whether this is a permanent depth-chart decision or an extended look that ends the moment it stops working. But the market isn't waiting to find out — Keane's anytime-touchdown price has already moved from +650 to +400. That's a real reprice, not a rounding error.",
+            "intelligence_story_ids": [
+              "SYNTHETIC-FIXTURE-1"
+            ],
+            "player_ids": [
+              "SYNTHETIC-PLAYER-1"
+            ],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 78,
+              "evidence_strength": 74,
+              "betting_relevance": 81,
+              "novelty": 66,
+              "story_tension": 83,
+              "audience_relevance": 55,
+              "eps_total": 76.75
+            }
+          },
+          {
+            "headline": "Osei's red-zone role only partly gave itself back",
+            "body": "This one I find more interesting than the headline number suggests, precisely because it didn't fully resolve. Palmer Osei's red-zone snap share rose from 12% to 34% while Carolina's starting tight end was out with a hamstring injury. The starter came back in Week 9. If the whole story were \"backup fills in, starter returns, share reverts,\" Osei's number should have gone right back to 12%.\n\nIt went to 26% instead. Not nothing, and not everything — a genuine partial reversion. I take that more seriously than a clean, total hold would be, honestly, because a number that drops at all tells you the injury really was doing some of the work. The fact that it didn't drop all the way back tells you something else was doing the rest. The offensive coordinator has used more two-tight-end red-zone personnel since Week 9 than in the season's first five weeks, which at least gives the remaining share a plausible home. The market agrees it's worth something, if modestly — Osei's anytime-touchdown price moved from +1100 to +850.\n\nWhat I can't tell you is whether 26% is where this settles or whether it's still drifting back down. I'd rather say that honestly than round it up into a cleaner story than the evidence supports.",
+            "intelligence_story_ids": [
+              "SYNTHETIC-FIXTURE-5"
+            ],
+            "player_ids": [
+              "SYNTHETIC-PLAYER-5"
+            ],
+            "pick_ids": [],
+            "eps_scores": {
+              "significance": 44,
+              "evidence_strength": 58,
+              "betting_relevance": 49,
+              "novelty": 47,
+              "story_tension": 61,
+              "audience_relevance": 25,
+              "eps_total": 49.5
+            }
+          }
+        ],
+        "cross_references": []
+      },
+      {
+        "section_type": "who_it_affects",
+        "stories": [],
+        "cross_references": [
+          {
+            "text": "Devin Okonkwo is the other half of the backfield story above — his snap share is the mirror image of Thibodeaux's, and whatever the coach decides next week lands on him too.",
+            "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-7"
+          },
+          {
+            "text": "Carolina's incumbent tight end is the other side of the Osei story — the share he didn't fully get back is the share we're discussing above.",
+            "refers_to_intelligence_story_id": "SYNTHETIC-FIXTURE-5"
+          }
+        ]
+      }
+    ],
+    "watchlist_populated": false,
+    "notes_for_human_reviewer": "This is Fixture V2, testing the new EPS-consumption behavior (Step 1 / Step 2 gate-reading / eps_scores copy-not-compute). It is a new calibration test, not a reconfirmation of the original two-round voice calibration.\n\nKey decisions:\n- Big One: Fixture 7 (Thibodeaux), eps_total 73.4, big_one_eligible true. Chose it over Fixture 1 (Keane, eps_total 76.75, also big_one_eligible true) because Fixture 7's story_tension (86) and the live coach-quote-vs-usage conflict made it the stronger *editorial* opportunity this week even with a marginally lower composite \\u2014 this was a composition judgment per Step 1 rule 3, not a re-scoring. Flagging this close call explicitly: if the intended reading is \"highest eps_total wins,\" this would need to flip. I'd push back gently \\u2014 Step 1 rule 2 says reason from dimensions, and Fixture 7's combination of tension + novelty + the coach-statement wrinkle made it the better lead, but it's genuinely close and worth a second set of eyes.\n- Because Fixture 7 became the Big One, it was excluded from Watchlist candidacy despite watchlist_eligible: true, per Step 2's \"one primary treatment\" rule. Same applies to Fixture 1 in What Changed.\n- Watchlist: empty this week. After removing Big One (Fixture 7) and What Changed entries (Fixtures 1, 5) from candidacy, no remaining Story Object had watchlist_eligible: true. Fixtures 2, 3, 6 are watchlist_eligible: false; Fixture 4 (Carolina slot) is big_one_eligible/watchlist_eligible true but unused here \\u2014 see note below on why I left it out entirely rather than placing it.\n- Fixture 4 (Carolina slot coverage) was a genuine close call for inclusion \\u2014 it's eligible for both gates and has real, honestly-unresolved tension. I left it out of this issue because its primary_alternate is UNRESOLVED (not WEAKENED/confirmed either way) and I didn't have a section where I could do that ambiguity justice without either overstating it (What Changed implies more confidence than the evidence supports) or needing a Watchlist slot I'd rather leave empty than force. Worth a second look \\u2014 I may be underusing it.\n- Fixtures 2 and 6 (stable-price / noise stories) were correctly excluded \\u2014 low significance, low tension, confirmatory rather than new information. No section needed them and forcing either in would have been padding.\n- Fixture 3 (Denver red-zone pass rate) is big_one_eligible: false and watchlist_eligible: false \\u2014 excluded outright, no close call.\n- Tasty Connection: omitted entirely. live_picks is empty for this fixture, and per the live_picks_note I did not invent picks to fill the section. No forced symmetry.\n- eps_scores in every included story entry are copied verbatim from the Story Object's eps.dimensions scores and composite_score \\u2014 none recomputed.\n- Checked for scoring-language leakage into reader-facing prose: none found. No mention of \"EPS,\" \"scored,\" or dimension names in any story body.\n- Cross-references used instead of duplicate treatments for Fixture 7 (pointed to from What Changed intro cross-ref under Big One... actually placed the Keane pointer under Big One, and used Who It Affects purely for cross-references pointing at the two backfield/TE stories rather than writing new primary content \\u2014 there was no additional story that earned its own full treatment in Who It Affects this week, so it's cross-reference-only, which the Hard Rules and Step 3 explicitly allow.",
+    "_validation": {
+      "passed": true,
+      "retry_fired": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "block_index": 0,
+          "passed": true,
+          "hard_errors": [],
+          "shape_errors": [],
+          "repairs": []
+        }
+      ],
+      "repairs": []
+    },
+    "_evidence_validation": {
+      "passed": false,
+      "hard_fails": [
+        {
+          "where": "what_changed.stories[0]",
+          "check": "claim_traceability",
+          "claim_text": "6",
+          "detail": "'6' does not match any real value across the referenced story objects (checked within +/-0.6 tolerance) — looks invented or misstated."
+        },
+        {
+          "where": "what_changed.stories[1]",
+          "check": "relationship_traceability",
+          "claim_text": "Palmer Osei's red-zone snap share rose from 12% to 34% while Carolina's starting tight end was out with a hamstring injury.",
+          "detail": "Relationship claim (connective: 'while') has one grounded half and one un-grounded or unsupported half (the second clause) — exactly the 'one confirmed, one plausible-sounding' pattern this check exists to catch."
+        }
+      ],
+      "needs_review_count": 18,
+      "per_story": [
+        {
+          "where": "from_the_desk.stories[0]",
+          "intelligence_story_ids": [],
+          "result": {
+            "passed": true,
+            "missing_story_ids": [],
+            "claim_traceability": [],
+            "relationship_traceability": [],
+            "evidence_confidence_alignment": [],
+            "interrogation_traceability": [],
+            "summary": "No intelligence_story_ids claimed — not a story-evidence entry (e.g. from_the_desk); no claim-shaped checks apply."
+          }
+        },
+        {
+          "where": "big_one.stories[0]",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-7"
+          ],
+          "result": {
+            "passed": true,
+            "missing_story_ids": [],
+            "claim_traceability": [
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "+340",
+                "status": "pass",
+                "detail": "'+340' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "+230",
+                "status": "pass",
+                "detail": "'+230' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "+520",
+                "status": "pass",
+                "detail": "'+520' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "81%",
+                "status": "pass",
+                "detail": "'81%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "81%",
+                "status": "pass",
+                "detail": "'81%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "48%",
+                "status": "pass",
+                "detail": "'48%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "19%",
+                "status": "pass",
+                "detail": "'19%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "79%",
+                "status": "pass",
+                "detail": "'79%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "83%",
+                "status": "pass",
+                "detail": "'83%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "56",
+                "status": "pass",
+                "detail": "'56' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "44",
+                "status": "pass",
+                "detail": "'44' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Marcus Thibodeaux",
+                "status": "pass",
+                "detail": "'Marcus Thibodeaux' matches a real player/team name in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Devin Okonkwo",
+                "status": "needs_review",
+                "detail": "'Devin Okonkwo' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Okonkwo",
+                "status": "needs_review",
+                "detail": "'Okonkwo' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Thibodeaux",
+                "status": "pass",
+                "detail": "'Thibodeaux' matches a real player/team name in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "So",
+                "status": "needs_review",
+                "detail": "'So' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "It",
+                "status": "needs_review",
+                "detail": "'It' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Which",
+                "status": "needs_review",
+                "detail": "'Which' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "He",
+                "status": "needs_review",
+                "detail": "'He' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              }
+            ],
+            "relationship_traceability": [
+              {
+                "check": "relationship_traceability",
+                "claim_text": "I'm not ready to make that bet yet.",
+                "connective": "yet",
+                "status": "needs_review",
+                "detail": "Relationship claim (connective: 'yet') has no extractable numeric claim on either side — cannot be mechanically confirmed or denied. Human check needed."
+              }
+            ],
+            "evidence_confidence_alignment": [
+              {
+                "check": "evidence_confidence_alignment",
+                "claim_text": null,
+                "status": "needs_review",
+                "detail": "None of the referenced story objects carry evidence_classification — likely fetched from get_published_nfl_intelligence_stories alone without the get_published_nfl_intelligence_latest join. Cannot confirm confidence alignment without it."
+              }
+            ],
+            "interrogation_traceability": [],
+            "summary": "0 hard fail(s), 8 flagged for human review, 13 passed clean"
+          }
+        },
+        {
+          "where": "what_changed.stories[0]",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-1"
+          ],
+          "result": {
+            "passed": false,
+            "missing_story_ids": [],
+            "claim_traceability": [
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "+650",
+                "status": "pass",
+                "detail": "'+650' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "+400",
+                "status": "pass",
+                "detail": "'+400' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "24%",
+                "status": "pass",
+                "detail": "'24%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "58%",
+                "status": "pass",
+                "detail": "'58%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "7",
+                "status": "pass",
+                "detail": "'7' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "6",
+                "status": "fail",
+                "detail": "'6' does not match any real value across the referenced story objects (checked within +/-0.6 tolerance) — looks invented or misstated."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Dorsey Keane",
+                "status": "pass",
+                "detail": "'Dorsey Keane' matches a real player/team name in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "It",
+                "status": "needs_review",
+                "detail": "'It' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Weeks",
+                "status": "needs_review",
+                "detail": "'Weeks' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Keane",
+                "status": "pass",
+                "detail": "'Keane' matches a real player/team name in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "What",
+                "status": "needs_review",
+                "detail": "'What' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              }
+            ],
+            "relationship_traceability": [
+              {
+                "check": "relationship_traceability",
+                "claim_text": "That's the part that changes my read on this — not the share itself, but the fact that the easy explanation for the share stopped being available and the share didn't move.",
+                "connective": "but",
+                "status": "needs_review",
+                "detail": "Relationship claim (connective: 'but') has no extractable numeric claim on either side — cannot be mechanically confirmed or denied. Human check needed."
+              },
+              {
+                "check": "relationship_traceability",
+                "claim_text": "What I don't know yet is whether this is a permanent depth-chart decision or an extended look that ends the moment it stops working.",
+                "connective": "yet",
+                "status": "needs_review",
+                "detail": "Relationship claim (connective: 'yet') has no extractable numeric claim on either side — cannot be mechanically confirmed or denied. Human check needed."
+              }
+            ],
+            "evidence_confidence_alignment": [
+              {
+                "check": "evidence_confidence_alignment",
+                "claim_text": null,
+                "status": "needs_review",
+                "detail": "None of the referenced story objects carry evidence_classification — likely fetched from get_published_nfl_intelligence_stories alone without the get_published_nfl_intelligence_latest join. Cannot confirm confidence alignment without it."
+              }
+            ],
+            "interrogation_traceability": [],
+            "summary": "1 hard fail(s), 6 flagged for human review, 7 passed clean"
+          }
+        },
+        {
+          "where": "what_changed.stories[1]",
+          "intelligence_story_ids": [
+            "SYNTHETIC-FIXTURE-5"
+          ],
+          "result": {
+            "passed": false,
+            "missing_story_ids": [],
+            "claim_traceability": [
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "+1100",
+                "status": "pass",
+                "detail": "'+1100' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "+850",
+                "status": "pass",
+                "detail": "'+850' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "12%",
+                "status": "pass",
+                "detail": "'12%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "34%",
+                "status": "pass",
+                "detail": "'34%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "12%",
+                "status": "pass",
+                "detail": "'12%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "26%",
+                "status": "pass",
+                "detail": "'26%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "26%",
+                "status": "pass",
+                "detail": "'26%' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "9",
+                "status": "pass",
+                "detail": "'9' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "numeric",
+                "claim_text": "9",
+                "status": "pass",
+                "detail": "'9' matches a real value in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Osei",
+                "status": "pass",
+                "detail": "'Osei' matches a real player/team name in the referenced story objects."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "Carolina",
+                "status": "needs_review",
+                "detail": "'Carolina' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "It",
+                "status": "needs_review",
+                "detail": "'It' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              },
+              {
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": "What",
+                "status": "needs_review",
+                "detail": "'What' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+              }
+            ],
+            "relationship_traceability": [
+              {
+                "check": "relationship_traceability",
+                "claim_text": "Palmer Osei's red-zone snap share rose from 12% to 34% while Carolina's starting tight end was out with a hamstring injury.",
+                "connective": "while",
+                "status": "fail",
+                "detail": "Relationship claim (connective: 'while') has one grounded half and one un-grounded or unsupported half (the second clause) — exactly the 'one confirmed, one plausible-sounding' pattern this check exists to catch."
+              }
+            ],
+            "evidence_confidence_alignment": [
+              {
+                "check": "evidence_confidence_alignment",
+                "claim_text": null,
+                "status": "needs_review",
+                "detail": "None of the referenced story objects carry evidence_classification — likely fetched from get_published_nfl_intelligence_stories alone without the get_published_nfl_intelligence_latest join. Cannot confirm confidence alignment without it."
+              }
+            ],
+            "interrogation_traceability": [],
+            "summary": "1 hard fail(s), 4 flagged for human review, 10 passed clean"
+          }
+        }
+      ],
+      "editorial_contract": {
+        "passed": true,
+        "scoring_language_leak": [],
+        "gate_consistency": [
+          {
+            "check": "gate_consistency",
+            "claim_type": "big_one",
+            "claim_text": [
+              "SYNTHETIC-FIXTURE-7"
+            ],
+            "status": "pass",
+            "detail": "'big_one_eligible' was true at draft time for this big_one placement."
+          }
+        ],
+        "one_treatment": [
+          {
+            "check": "one_treatment",
+            "claim_type": "single_entry",
+            "claim_text": "SYNTHETIC-FIXTURE-7",
+            "status": "pass",
+            "detail": "'SYNTHETIC-FIXTURE-7' appears in exactly one section's stories[] array (big_one)."
+          },
+          {
+            "check": "one_treatment",
+            "claim_type": "single_entry",
+            "claim_text": "SYNTHETIC-FIXTURE-1",
+            "status": "pass",
+            "detail": "'SYNTHETIC-FIXTURE-1' appears in exactly one section's stories[] array (what_changed)."
+          },
+          {
+            "check": "one_treatment",
+            "claim_type": "single_entry",
+            "claim_text": "SYNTHETIC-FIXTURE-5",
+            "status": "pass",
+            "detail": "'SYNTHETIC-FIXTURE-5' appears in exactly one section's stories[] array (what_changed)."
+          }
+        ],
+        "summary": "0 hard fail(s), 0 flagged for human review, 4 passed clean"
+      },
+      "gates_source": "upstream eps.gates via persist_weekly_brief.freeze_eps_scores (read at draft time, never recomputed)",
+      "summary": "BLOCKED: 2 hard fail(s), 18 flagged for human review, across 4 story entries"
+    }
+  },
+  "evidence_validation": {
+    "passed": false,
+    "hard_fails": [
+      {
+        "where": "what_changed.stories[0]",
+        "check": "claim_traceability",
+        "claim_text": "6",
+        "detail": "'6' does not match any real value across the referenced story objects (checked within +/-0.6 tolerance) — looks invented or misstated."
+      },
+      {
+        "where": "what_changed.stories[1]",
+        "check": "relationship_traceability",
+        "claim_text": "Palmer Osei's red-zone snap share rose from 12% to 34% while Carolina's starting tight end was out with a hamstring injury.",
+        "detail": "Relationship claim (connective: 'while') has one grounded half and one un-grounded or unsupported half (the second clause) — exactly the 'one confirmed, one plausible-sounding' pattern this check exists to catch."
+      }
+    ],
+    "needs_review_count": 18,
+    "per_story": [
+      {
+        "where": "from_the_desk.stories[0]",
+        "intelligence_story_ids": [],
+        "result": {
+          "passed": true,
+          "missing_story_ids": [],
+          "claim_traceability": [],
+          "relationship_traceability": [],
+          "evidence_confidence_alignment": [],
+          "interrogation_traceability": [],
+          "summary": "No intelligence_story_ids claimed — not a story-evidence entry (e.g. from_the_desk); no claim-shaped checks apply."
+        }
+      },
+      {
+        "where": "big_one.stories[0]",
+        "intelligence_story_ids": [
+          "SYNTHETIC-FIXTURE-7"
+        ],
+        "result": {
+          "passed": true,
+          "missing_story_ids": [],
+          "claim_traceability": [
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "+340",
+              "status": "pass",
+              "detail": "'+340' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "+230",
+              "status": "pass",
+              "detail": "'+230' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "+520",
+              "status": "pass",
+              "detail": "'+520' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "81%",
+              "status": "pass",
+              "detail": "'81%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "81%",
+              "status": "pass",
+              "detail": "'81%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "48%",
+              "status": "pass",
+              "detail": "'48%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "19%",
+              "status": "pass",
+              "detail": "'19%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "79%",
+              "status": "pass",
+              "detail": "'79%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "83%",
+              "status": "pass",
+              "detail": "'83%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "56",
+              "status": "pass",
+              "detail": "'56' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "44",
+              "status": "pass",
+              "detail": "'44' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Marcus Thibodeaux",
+              "status": "pass",
+              "detail": "'Marcus Thibodeaux' matches a real player/team name in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Devin Okonkwo",
+              "status": "needs_review",
+              "detail": "'Devin Okonkwo' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Okonkwo",
+              "status": "needs_review",
+              "detail": "'Okonkwo' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Thibodeaux",
+              "status": "pass",
+              "detail": "'Thibodeaux' matches a real player/team name in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "So",
+              "status": "needs_review",
+              "detail": "'So' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "It",
+              "status": "needs_review",
+              "detail": "'It' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Which",
+              "status": "needs_review",
+              "detail": "'Which' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "He",
+              "status": "needs_review",
+              "detail": "'He' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            }
+          ],
+          "relationship_traceability": [
+            {
+              "check": "relationship_traceability",
+              "claim_text": "I'm not ready to make that bet yet.",
+              "connective": "yet",
+              "status": "needs_review",
+              "detail": "Relationship claim (connective: 'yet') has no extractable numeric claim on either side — cannot be mechanically confirmed or denied. Human check needed."
+            }
+          ],
+          "evidence_confidence_alignment": [
+            {
+              "check": "evidence_confidence_alignment",
+              "claim_text": null,
+              "status": "needs_review",
+              "detail": "None of the referenced story objects carry evidence_classification — likely fetched from get_published_nfl_intelligence_stories alone without the get_published_nfl_intelligence_latest join. Cannot confirm confidence alignment without it."
+            }
+          ],
+          "interrogation_traceability": [],
+          "summary": "0 hard fail(s), 8 flagged for human review, 13 passed clean"
+        }
+      },
+      {
+        "where": "what_changed.stories[0]",
+        "intelligence_story_ids": [
+          "SYNTHETIC-FIXTURE-1"
+        ],
+        "result": {
+          "passed": false,
+          "missing_story_ids": [],
+          "claim_traceability": [
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "+650",
+              "status": "pass",
+              "detail": "'+650' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "+400",
+              "status": "pass",
+              "detail": "'+400' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "24%",
+              "status": "pass",
+              "detail": "'24%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "58%",
+              "status": "pass",
+              "detail": "'58%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "7",
+              "status": "pass",
+              "detail": "'7' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "6",
+              "status": "fail",
+              "detail": "'6' does not match any real value across the referenced story objects (checked within +/-0.6 tolerance) — looks invented or misstated."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Dorsey Keane",
+              "status": "pass",
+              "detail": "'Dorsey Keane' matches a real player/team name in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "It",
+              "status": "needs_review",
+              "detail": "'It' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Weeks",
+              "status": "needs_review",
+              "detail": "'Weeks' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Keane",
+              "status": "pass",
+              "detail": "'Keane' matches a real player/team name in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "What",
+              "status": "needs_review",
+              "detail": "'What' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            }
+          ],
+          "relationship_traceability": [
+            {
+              "check": "relationship_traceability",
+              "claim_text": "That's the part that changes my read on this — not the share itself, but the fact that the easy explanation for the share stopped being available and the share didn't move.",
+              "connective": "but",
+              "status": "needs_review",
+              "detail": "Relationship claim (connective: 'but') has no extractable numeric claim on either side — cannot be mechanically confirmed or denied. Human check needed."
+            },
+            {
+              "check": "relationship_traceability",
+              "claim_text": "What I don't know yet is whether this is a permanent depth-chart decision or an extended look that ends the moment it stops working.",
+              "connective": "yet",
+              "status": "needs_review",
+              "detail": "Relationship claim (connective: 'yet') has no extractable numeric claim on either side — cannot be mechanically confirmed or denied. Human check needed."
+            }
+          ],
+          "evidence_confidence_alignment": [
+            {
+              "check": "evidence_confidence_alignment",
+              "claim_text": null,
+              "status": "needs_review",
+              "detail": "None of the referenced story objects carry evidence_classification — likely fetched from get_published_nfl_intelligence_stories alone without the get_published_nfl_intelligence_latest join. Cannot confirm confidence alignment without it."
+            }
+          ],
+          "interrogation_traceability": [],
+          "summary": "1 hard fail(s), 6 flagged for human review, 7 passed clean"
+        }
+      },
+      {
+        "where": "what_changed.stories[1]",
+        "intelligence_story_ids": [
+          "SYNTHETIC-FIXTURE-5"
+        ],
+        "result": {
+          "passed": false,
+          "missing_story_ids": [],
+          "claim_traceability": [
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "+1100",
+              "status": "pass",
+              "detail": "'+1100' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "+850",
+              "status": "pass",
+              "detail": "'+850' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "12%",
+              "status": "pass",
+              "detail": "'12%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "34%",
+              "status": "pass",
+              "detail": "'34%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "12%",
+              "status": "pass",
+              "detail": "'12%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "26%",
+              "status": "pass",
+              "detail": "'26%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "26%",
+              "status": "pass",
+              "detail": "'26%' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "9",
+              "status": "pass",
+              "detail": "'9' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "numeric",
+              "claim_text": "9",
+              "status": "pass",
+              "detail": "'9' matches a real value in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Osei",
+              "status": "pass",
+              "detail": "'Osei' matches a real player/team name in the referenced story objects."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "Carolina",
+              "status": "needs_review",
+              "detail": "'Carolina' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "It",
+              "status": "needs_review",
+              "detail": "'It' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            },
+            {
+              "check": "claim_traceability",
+              "claim_type": "entity",
+              "claim_text": "What",
+              "status": "needs_review",
+              "detail": "'What' does not match any real player/team name in the referenced story objects — could be a fabricated reference, or a real name this heuristic detector missed context for. Human check needed either way."
+            }
+          ],
+          "relationship_traceability": [
+            {
+              "check": "relationship_traceability",
+              "claim_text": "Palmer Osei's red-zone snap share rose from 12% to 34% while Carolina's starting tight end was out with a hamstring injury.",
+              "connective": "while",
+              "status": "fail",
+              "detail": "Relationship claim (connective: 'while') has one grounded half and one un-grounded or unsupported half (the second clause) — exactly the 'one confirmed, one plausible-sounding' pattern this check exists to catch."
+            }
+          ],
+          "evidence_confidence_alignment": [
+            {
+              "check": "evidence_confidence_alignment",
+              "claim_text": null,
+              "status": "needs_review",
+              "detail": "None of the referenced story objects carry evidence_classification — likely fetched from get_published_nfl_intelligence_stories alone without the get_published_nfl_intelligence_latest join. Cannot confirm confidence alignment without it."
+            }
+          ],
+          "interrogation_traceability": [],
+          "summary": "1 hard fail(s), 4 flagged for human review, 10 passed clean"
+        }
+      }
+    ],
+    "editorial_contract": {
+      "passed": true,
+      "scoring_language_leak": [],
+      "gate_consistency": [
+        {
+          "check": "gate_consistency",
+          "claim_type": "big_one",
+          "claim_text": [
+            "SYNTHETIC-FIXTURE-7"
+          ],
+          "status": "pass",
+          "detail": "'big_one_eligible' was true at draft time for this big_one placement."
+        }
+      ],
+      "one_treatment": [
+        {
+          "check": "one_treatment",
+          "claim_type": "single_entry",
+          "claim_text": "SYNTHETIC-FIXTURE-7",
+          "status": "pass",
+          "detail": "'SYNTHETIC-FIXTURE-7' appears in exactly one section's stories[] array (big_one)."
+        },
+        {
+          "check": "one_treatment",
+          "claim_type": "single_entry",
+          "claim_text": "SYNTHETIC-FIXTURE-1",
+          "status": "pass",
+          "detail": "'SYNTHETIC-FIXTURE-1' appears in exactly one section's stories[] array (what_changed)."
+        },
+        {
+          "check": "one_treatment",
+          "claim_type": "single_entry",
+          "claim_text": "SYNTHETIC-FIXTURE-5",
+          "status": "pass",
+          "detail": "'SYNTHETIC-FIXTURE-5' appears in exactly one section's stories[] array (what_changed)."
+        }
+      ],
+      "summary": "0 hard fail(s), 0 flagged for human review, 4 passed clean"
+    },
+    "gates_source": "upstream eps.gates via persist_weekly_brief.freeze_eps_scores (read at draft time, never recomputed)",
+    "summary": "BLOCKED: 2 hard fail(s), 18 flagged for human review, across 4 story entries"
+  }
+}
