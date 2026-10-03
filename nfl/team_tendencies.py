@@ -1196,6 +1196,13 @@ def build_redzone_play_calling_stories(
             time_window=f"Season {season}, last {_games_phrase(row['_trend_window'])} through Week {week} vs. season-to-date",
             related_players=_related_players_redzone(weekly, season, week, row["team"], direction, config),
         )
+        # Coaching Trends sub-type discriminator (2026-10 schema slot) --
+        # same "attached after build_story(), not part of its own hard
+        # STORY_FIELDS contract" shape as every Universal Card v2 field
+        # below. A fixed literal, not derived from data: this function is
+        # the one place that already knows which detector produced this
+        # story.
+        story["trend_type"] = "redzone_play_calling"
         # Universal Card v2 fields -- attached after build_story(), not
         # part of its own hard STORY_FIELDS contract.
         story["hero_metric"] = _hero_metric_for_redzone_row(row, agrees)
@@ -1287,6 +1294,10 @@ def build_fourth_down_aggressiveness_stories(
                 False, "growing-aggressive", direction, config,
             ),
         )
+        # Coaching Trends sub-type discriminator (2026-10 schema slot) --
+        # see build_redzone_play_calling_stories' own identical comment
+        # for the full reasoning.
+        story["trend_type"] = "fourth_down_aggressiveness"
         story["hero_metric"] = _hero_metric_for_fourth_down_row(row, agrees)
         story["signal_direction"] = _signal_direction_fourth_down(direction)
         story["what_changed"] = _what_changed_for_fourth_down_row(row, direction, agrees, completeness, config)
@@ -1483,6 +1494,13 @@ def build_pace_stories(
                 True, "growing-faster", direction, config,
             ),
         )
+        # Coaching Trends sub-type discriminator (2026-10 schema slot) --
+        # see build_redzone_play_calling_stories' own identical comment
+        # for the full reasoning. Set unconditionally here, ahead of the
+        # swing/non-swing branch below: a swing pace story is still a
+        # pace story, same real reasoning primary_signal's own "name
+        # stays populated on a swing" fix already established.
+        story["trend_type"] = "pace"
         if is_swing:
             # Suppressed for Phase 1, approved -- a two-point before/after
             # hero_metric shape can't honestly represent a 3+ point swing

@@ -210,6 +210,35 @@ if __name__ == "__main__":
         results.append(check(f"{name}: headline/story are real, distinct, non-empty text", all(s["story"] != s["headline"] and len(s["story"]) > 20 for s in stories)))
 
     # ============================================================
+    # trend_type discriminator (2026-10 schema slot) -- each detector
+    # writes its own fixed, distinct value onto every real story it
+    # produces, never one of the other two detectors' values.
+    # ============================================================
+    EXPECTED_TREND_TYPE = {"rz": "redzone_play_calling", "fd": "fourth_down_aggressiveness", "pace": "pace"}
+    for name, stories in all_stories.items():
+        expected = EXPECTED_TREND_TYPE[name]
+        results.append(check(
+            f"{name}: every real story carries trend_type={expected!r}",
+            all(s["trend_type"] == expected for s in stories),
+        ))
+    all_trend_types = {s["trend_type"] for stories in all_stories.values() for s in stories}
+    results.append(check(
+        f"all three detectors' trend_type values are mutually distinct across the real combined 2025 feed (got {sorted(all_trend_types)})",
+        all_trend_types == set(EXPECTED_TREND_TYPE.values()),
+    ))
+
+    # intelligence_write.shape_story_row() passes trend_type through
+    # unchanged, same as every other additive v2/schema-slot field --
+    # against a real story, not a synthetic dict.
+    from intelligence_write import shape_story_row
+    sample_story = all_stories["pace"][0]
+    shaped = shape_story_row(sample_story, 2025, 15, [], None)
+    results.append(check(
+        f"shape_story_row() passes trend_type through unchanged (got {shaped.get('trend_type')!r})",
+        shaped.get("trend_type") == sample_story["trend_type"] == "pace",
+    ))
+
+    # ============================================================
     # Combined feed wrapper.
     # ============================================================
     combined, combined_diag = build_team_tendencies_stories(pbp2025, weekly, 2025, 15)

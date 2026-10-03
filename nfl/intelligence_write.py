@@ -157,6 +157,13 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
     shape — set only by defensive_trends.py and team_tendencies.py's
     own build_*_stories() functions, absent/None for role_changes and
     market_intelligence (neither has a dynamic-window trend concept).
+
+    Coaching Trends sub-type (trend_type, 2026-10): additive, same
+    optional/absent-until-populated shape as every field above — set
+    only by team_tendencies.py's three detectors (pace /
+    fourth_down_aggressiveness / redzone_play_calling), absent/None for
+    defensive_trends, role_changes, and market_intelligence, which have
+    no sub-type concept of their own.
     """
     entity_key, entity_key_issue = _entity_key_for_row(story.get("entity"))
     issues = list(sanity_issues) + ([entity_key_issue] if entity_key_issue else [])
@@ -213,6 +220,15 @@ def shape_story_row(story: dict, season: int, week: int, sanity_issues: list, li
         # dynamic-window concept at all.
         "methodology": story.get("methodology"),
         "methodology_maturity": story.get("methodology_maturity"),
+        # Coaching Trends sub-type discriminator (2026-10 schema slot) --
+        # same "optional, absent/None until a family's writer actually
+        # populates it" shape as every Universal Card v2 / interrogation /
+        # eps / methodology field above. Set only by team_tendencies.py's
+        # three detectors as of this change (pace / fourth_down_
+        # aggressiveness / redzone_play_calling); absent/None for
+        # defensive_trends, role_changes, and market_intelligence, which
+        # have no sub-type concept of their own.
+        "trend_type": story.get("trend_type"),
     }
 
 
