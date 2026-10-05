@@ -1,0 +1,692 @@
+{
+ "Air Force": {
+  "conf": "Mountain West",
+  "mascot": "Falcons",
+  "tier": "G5"
+ },
+ "Akron": {
+  "conf": "Mid-American",
+  "mascot": "Zips",
+  "tier": "G5"
+ },
+ "Alabama": {
+  "conf": "SEC",
+  "mascot": "Crimson Tide",
+  "tier": "P4"
+ },
+ "App State": {
+  "conf": "Sun Belt",
+  "mascot": "Mountaineers",
+  "tier": "G5"
+ },
+ "Arizona": {
+  "conf": "Big 12",
+  "mascot": "Wildcats",
+  "tier": "P4"
+ },
+ "Arizona State": {
+  "conf": "Big 12",
+  "mascot": "Sun Devils",
+  "tier": "P4"
+ },
+ "Arkansas": {
+  "conf": "SEC",
+  "mascot": "Razorbacks",
+  "tier": "P4"
+ },
+ "Arkansas State": {
+  "conf": "Sun Belt",
+  "mascot": "Red Wolves",
+  "tier": "G5"
+ },
+ "Army": {
+  "conf": "American Athletic",
+  "mascot": "Black Knights",
+  "tier": "G5"
+ },
+ "Auburn": {
+  "conf": "SEC",
+  "mascot": "Tigers",
+  "tier": "P4"
+ },
+ "BYU": {
+  "conf": "Big 12",
+  "mascot": "Cougars",
+  "tier": "P4"
+ },
+ "Ball State": {
+  "conf": "Mid-American",
+  "mascot": "Cardinals",
+  "tier": "G5"
+ },
+ "Baylor": {
+  "conf": "Big 12",
+  "mascot": "Bears",
+  "tier": "P4"
+ },
+ "Boise State": {
+  "conf": "Pac-12",
+  "mascot": "Broncos",
+  "tier": "G5"
+ },
+ "Boston College": {
+  "conf": "ACC",
+  "mascot": "Eagles",
+  "tier": "P4"
+ },
+ "Bowling Green": {
+  "conf": "Mid-American",
+  "mascot": "Falcons",
+  "tier": "G5"
+ },
+ "Buffalo": {
+  "conf": "Mid-American",
+  "mascot": "Bulls",
+  "tier": "G5"
+ },
+ "California": {
+  "conf": "ACC",
+  "mascot": "Golden Bears",
+  "tier": "P4"
+ },
+ "Central Michigan": {
+  "conf": "Mid-American",
+  "mascot": "Chippewas",
+  "tier": "G5"
+ },
+ "Charlotte": {
+  "conf": "American Athletic",
+  "mascot": "49ers",
+  "tier": "G5"
+ },
+ "Cincinnati": {
+  "conf": "Big 12",
+  "mascot": "Bearcats",
+  "tier": "P4"
+ },
+ "Clemson": {
+  "conf": "ACC",
+  "mascot": "Tigers",
+  "tier": "P4"
+ },
+ "Coastal Carolina": {
+  "conf": "Sun Belt",
+  "mascot": "Chanticleers",
+  "tier": "G5"
+ },
+ "Colorado": {
+  "conf": "Big 12",
+  "mascot": "Buffaloes",
+  "tier": "P4"
+ },
+ "Colorado State": {
+  "conf": "Pac-12",
+  "mascot": "Rams",
+  "tier": "G5"
+ },
+ "Delaware": {
+  "conf": "Conference USA",
+  "mascot": "Blue Hens",
+  "tier": "G5"
+ },
+ "Duke": {
+  "conf": "ACC",
+  "mascot": "Blue Devils",
+  "tier": "P4"
+ },
+ "East Carolina": {
+  "conf": "American Athletic",
+  "mascot": "Pirates",
+  "tier": "G5"
+ },
+ "Eastern Michigan": {
+  "conf": "Mid-American",
+  "mascot": "Eagles",
+  "tier": "G5"
+ },
+ "Florida": {
+  "conf": "SEC",
+  "mascot": "Gators",
+  "tier": "P4"
+ },
+ "Florida Atlantic": {
+  "conf": "American Athletic",
+  "mascot": "Owls",
+  "tier": "G5"
+ },
+ "Florida International": {
+  "conf": "Conference USA",
+  "mascot": "Panthers",
+  "tier": "G5"
+ },
+ "Florida State": {
+  "conf": "ACC",
+  "mascot": "Seminoles",
+  "tier": "P4"
+ },
+ "Fresno State": {
+  "conf": "Pac-12",
+  "mascot": "Bulldogs",
+  "tier": "G5"
+ },
+ "Georgia": {
+  "conf": "SEC",
+  "mascot": "Bulldogs",
+  "tier": "P4"
+ },
+ "Georgia Southern": {
+  "conf": "Sun Belt",
+  "mascot": "Eagles",
+  "tier": "G5"
+ },
+ "Georgia State": {
+  "conf": "Sun Belt",
+  "mascot": "Panthers",
+  "tier": "G5"
+ },
+ "Georgia Tech": {
+  "conf": "ACC",
+  "mascot": "Yellow Jackets",
+  "tier": "P4"
+ },
+ "Hawai'i": {
+  "conf": "Mountain West",
+  "mascot": "Rainbow Warriors",
+  "tier": "G5"
+ },
+ "Houston": {
+  "conf": "Big 12",
+  "mascot": "Cougars",
+  "tier": "P4"
+ },
+ "Illinois": {
+  "conf": "Big Ten",
+  "mascot": "Fighting Illini",
+  "tier": "P4"
+ },
+ "Indiana": {
+  "conf": "Big Ten",
+  "mascot": "Hoosiers",
+  "tier": "P4"
+ },
+ "Iowa": {
+  "conf": "Big Ten",
+  "mascot": "Hawkeyes",
+  "tier": "P4"
+ },
+ "Iowa State": {
+  "conf": "Big 12",
+  "mascot": "Cyclones",
+  "tier": "P4"
+ },
+ "Jacksonville State": {
+  "conf": "Conference USA",
+  "mascot": "Gamecocks",
+  "tier": "G5"
+ },
+ "James Madison": {
+  "conf": "Sun Belt",
+  "mascot": "Dukes",
+  "tier": "G5"
+ },
+ "Kansas": {
+  "conf": "Big 12",
+  "mascot": "Jayhawks",
+  "tier": "P4"
+ },
+ "Kansas State": {
+  "conf": "Big 12",
+  "mascot": "Wildcats",
+  "tier": "P4"
+ },
+ "Kennesaw State": {
+  "conf": "Conference USA",
+  "mascot": "Owls",
+  "tier": "G5"
+ },
+ "Kent State": {
+  "conf": "Mid-American",
+  "mascot": "Golden Flashes",
+  "tier": "G5"
+ },
+ "Kentucky": {
+  "conf": "SEC",
+  "mascot": "Wildcats",
+  "tier": "P4"
+ },
+ "LSU": {
+  "conf": "SEC",
+  "mascot": "Tigers",
+  "tier": "P4"
+ },
+ "Liberty": {
+  "conf": "Conference USA",
+  "mascot": "Flames",
+  "tier": "G5"
+ },
+ "Louisiana": {
+  "conf": "Sun Belt",
+  "mascot": "Ragin' Cajuns",
+  "tier": "G5"
+ },
+ "Louisiana Tech": {
+  "conf": "Sun Belt",
+  "mascot": "Bulldogs",
+  "tier": "G5"
+ },
+ "Louisville": {
+  "conf": "ACC",
+  "mascot": "Cardinals",
+  "tier": "P4"
+ },
+ "Marshall": {
+  "conf": "Sun Belt",
+  "mascot": "Thundering Herd",
+  "tier": "G5"
+ },
+ "Maryland": {
+  "conf": "Big Ten",
+  "mascot": "Terrapins",
+  "tier": "P4"
+ },
+ "Massachusetts": {
+  "conf": "Mid-American",
+  "mascot": "Minutemen",
+  "tier": "G5"
+ },
+ "Memphis": {
+  "conf": "American Athletic",
+  "mascot": "Tigers",
+  "tier": "G5"
+ },
+ "Miami": {
+  "conf": "ACC",
+  "mascot": "Hurricanes",
+  "tier": "P4"
+ },
+ "Miami (OH)": {
+  "conf": "Mid-American",
+  "mascot": "RedHawks",
+  "tier": "G5"
+ },
+ "Michigan": {
+  "conf": "Big Ten",
+  "mascot": "Wolverines",
+  "tier": "P4"
+ },
+ "Michigan State": {
+  "conf": "Big Ten",
+  "mascot": "Spartans",
+  "tier": "P4"
+ },
+ "Middle Tennessee": {
+  "conf": "Conference USA",
+  "mascot": "Blue Raiders",
+  "tier": "G5"
+ },
+ "Minnesota": {
+  "conf": "Big Ten",
+  "mascot": "Golden Gophers",
+  "tier": "P4"
+ },
+ "Mississippi State": {
+  "conf": "SEC",
+  "mascot": "Bulldogs",
+  "tier": "P4"
+ },
+ "Missouri": {
+  "conf": "SEC",
+  "mascot": "Tigers",
+  "tier": "P4"
+ },
+ "Missouri State": {
+  "conf": "Conference USA",
+  "mascot": "Bears",
+  "tier": "G5"
+ },
+ "NC State": {
+  "conf": "ACC",
+  "mascot": "Wolfpack",
+  "tier": "P4"
+ },
+ "Navy": {
+  "conf": "American Athletic",
+  "mascot": "Midshipmen",
+  "tier": "G5"
+ },
+ "Nebraska": {
+  "conf": "Big Ten",
+  "mascot": "Cornhuskers",
+  "tier": "P4"
+ },
+ "Nevada": {
+  "conf": "Mountain West",
+  "mascot": "Wolf Pack",
+  "tier": "G5"
+ },
+ "New Mexico": {
+  "conf": "Mountain West",
+  "mascot": "Lobos",
+  "tier": "G5"
+ },
+ "New Mexico State": {
+  "conf": "Conference USA",
+  "mascot": "Aggies",
+  "tier": "G5"
+ },
+ "North Carolina": {
+  "conf": "ACC",
+  "mascot": "Tar Heels",
+  "tier": "P4"
+ },
+ "North Dakota State": {
+  "conf": "Mountain West",
+  "mascot": "Bison",
+  "tier": "G5"
+ },
+ "North Texas": {
+  "conf": "American Athletic",
+  "mascot": "Mean Green",
+  "tier": "G5"
+ },
+ "Northern Illinois": {
+  "conf": "Mountain West",
+  "mascot": "Huskies",
+  "tier": "G5"
+ },
+ "Northwestern": {
+  "conf": "Big Ten",
+  "mascot": "Wildcats",
+  "tier": "P4"
+ },
+ "Notre Dame": {
+  "conf": "FBS Independents",
+  "mascot": "Fighting Irish",
+  "tier": "P4"
+ },
+ "Ohio": {
+  "conf": "Mid-American",
+  "mascot": "Bobcats",
+  "tier": "G5"
+ },
+ "Ohio State": {
+  "conf": "Big Ten",
+  "mascot": "Buckeyes",
+  "tier": "P4"
+ },
+ "Oklahoma": {
+  "conf": "SEC",
+  "mascot": "Sooners",
+  "tier": "P4"
+ },
+ "Oklahoma State": {
+  "conf": "Big 12",
+  "mascot": "Cowboys",
+  "tier": "P4"
+ },
+ "Old Dominion": {
+  "conf": "Sun Belt",
+  "mascot": "Monarchs",
+  "tier": "G5"
+ },
+ "Ole Miss": {
+  "conf": "SEC",
+  "mascot": "Rebels",
+  "tier": "P4"
+ },
+ "Oregon": {
+  "conf": "Big Ten",
+  "mascot": "Ducks",
+  "tier": "P4"
+ },
+ "Oregon State": {
+  "conf": "Pac-12",
+  "mascot": "Beavers",
+  "tier": "G5"
+ },
+ "Penn State": {
+  "conf": "Big Ten",
+  "mascot": "Nittany Lions",
+  "tier": "P4"
+ },
+ "Pittsburgh": {
+  "conf": "ACC",
+  "mascot": "Panthers",
+  "tier": "P4"
+ },
+ "Purdue": {
+  "conf": "Big Ten",
+  "mascot": "Boilermakers",
+  "tier": "P4"
+ },
+ "Rice": {
+  "conf": "American Athletic",
+  "mascot": "Owls",
+  "tier": "G5"
+ },
+ "Rutgers": {
+  "conf": "Big Ten",
+  "mascot": "Scarlet Knights",
+  "tier": "P4"
+ },
+ "SMU": {
+  "conf": "ACC",
+  "mascot": "Mustangs",
+  "tier": "P4"
+ },
+ "Sacramento State": {
+  "conf": "Mid-American",
+  "mascot": "Hornets",
+  "tier": "G5"
+ },
+ "Sam Houston": {
+  "conf": "Conference USA",
+  "mascot": "Bearkats",
+  "tier": "G5"
+ },
+ "San Diego State": {
+  "conf": "Pac-12",
+  "mascot": "Aztecs",
+  "tier": "G5"
+ },
+ "San Jos\u00e9 State": {
+  "conf": "Mountain West",
+  "mascot": "Spartans",
+  "tier": "G5"
+ },
+ "South Alabama": {
+  "conf": "Sun Belt",
+  "mascot": "Jaguars",
+  "tier": "G5"
+ },
+ "South Carolina": {
+  "conf": "SEC",
+  "mascot": "Gamecocks",
+  "tier": "P4"
+ },
+ "South Florida": {
+  "conf": "American Athletic",
+  "mascot": "Bulls",
+  "tier": "G5"
+ },
+ "Southern Miss": {
+  "conf": "Sun Belt",
+  "mascot": "Golden Eagles",
+  "tier": "G5"
+ },
+ "Stanford": {
+  "conf": "ACC",
+  "mascot": "Cardinal",
+  "tier": "P4"
+ },
+ "Syracuse": {
+  "conf": "ACC",
+  "mascot": "Orange",
+  "tier": "P4"
+ },
+ "TCU": {
+  "conf": "Big 12",
+  "mascot": "Horned Frogs",
+  "tier": "P4"
+ },
+ "Temple": {
+  "conf": "American Athletic",
+  "mascot": "Owls",
+  "tier": "G5"
+ },
+ "Tennessee": {
+  "conf": "SEC",
+  "mascot": "Volunteers",
+  "tier": "P4"
+ },
+ "Texas": {
+  "conf": "SEC",
+  "mascot": "Longhorns",
+  "tier": "P4"
+ },
+ "Texas A&M": {
+  "conf": "SEC",
+  "mascot": "Aggies",
+  "tier": "P4"
+ },
+ "Texas State": {
+  "conf": "Pac-12",
+  "mascot": "Bobcats",
+  "tier": "G5"
+ },
+ "Texas Tech": {
+  "conf": "Big 12",
+  "mascot": "Red Raiders",
+  "tier": "P4"
+ },
+ "Toledo": {
+  "conf": "Mid-American",
+  "mascot": "Rockets",
+  "tier": "G5"
+ },
+ "Troy": {
+  "conf": "Sun Belt",
+  "mascot": "Trojans",
+  "tier": "G5"
+ },
+ "Tulane": {
+  "conf": "American Athletic",
+  "mascot": "Green Wave",
+  "tier": "G5"
+ },
+ "Tulsa": {
+  "conf": "American Athletic",
+  "mascot": "Golden Hurricane",
+  "tier": "G5"
+ },
+ "UAB": {
+  "conf": "American Athletic",
+  "mascot": "Blazers",
+  "tier": "G5"
+ },
+ "UCF": {
+  "conf": "Big 12",
+  "mascot": "Knights",
+  "tier": "P4"
+ },
+ "UCLA": {
+  "conf": "Big Ten",
+  "mascot": "Bruins",
+  "tier": "P4"
+ },
+ "UConn": {
+  "conf": "FBS Independents",
+  "mascot": "Huskies",
+  "tier": "G5"
+ },
+ "UL Monroe": {
+  "conf": "Sun Belt",
+  "mascot": "Warhawks",
+  "tier": "G5"
+ },
+ "UNLV": {
+  "conf": "Mountain West",
+  "mascot": "Rebels",
+  "tier": "G5"
+ },
+ "USC": {
+  "conf": "Big Ten",
+  "mascot": "Trojans",
+  "tier": "P4"
+ },
+ "UTEP": {
+  "conf": "Mountain West",
+  "mascot": "Miners",
+  "tier": "G5"
+ },
+ "UTSA": {
+  "conf": "American Athletic",
+  "mascot": "Roadrunners",
+  "tier": "G5"
+ },
+ "Utah": {
+  "conf": "Big 12",
+  "mascot": "Utes",
+  "tier": "P4"
+ },
+ "Utah State": {
+  "conf": "Pac-12",
+  "mascot": "Aggies",
+  "tier": "G5"
+ },
+ "Vanderbilt": {
+  "conf": "SEC",
+  "mascot": "Commodores",
+  "tier": "P4"
+ },
+ "Virginia": {
+  "conf": "ACC",
+  "mascot": "Cavaliers",
+  "tier": "P4"
+ },
+ "Virginia Tech": {
+  "conf": "ACC",
+  "mascot": "Hokies",
+  "tier": "P4"
+ },
+ "Wake Forest": {
+  "conf": "ACC",
+  "mascot": "Demon Deacons",
+  "tier": "P4"
+ },
+ "Washington": {
+  "conf": "Big Ten",
+  "mascot": "Huskies",
+  "tier": "P4"
+ },
+ "Washington State": {
+  "conf": "Pac-12",
+  "mascot": "Cougars",
+  "tier": "G5"
+ },
+ "West Virginia": {
+  "conf": "Big 12",
+  "mascot": "Mountaineers",
+  "tier": "P4"
+ },
+ "Western Kentucky": {
+  "conf": "Conference USA",
+  "mascot": "Hilltoppers",
+  "tier": "G5"
+ },
+ "Western Michigan": {
+  "conf": "Mid-American",
+  "mascot": "Broncos",
+  "tier": "G5"
+ },
+ "Wisconsin": {
+  "conf": "Big Ten",
+  "mascot": "Badgers",
+  "tier": "P4"
+ },
+ "Wyoming": {
+  "conf": "Mountain West",
+  "mascot": "Cowboys",
+  "tier": "G5"
+ }
+}

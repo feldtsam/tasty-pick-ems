@@ -1,0 +1,10 @@
+# Pulled/derived data — regenerate, don't commit
+*.csv
+data/
+
+.venv/
+__pycache__/
+*.pyc
+.vercel
+.env*
+!.env.local.example
