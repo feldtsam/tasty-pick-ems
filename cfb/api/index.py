@@ -64,6 +64,13 @@ from curate_cfb_shelves import (
 )
 from ids import CFBDError, fbs_team_ids, fetch_ap_top25, team_conference_map
 from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
+from poll_cfb_attd_odds import (
+    EXPECTED_INPUT_ERROR as ATTD_EXPECTED_INPUT_ERROR,
+    forward_rows_in_chunks,
+    normalize_events_input,
+    process_events,
+    utc_now_iso,
+)
 from plays_stats import (
     completed_games,
     estimate_week_cost,
@@ -536,6 +543,130 @@ def curate_and_write_cfb_shelves_health_check():
             "cfb_player_shelf_scores."
         ),
         "scope": "Curation/orchestration only (Track B). Does not re-implement any scoring math.",
+    })
+
+
+# ===========================================================================
+# CFB anytime-TD odds poller (2026-10). Make.com fetches raw Odds API event
+# JSON and POSTs it here; this endpoint never calls The Odds API. See
+# cfb/api/poll_cfb_attd_odds.py for the processing layer.
+# ===========================================================================
+@app.route("/api/poll-cfb-attd-odds", methods=["POST"])
+def poll_cfb_attd_odds_endpoint():
+    """
+    POST body: {"season": int, "week": int, "events": [<raw Odds API
+    event objects for market player_anytime_td>], "preview_only": bool
+    (optional)}. Like NFL's /api/poll-market-value, a single event object
+    or a bare list is also accepted as `events`, but season and week are
+    required here (the odds table keys on them, and the pipeline has no
+    schedule math to derive a CFB week from a commence_time).
+    auth: X-Pipeline-Secret header == PIPELINE_INCOMING_SECRET.
+
+    Per event: parse the player_anytime_td market (every book), detect
+    the outcome schema, match players to the CFBD roster constrained to
+    the event's two schools (attd_match.match_cfb_attd_players, unmatched
+    reasons kept), resolve game_id/team_id/opponent from that week's CFBD
+    /games, shape one row per matched player with book_odds, n_books,
+    best_price/best_book and NFL's consensus rule, then forward every row
+    to cfb_player_attd_odds_weekly's write route in signed chunks.
+    preview_only runs everything except the write and returns a sample.
+    A failed forward is a 502 carrying Lovable's status and error text.
+    CFBD cost: at most /games + /roster per request, both cached per
+    process and the roster fetched only when some event has the market.
+    """
+    auth_error = check_pipeline_secret()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return jsonify({"error": ATTD_EXPECTED_INPUT_ERROR}), 400
+    # Envelope form {"season","week","events":...} is the normal shape. A
+    # bare list or a single event object (has "bookmakers") is accepted
+    # too, NFL-style -- then season/week must come as ?season=&week=
+    # query parameters, since those shapes have nowhere to carry them.
+    if isinstance(data, dict) and "bookmakers" not in data:
+        envelope, raw_events = data, data.get("events")
+    else:
+        envelope, raw_events = {}, data
+    try:
+        season = int(envelope.get("season", request.args.get("season")))
+        week = int(envelope.get("week", request.args.get("week")))
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "season and week are required integers -- in the body ({\"season\": 2026, \"week\": 7, "
+                     "\"events\": [...]}) or, for a bare list / single-event body, as ?season=&week= query parameters.",
+        }), 400
+    preview_only = bool(envelope.get("preview_only")) or str(request.args.get("preview_only", "")).lower() in ("1", "true")
+
+    events = normalize_events_input(raw_events)
+    if events is None:
+        print(f"[poll-cfb-attd-odds] bad_input content_type={request.content_type!r} raw_body_len={len(request.get_data())}", flush=True)
+        return jsonify({"error": ATTD_EXPECTED_INPUT_ERROR}), 400
+
+    poll_timestamp = utc_now_iso()
+    try:
+        processed = process_events(events, season, week, poll_timestamp=poll_timestamp)
+    except CFBDError as e:
+        print(f"[poll-cfb-attd-odds] season={season} week={week} stage=cfbd error={e!r}", flush=True)
+        return jsonify({"status": "error", "stage": "cfbd", "season": season, "week": week, "error": str(e)}), 502
+    rows = processed["rows"]
+    diag = processed["diagnostics"]
+
+    forward = {"skipped": "preview_only"}
+    if not preview_only:
+        secret, secret_error = _resolve_secret()
+        if secret_error:
+            return secret_error
+        forward = forward_rows_in_chunks(rows, secret)
+
+    response = {
+        "status": "ok" if forward.get("success") is not False else "error",
+        "season": season,
+        "week": week,
+        "preview_only": preview_only,
+        "poll_timestamp": poll_timestamp,
+        "events_received": diag["events_received"],
+        "events_with_no_market": diag["events_with_no_market"],
+        "events_with_parse_errors": diag["events_with_parse_errors"],
+        "events_processed": diag["events_processed"],
+        "events_game_unresolved": diag["events_game_unresolved"],
+        "schema_seen": diag["schema_seen"],
+        "matched": diag["matched"],
+        "unmatched_by_reason": diag["unmatched_by_reason"],
+        "unmatched_sample": diag["unmatched_sample"],
+        "players_priced": diag["players_priced"],
+        "rows_written": 0 if preview_only or forward.get("success") is not True else forward.get("rows_sent", 0),
+        "forward": forward,
+        "cfbd_calls": diag["cfbd_calls"],
+        "sample": rows[:5],
+    }
+    print(
+        f"[poll-cfb-attd-odds] season={season} week={week} preview_only={preview_only} "
+        f"events_received={diag['events_received']} no_market={len(diag['events_with_no_market'])} "
+        f"parse_errors={len(diag['events_with_parse_errors'])} processed={diag['events_processed']} "
+        f"schema_seen={diag['schema_seen']} matched={diag['matched']} unmatched={diag['unmatched_by_reason']} "
+        f"players_priced={diag['players_priced']} cfbd_calls={diag['cfbd_calls']} "
+        f"forward={forward.get('success')}/{forward.get('status_code')} "
+        f"forward_body={truncate_for_log(forward.get('response_body'), 500)!r}",
+        flush=True,
+    )
+    return jsonify(response), (502 if forward.get("success") is False else 200)
+
+
+@app.route("/api/poll-cfb-attd-odds", methods=["GET"])
+def poll_cfb_attd_odds_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": (
+            "POST {\"season\": int, \"week\": int, \"events\": [raw Odds API event objects for the "
+            "player_anytime_td market], \"preview_only\": bool (optional)} -- a single event object or a "
+            "bare list is also accepted as events. Auth: X-Pipeline-Secret header. Parses every book's "
+            "anytime-TD outcomes, matches players to the CFBD roster (two-school constrained), resolves "
+            "game/team ids from CFBD /games, and forwards one row per matched player (book_odds, n_books, "
+            "best price, consensus) to cfb_player_attd_odds_weekly in signed chunks. Never calls The Odds API."
+        ),
+        "scope": "Odds ingest only. Curation reads the table separately.",
     })
 
 
