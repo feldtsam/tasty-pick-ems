@@ -648,12 +648,32 @@ def select_cfb_tasty_six(shelves: dict, n: int = 6) -> list:
 # ---------------------------------------------------------------------------
 
 
-def shape_cfb_shelf_placement_rows(shelves: dict) -> list:
+def _game_id_key(value):
+    """game_id as a plain int for dict lookups -- a to_json() round trip
+    can hand back an int, a float, or None for the same real column."""
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def shape_cfb_shelf_placement_rows(shelves: dict, kickoff_by_game_id: dict | None = None) -> list:
     """
     One row per REAL (player, shelf) placement — THE actual "shelf-
     assignment" write, as distinct from shape_cfb_shelf_score_rows (the
     whole scored population, one row per player, `shelf`/`archetype`
     always None there — see CFB_SHELF_SCORE_COLUMNS' own comments).
+
+    `kickoff_by_game_id` (upcoming-week mode only, see curate_cfb_
+    upcoming_week): {game_id: ISO-8601 UTC string}. When given, a
+    placement whose game_id has a known kickoff carries it as
+    `kickoff_utc`; a placement with no known kickoff OMITS the key
+    entirely (never sends null -- the write route treats an absent field
+    as "leave the stored value alone" and an explicit null as "clear
+    it"). When None (the normal played-week mode), the output is exactly
+    what it was before this parameter existed.
 
     Expands assign_cfb_shelves()'s own {shelf_name: DataFrame} output:
     only players who made at least one of the 8 real shelves get a row
@@ -691,5 +711,304 @@ def shape_cfb_shelf_placement_rows(shelves: dict) -> list:
             typed["shelf"] = shelf_name
             typed["archetype"] = archetype_result["archetype"]
             typed["extra"] = {k: v for k, v in record.items() if k not in CFB_SHELF_SCORE_COLUMNS}
+            if kickoff_by_game_id:
+                kickoff = kickoff_by_game_id.get(_game_id_key(record.get("game_id")))
+                if kickoff:
+                    typed["kickoff_utc"] = kickoff
             rows.append(typed)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Upcoming-week mode (2026-10) -- picks for a week that has not been played.
+#
+# The normal mode above scores the whole season and keeps the target week's
+# rows, and those rows only exist after /api/ingest-and-write-redzone has
+# read the week's COMPLETED games. For an unplayed week nothing exists at
+# (season, week), so the normal mode returns zero placements.
+#
+# Same mechanism as nfl/scripts/build_stub_week.py + run_pipeline's
+# extra_offense_rows/extra_defense_rows, built IN MEMORY at curate time:
+# skeleton rows for the target week with every current-game count NaN are
+# concatenated onto the real season frame before the unchanged scoring
+# chain runs. Every trailing window in cfb/scoring.py is shift(1), so a
+# skeleton row's own (empty) counts never feed its own score -- it
+# inherits last1/last3/last5/season_avg and cumulative-through-prior-week
+# values from the real weeks before it, exactly like a played row would.
+#
+# Nothing here writes to cfb_player_redzone_weekly or cfb_defense_redzone_
+# allowed_weekly, and nothing should: a skeleton persisted there would
+# survive the real ingest for any player who did not touch the ball that
+# week (the write route coerces NaN counts to 0), inflating games played
+# and diluting every later window. The only persisted output of this mode
+# is the same placement rows the normal mode writes to
+# cfb_player_shelf_scores, plus kickoff_utc on each.
+# ---------------------------------------------------------------------------
+from datetime import datetime, timezone  # noqa: E402 -- section-local import, keeps the diff above untouched
+
+from roster import POSITION_GROUPS  # noqa: E402
+
+
+class UpcomingWeekConflict(ValueError):
+    """The target week already has real rows -- the caller asked for the
+    upcoming-week path against a week that has been (at least partly)
+    played and ingested. Refused rather than silently dropping real data;
+    the normal mode is the right call for that week."""
+
+
+# The 14 per-game count columns on a player row (everything a played game
+# fills in). A skeleton leaves all of them NaN.
+UPCOMING_PLAYER_COUNT_COLUMNS = [
+    c for c in CFB_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS
+    if c.endswith(("_touches", "_tds")) or c in ("team_rz_touches", "rz_touch_share")
+]
+# The 12 per-game allowed-count columns on a defense row.
+UPCOMING_DEFENSE_COUNT_COLUMNS = [
+    c for c in CFB_DEFENSE_REDZONE_ALLOWED_WEEKLY_TYPED_COLUMNS if c.endswith("_allowed")
+]
+
+
+def kickoff_utc_from_game(game: dict) -> str | None:
+    """
+    ISO-8601 UTC kickoff (with offset) from a CFBD /games object, or None
+    when the kickoff is genuinely unknown: startTimeTBD is true, startDate
+    is missing, or startDate does not parse. Reads both the camelCase
+    spelling the live API uses (startDate/startTimeTBD -- same casing as
+    the homeId/awayTeam/completed fields cfb/ids.py and cfb/plays_stats.py
+    already read) and the snake_case spelling the published client model
+    uses, so a schema-casing surprise degrades to "no kickoff", never to a
+    crash.
+    """
+    tbd = game.get("startTimeTBD")
+    if tbd is None:
+        tbd = game.get("start_time_tbd")
+    if tbd is True:
+        return None
+    raw = game.get("startDate") or game.get("start_date")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def qualifying_upcoming_games(games: list, fbs_ids) -> tuple[list, dict]:
+    """
+    The subset of a week's /games response an upcoming-week run may stub:
+    NOT completed, and both teams FBS (cfb.ids.fbs_team_ids). A completed
+    game is skipped -- its players either already have a real ingested
+    row for this week (which the caller refuses on, see curate_cfb_
+    upcoming_week) or will the next time ingest runs; a skeleton for a
+    game that already happened would be a fabricated pre-game read of a
+    known result. Returns (qualifying_games, diagnostics).
+    """
+    fbs = {int(x) for x in fbs_ids}
+    qualifying: list = []
+    skipped_completed = skipped_non_fbs = malformed = 0
+    for g in games:
+        try:
+            int(g["id"])
+            home_id = int(g["homeId"])
+            away_id = int(g["awayId"])
+        except (KeyError, TypeError, ValueError):
+            malformed += 1
+            continue
+        if g.get("completed") is True:
+            skipped_completed += 1
+            continue
+        if home_id not in fbs or away_id not in fbs:
+            skipped_non_fbs += 1
+            continue
+        qualifying.append(g)
+    diagnostics = {
+        "games_in_week": len(games),
+        "games_skipped_completed": skipped_completed,
+        "games_skipped_non_fbs": skipped_non_fbs,
+        "games_skipped_malformed": malformed,
+        "games_qualifying": len(qualifying),
+    }
+    return qualifying, diagnostics
+
+
+def build_upcoming_skeletons(player_weekly: pd.DataFrame, games: list, season: int, week: int) -> tuple:
+    """
+    Skeleton rows for one unplayed (season, week), shaped exactly like the
+    two raw tables' typed columns so they concatenate onto the real season
+    frame with no new join logic.
+
+    PLAYER SKELETONS -- one per player who already has at least one real
+    row this season in cfb_player_redzone_weekly (i.e. has recorded a real
+    red-zone touch in a completed FBS game) AND whose most recent team is
+    playing in one of `games`. Identity (player_id, player_name,
+    position_group, team_id, team) comes from the player's latest prior
+    row; game_id, opponent_team_id and opponent come from the schedule.
+    Every count column is NaN. Deliberately NOT roster-based like NFL's
+    build_stub_offense_rows: a full FBS roster is ~15k rows across 130+
+    teams, and a player who has never touched the ball in the red zone
+    has no trailing signal for any pillar to read anyway.
+
+    DEFENSE SKELETONS -- one per playing team x RB/WR/TE with NaN allowed
+    counts, so add_defensive_matchup_context's join (opponent_team_id,
+    season, week, position_group) finds a row at the target week carrying
+    that defense's own shift(1) trailing allowed-rates.
+
+    Returns (player_skeletons, defense_skeletons, diagnostics).
+    """
+    playing: dict = {}
+    for g in games:
+        gid = int(g["id"])
+        home_id, away_id = int(g["homeId"]), int(g["awayId"])
+        playing[home_id] = {
+            "game_id": gid, "team": g.get("homeTeam"),
+            "opponent_team_id": away_id, "opponent": g.get("awayTeam"),
+        }
+        playing[away_id] = {
+            "game_id": gid, "team": g.get("awayTeam"),
+            "opponent_team_id": home_id, "opponent": g.get("homeTeam"),
+        }
+
+    prior = player_weekly.copy()
+    if len(prior):
+        prior["season"] = pd.to_numeric(prior["season"], errors="coerce")
+        prior["week"] = pd.to_numeric(prior["week"], errors="coerce")
+        prior["team_id"] = pd.to_numeric(prior["team_id"], errors="coerce")
+        prior = prior[(prior["season"] == season) & (prior["week"] < week) & prior["team_id"].notna()]
+        prior = prior.sort_values(["player_id", "week"]).drop_duplicates(subset=["player_id"], keep="last")
+    distinct_prior_players = int(len(prior))
+
+    player_rows: list = []
+    for r in prior.to_dict("records") if len(prior) else []:
+        team_id = int(r["team_id"])
+        slot = playing.get(team_id)
+        if slot is None:
+            continue
+        row = {col: float("nan") for col in CFB_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS}
+        row.update({
+            "player_id": r["player_id"],
+            "player_name": r.get("player_name"),
+            "position_group": r.get("position_group"),
+            "team_id": team_id,
+            "team": r.get("team") if r.get("team") is not None else slot["team"],
+            "opponent_team_id": slot["opponent_team_id"],
+            "opponent": slot["opponent"],
+            "season": int(season),
+            "week": int(week),
+            "game_id": slot["game_id"],
+        })
+        player_rows.append(row)
+
+    defense_rows: list = []
+    for team_id, slot in sorted(playing.items()):
+        for pos in POSITION_GROUPS:
+            row = {col: float("nan") for col in CFB_DEFENSE_REDZONE_ALLOWED_WEEKLY_TYPED_COLUMNS}
+            row.update({
+                "team_id": team_id, "team": slot["team"], "position_group": pos,
+                "season": int(season), "week": int(week), "game_id": slot["game_id"],
+                "opponent_team_id": slot["opponent_team_id"], "opponent": slot["opponent"],
+            })
+            defense_rows.append(row)
+
+    player_skeletons = pd.DataFrame(player_rows, columns=CFB_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS)
+    defense_skeletons = pd.DataFrame(defense_rows, columns=CFB_DEFENSE_REDZONE_ALLOWED_WEEKLY_TYPED_COLUMNS)
+    diagnostics = {
+        "teams_playing": len(playing),
+        "distinct_prior_players_this_season": distinct_prior_players,
+        "player_skeletons": len(player_skeletons),
+        "defense_skeletons": len(defense_skeletons),
+    }
+    return player_skeletons, defense_skeletons, diagnostics
+
+
+def _drop_week_rows(frame: pd.DataFrame, season: int, week: int, *, after: bool) -> tuple[pd.DataFrame, int]:
+    """Drop rows at (season, week) [after=False] or at (season, > week)
+    [after=True]; returns (frame, dropped_count). A frame without the key
+    columns is returned untouched."""
+    if not len(frame) or not {"season", "week"} <= set(frame.columns):
+        return frame, 0
+    s = pd.to_numeric(frame["season"], errors="coerce")
+    w = pd.to_numeric(frame["week"], errors="coerce")
+    mask = (s == season) & ((w > week) if after else (w == week))
+    return frame[~mask].copy(), int(mask.sum())
+
+
+def curate_cfb_upcoming_week(
+    player_weekly: pd.DataFrame,
+    allowed_weekly: pd.DataFrame,
+    role_weekly: pd.DataFrame,
+    season: int,
+    week: int,
+    fbs_ids,
+    games: list,
+    config: dict = CONFIG,
+    receiving_weekly: pd.DataFrame = None,
+    allow_existing_target_rows: bool = False,
+) -> dict:
+    """
+    The upcoming-week counterpart of curate_cfb_shelves(): build in-memory
+    skeletons for `week` from the real season frame + that week's CFBD
+    /games list, concatenate, and run the UNCHANGED scoring chain via
+    curate_cfb_shelves() itself. Pure DataFrame-in / dict-out, no I/O --
+    the caller fetches /games and does the signed reads/writes.
+
+    REFUSES (UpcomingWeekConflict) when real rows already exist at the
+    target (season, week) in either raw table: that week has been played
+    and ingested, at least in part, and the normal mode is the right path.
+    `allow_existing_target_rows=True` is for tests and retrospective
+    backtests ONLY -- it drops the real target-week rows instead, so a
+    played week can be re-scored as if it were upcoming and compared
+    against its real scores. The endpoint never sets it.
+
+    Rows at weeks AFTER the target (impossible in production for a real
+    upcoming week; possible in a backtest) are dropped from both frames
+    before scoring and counted in diagnostics: a skeleton's NaN counts
+    sitting between real weeks would poison the cumulative-through-prior-
+    week totals of every later row (cumsum over NaN -> NaN -> fillna(0) ->
+    wrongly gated).
+
+    Returns curate_cfb_shelves()'s own dict ("scored", "week_rows",
+    "shelf_score_rows") plus "upcoming" (diagnostics), "kickoff_by_game_id"
+    ({game_id: ISO UTC or None}) and "games" (the qualifying games).
+    """
+    existing_players = allowed_existing = 0
+    if len(player_weekly):
+        _, existing_players = _drop_week_rows(player_weekly, season, week, after=False)
+    if len(allowed_weekly):
+        _, allowed_existing = _drop_week_rows(allowed_weekly, season, week, after=False)
+    if (existing_players or allowed_existing) and not allow_existing_target_rows:
+        raise UpcomingWeekConflict(
+            f"season={season} week={week} already has real ingested rows "
+            f"(players={existing_players}, defense={allowed_existing}) -- this week has been played, "
+            f"at least in part. Use the normal mode (upcoming=false) for a played week."
+        )
+
+    players, dropped_target_players = _drop_week_rows(player_weekly, season, week, after=False)
+    allowed, dropped_target_defense = _drop_week_rows(allowed_weekly, season, week, after=False)
+    players, dropped_after_players = _drop_week_rows(players, season, week, after=True)
+    allowed, dropped_after_defense = _drop_week_rows(allowed, season, week, after=True)
+
+    qualifying, game_diag = qualifying_upcoming_games(games, fbs_ids)
+    player_skel, defense_skel, skel_diag = build_upcoming_skeletons(players, qualifying, season, week)
+
+    combined_players = pd.concat([players, player_skel], ignore_index=True) if len(players) else player_skel
+    combined_allowed = pd.concat([allowed, defense_skel], ignore_index=True) if len(allowed) else defense_skel
+
+    result = curate_cfb_shelves(
+        combined_players, combined_allowed, role_weekly, season, week, fbs_ids,
+        config=config, receiving_weekly=receiving_weekly,
+    )
+
+    kickoff_by_game_id = {int(g["id"]): kickoff_utc_from_game(g) for g in qualifying}
+    result["upcoming"] = {
+        **game_diag,
+        **skel_diag,
+        "games_with_kickoff": sum(1 for v in kickoff_by_game_id.values() if v),
+        "target_week_rows_dropped": {"players": dropped_target_players, "defense": dropped_target_defense},
+        "rows_after_target_dropped": {"players": dropped_after_players, "defense": dropped_after_defense},
+    }
+    result["kickoff_by_game_id"] = kickoff_by_game_id
+    result["games"] = qualifying
+    return result

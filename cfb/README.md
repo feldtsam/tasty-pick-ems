@@ -51,6 +51,25 @@ first live smoke test. Drop `preview_only` to write.
 
 `GET /api/ingest-and-write-redzone` is a health check / usage string.
 
+## Upcoming-week mode (curate)
+
+`POST /api/curate-and-write-cfb-shelves` with `{"season", "week",
+"upcoming": true}` scores a week that has not been played yet. The raw
+tables only hold completed games, so the normal mode returns zero
+placements for an unplayed week. Upcoming mode fetches that week's CFBD
+`/games` (one extra call), keeps the unplayed FBS-vs-FBS games, and
+builds in-memory skeleton rows for every player who already has a real
+row this season on a team that is playing, plus one defense skeleton per
+playing team and position group. The skeletons are concatenated onto the
+real season frame and the unchanged scoring chain runs; every trailing
+window is `shift(1)`, so a skeleton's empty counts never feed its own
+score. Nothing is written to the raw tables. Placement rows go to
+`cfb_player_shelf_scores` as usual and carry `kickoff_utc` (omitted when
+CFBD marks the start time TBD). `season_type` must be `regular` (400
+otherwise), and a target week that already has real rows is refused
+with 409. With `upcoming` absent the endpoint behaves exactly as before.
+See `api/curate_cfb_shelves.py::curate_cfb_upcoming_week`.
+
 ## Local
 
 ```

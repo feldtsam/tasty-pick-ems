@@ -51,12 +51,14 @@ import requests
 from flask import Flask, jsonify, request
 
 from curate_cfb_shelves import (
+    UpcomingWeekConflict,
     assign_cfb_shelves,
     cfb_defense_redzone_allowed_weekly_snapshot,
     cfb_player_receiving_weekly_snapshot,
     cfb_player_redzone_weekly_snapshot,
     cfb_player_role_weekly_snapshot,
     curate_cfb_shelves,
+    curate_cfb_upcoming_week,
     shape_cfb_shelf_placement_rows,
     write_cfb_player_shelf_scores,
 )
@@ -357,6 +359,24 @@ def curate_and_write_cfb_shelves_endpoint():
     wrapped so a real failure returns a diagnostic 502/500 with `stage`,
     not a bare Flask 500 — same shape ingest-and-write-redzone's own
     CFBDError/Exception handling already uses.
+
+    UPCOMING-WEEK MODE (2026-10): body {"upcoming": true} scores a week
+    that has NOT been played yet. The normal mode can't: the raw tables
+    only ever hold completed games, so an unplayed week has zero rows at
+    (season, week) and the normal mode returns zero placements. Upcoming
+    mode fetches that week's CFBD /games (one extra call), keeps the
+    games that are not completed and are FBS-vs-FBS, builds in-memory
+    skeleton rows for every player who already has a real row this season
+    on a team that is playing (plus a defense skeleton per playing team x
+    RB/WR/TE), concatenates them onto the real season frame, and runs the
+    exact same scoring/shelf/archetype/placement path as the normal mode
+    -- see curate_cfb_shelves.curate_cfb_upcoming_week for the mechanism
+    and why nothing is ever persisted to the raw tables. Placement rows
+    additionally carry kickoff_utc (omitted, not null, when CFBD marks
+    the start time TBD). Extra guards: season_type must be "regular"
+    (400), and a target week that already has real rows is refused (409)
+    rather than silently mixed. With upcoming absent/false this endpoint
+    behaves exactly as before.
     """
     auth_error = check_pipeline_secret()
     if auth_error:
@@ -369,6 +389,18 @@ def curate_and_write_cfb_shelves_endpoint():
     except (TypeError, ValueError):
         return jsonify({"error": "Expected {\"season\": int, \"week\": int} in the request body."}), 400
     preview_only = bool(data.get("preview_only"))
+    upcoming = bool(data.get("upcoming"))
+    if upcoming:
+        season_type = str(data.get("season_type") or "regular")
+        if season_type != "regular":
+            return jsonify({
+                "status": "error", "stage": "validate", "season": season, "week": week,
+                "error": (
+                    f"upcoming mode supports season_type \"regular\" only (got {season_type!r}); "
+                    f"postseason weeks are out of scope -- the raw tables key on (player_id, season, week) "
+                    f"with no season-type column, so a bowl week would collide with regular-season week {week}."
+                ),
+            }), 400
 
     secret, secret_error = _resolve_secret()
     if secret_error:
@@ -402,12 +434,37 @@ def curate_and_write_cfb_shelves_endpoint():
             ),
         }), 404
 
-    result = curate_cfb_shelves(
-        player_weekly, allowed_weekly, role_weekly, season, week, ids, receiving_weekly=receiving_weekly,
-    )
+    upcoming_diag = None
+    kickoff_by_game_id = None
+    if upcoming:
+        # One extra CFBD call versus the normal mode: that week's /games,
+        # unplayed games included (fetch_games never filters on
+        # `completed`; curate_cfb_upcoming_week does, the other way round).
+        try:
+            games = fetch_games(season, week, season_type="regular")
+        except CFBDError as e:
+            print(f"[curate-and-write-cfb-shelves] season={season} week={week} stage=games error={e!r}", flush=True)
+            return jsonify({"status": "error", "stage": "games", "season": season, "week": week, "error": str(e)}), 502
+        try:
+            result = curate_cfb_upcoming_week(
+                player_weekly, allowed_weekly, role_weekly, season, week, ids, games,
+                receiving_weekly=receiving_weekly,
+            )
+        except UpcomingWeekConflict as e:
+            print(f"[curate-and-write-cfb-shelves] season={season} week={week} stage=upcoming_conflict error={e!r}", flush=True)
+            return jsonify({"status": "error", "stage": "upcoming_conflict", "season": season, "week": week, "error": str(e)}), 409
+        upcoming_diag = result["upcoming"]
+        kickoff_by_game_id = result["kickoff_by_game_id"]
+    else:
+        result = curate_cfb_shelves(
+            player_weekly, allowed_weekly, role_weekly, season, week, ids, receiving_weekly=receiving_weekly,
+        )
     week_rows = result["week_rows"]
     shelves = assign_cfb_shelves(week_rows, ap_ranks, team_conference)
-    placement_rows = shape_cfb_shelf_placement_rows(shelves)
+    if upcoming:
+        placement_rows = shape_cfb_shelf_placement_rows(shelves, kickoff_by_game_id=kickoff_by_game_id)
+    else:
+        placement_rows = shape_cfb_shelf_placement_rows(shelves)
 
     forward = {"skipped": "preview_only"}
     if not preview_only:
@@ -432,8 +489,26 @@ def curate_and_write_cfb_shelves_endpoint():
         "forward": forward,
         "sample": placement_rows[:3],
     }
+    if upcoming:
+        response.update({
+            "mode": "upcoming",
+            "games_in_week": upcoming_diag["games_in_week"],
+            "games_skipped_completed": upcoming_diag["games_skipped_completed"],
+            "games_skipped_non_fbs": upcoming_diag["games_skipped_non_fbs"],
+            "games_qualifying": upcoming_diag["games_qualifying"],
+            "player_skeletons": upcoming_diag["player_skeletons"],
+            "defense_skeletons": upcoming_diag["defense_skeletons"],
+            # /teams/fbs (fbs_team_ids) + /rankings + /teams/fbs (team_
+            # conference_map, its own cache) + /games -- the normal mode's
+            # three plus this mode's one. Upper bound: the two /teams/fbs
+            # reads are per-process cached, so a warm instance makes fewer.
+            "cfbd_calls": 4,
+            "rows_with_kickoff": sum(1 for r in placement_rows if r.get("kickoff_utc")),
+            "upcoming_diagnostics": upcoming_diag,
+        })
     print(
         f"[curate-and-write-cfb-shelves] season={season} week={week} preview_only={preview_only} "
+        f"{'mode=upcoming ' if upcoming else ''}"
         f"players_read={len(player_weekly)} role_rows_read={len(role_weekly)} "
         f"receiving_rows_read={len(receiving_weekly)} week_rows={len(week_rows)} "
         f"shelf_counts={shelf_counts} placement_rows={len(placement_rows)} "
