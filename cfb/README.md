@@ -70,6 +70,24 @@ otherwise), and a target week that already has real rows is refused
 with 409. With `upcoming` absent the endpoint behaves exactly as before.
 See `api/curate_cfb_shelves.py::curate_cfb_upcoming_week`.
 
+## Anytime-TD odds poller
+
+`POST /api/poll-cfb-attd-odds` with `{"season", "week", "events": [raw
+Odds API event objects], "preview_only"?}` (a single event object or a
+bare list is also accepted as the body, with `?season=&week=` on the
+query string). Make.com fetches the Odds API (`americanfootball_ncaaf`,
+market `player_anytime_td`, American odds) and POSTs the raw events;
+this endpoint never calls The Odds API. Per event it parses every book,
+matches players to the CFBD roster constrained to the two schools
+(`attd_match.match_cfb_attd_players`), resolves game and team ids from
+that week's CFBD `/games`, and forwards one row per matched player
+(`book_odds`, `n_books`, best price and book, NFL's median-implied-
+probability consensus) to `cfb_player_attd_odds_weekly` in signed chunks
+of 250. CFBD cost is at most one `/games` and one `/roster` call per
+request, both cached per process. Write URL override:
+`LOVABLE_CFB_PLAYER_ATTD_ODDS_WEEKLY_WRITE_URL` (optional). See
+`api/poll_cfb_attd_odds.py`.
+
 ## Local
 
 ```
