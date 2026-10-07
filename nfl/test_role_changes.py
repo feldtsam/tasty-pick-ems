@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pandas as pd
 
 from intelligence_schema import STORY_FIELDS
-from role_changes import CONFIG, build_role_changes_stories
+from role_changes import CONFIG, _opportunity_confidence_completeness, build_role_changes_stories
 
 WEEKLY_PATH = Path(__file__).resolve().parent / "scripts" / "player_redzone_weekly.csv"
 
@@ -259,6 +259,73 @@ if __name__ == "__main__":
             for st in all_v2_stories
         ),
     ))
+
+    # ============================================================
+    # Opportunity-driven confidence/completeness + evidence cap
+    # (2026-10-06) -- see role_changes.py's module docstring. Helper
+    # checked directly on minimal rows, then the real CSV end to end.
+    # ============================================================
+    def _opp_row(**over):
+        base = {"external_opportunity": 100.0, "depth_rank": 2.0, "snap_share": 0.6, "role_momentum_completeness": 0.0}
+        base.update(over)
+        return pd.Series(base)
+
+    out_4g = _opportunity_confidence_completeness(_opp_row(), 4, [{"player_name": "X", "status": "Out"}], CONFIG)
+    results.append(check(
+        "an 'Out' ahead with 4 games lands high before the cap (confidence 100, completeness 100) but is capped to 35/35 while the trend is unreadable",
+        out_4g["cap_applied"] is True and out_4g["confidence"] == 35.0 and out_4g["completeness"] == 35.0
+        and all(out_4g["inputs_real"].values()),
+    ))
+    q_1g = _opportunity_confidence_completeness(_opp_row(external_opportunity=40.0), 1, [{"player_name": "X", "status": "Questionable"}], CONFIG)
+    results.append(check(
+        "a 'Questionable' ahead with 1 game lands low on its own (confidence 20 = 40 x 0.5; completeness 35 after the cap; average under 30), not lifted to the cap",
+        q_1g["confidence"] == 20.0 and q_1g["completeness"] == 35.0 and (q_1g["confidence"] + q_1g["completeness"]) / 2 < 30.0
+        and q_1g["inputs_real"]["games_played_established"] is False,
+    ))
+    lifted = _opportunity_confidence_completeness(_opp_row(role_momentum_completeness=40.0), 4, [{"player_name": "X", "status": "Out"}], CONFIG)
+    results.append(check(
+        "the cap lifts at role_momentum_completeness >= 40: the same 'Out' + 4 games reads 100/100 with cap_applied False",
+        lifted["cap_applied"] is False and lifted["confidence"] == 100.0 and lifted["completeness"] == 100.0,
+    ))
+    two_g = _opportunity_confidence_completeness(_opp_row(role_momentum_completeness=60.0, depth_rank=float("nan")), 2, [{"player_name": "X", "status": "Out"}], CONFIG)
+    results.append(check(
+        "games-played factor and the completeness share are both real: 2 games -> confidence 75 (100 x 0.75); a missing depth_rank -> completeness 50 (2 of 4 inputs real, games < 3)",
+        two_g["confidence"] == 75.0 and two_g["completeness"] == 50.0,
+    ))
+
+    # End to end on the real CSV (the same stories checked above).
+    white_new = by_name.get("Rachaad White")
+    results.append(check(
+        "real Rachaad White (Out ahead, 8 games, role_momentum_completeness 80): cap lifted, confidence 100 / completeness 100, classified strong",
+        white_new is not None and white_new["confidence"] == 100.0 and white_new["completeness"] == 100.0 and white_new["evidence_classification"] == "strong",
+    ))
+    tez = by_name.get("Tez Johnson")
+    results.append(check(
+        "real Tez Johnson (Out ahead, 2 games, role_momentum_completeness 20): capped at 35/35, classified limited",
+        tez is not None and tez["confidence"] == 35.0 and tez["completeness"] == 35.0 and tez["evidence_classification"] == "limited",
+    ))
+    trend_wk10 = [st for st in wk10 if st["trend_direction"] == "role-trend-driven"]
+    wk10_rows = weekly[(weekly["season"] == 2025) & (weekly["week"] == 10)].set_index("player_id")
+    results.append(check(
+        "the role-trend-driven path is unchanged: confidence and completeness still equal the row's own role_momentum_completeness on every real trend story",
+        trend_wk10 and all(
+            st["confidence"] == st["completeness"] == float(wk10_rows.loc[st["entity"]["player_id"], "role_momentum_completeness"])
+            for st in trend_wk10
+        ),
+    ))
+    opp_all = [st for st in all_v2_stories if st["trend_direction"] == "opportunity-driven"]
+    results.append(check(
+        "every real opportunity-driven story across the backfill obeys the rule: average <= 35 unless its own completeness/confidence came from a lifted cap (both fields > 35 only together)",
+        opp_all and all(
+            (st["confidence"] + st["completeness"]) / 2 <= 35.0 or (st["confidence"] > 35.0 or st["completeness"] > 35.0)
+            for st in opp_all
+        ) and all(st["confidence"] <= 100.0 and st["completeness"] <= 100.0 for st in opp_all),
+    ))
+    results.append(check(
+        "classification thresholds still hold on the new values: a capped opportunity story is 'limited', a lifted 100/100 one is 'strong' (checked on real Tez Johnson / Rachaad White above and the formula check over every story below)",
+        (tez is None or tez["evidence_classification"] == "limited") and (white_new is None or white_new["evidence_classification"] == "strong"),
+    ))
+
     real_classification_dist = {c: sum(1 for st in all_v2_stories if st["evidence_classification"] == c) for c in ("strong", "moderate", "limited")}
     results.append(check(
         f"REAL FINDING, distinct from Defensive Trends: role_momentum_completeness genuinely VARIES across real stories "
