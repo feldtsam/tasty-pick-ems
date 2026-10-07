@@ -404,7 +404,58 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
 # Real Week 5 2026 stories ran about 95-140 words, which is why the
 # range is checked at all; the schema's own 60-900 CHARACTER bounds
 # (validate_schema_shape) are untouched and still the blocking check.
-STORY_WORD_RANGE = (70, 100)
+# Floor softened 70 -> 55 (2026-10-06) when the prompt gained its
+# "stop when nothing new remains" rule: a short story is now a
+# deliberate outcome, not a defect.
+STORY_WORD_RANGE = (55, 100)
+
+# Scoring vocabulary that must not appear in `story` -- the Chris Moore
+# dry-run card wrote "proven heat metrics" straight into prose. Spaced
+# forms of the pillar/sub-component names plus general scoring jargon;
+# any snake_case token (a raw column name) is caught by the regex below.
+# "situation" is an ordinary English word, so it is only flagged when it
+# is used as a score ("situation read/score/pillar/grade/signal"). WARN-
+# ONLY, same reasoning as STOCK_PHRASES: why_reasons is exempt because
+# citing fields is that layer's job.
+COLUMN_NAME_TERMS = (
+    "proven heat", "emerging heat", "td opportunity", "touchdown opportunity score",
+    "role momentum", "market value score", "evidence quality", "signal breach",
+    "signal convergence", "completeness", "percentile", "pillar", "tpe score",
+    "situation read", "situation score", "situation pillar", "situation grade", "situation signal",
+)
+_SNAKE_CASE_FIELD = re.compile(r"\b[a-z]+(?:_[a-z0-9]+)+\b")
+_COLUMN_TERM_PATTERNS = tuple((term, re.compile(r"\b" + re.escape(term) + r"s?\b", re.IGNORECASE)) for term in COLUMN_NAME_TERMS)
+
+
+def find_column_names(text) -> list[str]:
+    """Every COLUMN_NAME_TERMS entry (whole-word, case-insensitive,
+    optional plural) and every snake_case field token found in `text`,
+    in order of first appearance, deduplicated. [] for empty/None."""
+    if not isinstance(text, str) or not text:
+        return []
+    hits = []
+    for term, pattern in _COLUMN_TERM_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            hits.append((m.start(), term))
+    for m in _SNAKE_CASE_FIELD.finditer(text):
+        hits.append((m.start(), m.group(0)))
+    seen, out = set(), []
+    for _, term in sorted(hits):
+        key = term.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(term.lower() if term in COLUMN_NAME_TERMS else term)
+    return out
+
+
+def validate_no_column_names(story) -> list[dict]:
+    """[] when `story` uses no scoring/column vocabulary, else one warning
+    dict naming the terms. Warn-only -- see COLUMN_NAME_TERMS."""
+    found = find_column_names(story)
+    if not found:
+        return []
+    return [{"check": "column_name", "field": "story", "terms": found}]
 
 _WORD_PATTERN = re.compile(r"[A-Za-z0-9]+(?:['\u2019\-][A-Za-z0-9]+)*")
 
@@ -433,9 +484,10 @@ def validate_story_length(story) -> list[dict]:
 def run_all_warnings(output: dict) -> list[dict]:
     """
     The warn-only companion to run_all_validators: story length
-    (validate_story_length) and stock phrases (banned_language.
-    find_stock_phrases) over title, story and every reason_text. Returns
-    a list of {"check": "story_length" | "stock_phrase", ...} dicts, or
+    (validate_story_length), column names in story (validate_no_column_
+    names) and stock phrases (banned_language.find_stock_phrases) over
+    title, story and every reason_text. Returns a list of {"check":
+    "story_length" | "column_name" | "stock_phrase", ...} dicts, or
     [] when clean. Tolerates a malformed output (missing/non-string
     story, non-list why_reasons) by checking only what is there --
     validate_schema_shape already reports malformation as a real issue,
@@ -451,6 +503,7 @@ def run_all_warnings(output: dict) -> list[dict]:
     story = output.get("story") if isinstance(output, dict) else None
     if isinstance(story, str):
         warnings.extend(validate_story_length(story))
+        warnings.extend(validate_no_column_names(story))
 
     targets = []
     if isinstance(output.get("title"), str):
