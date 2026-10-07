@@ -82,21 +82,48 @@ overconfidence fix: sample_size here is games_played (the SAME games-
 played count scoring._trend_delta already uses to mask forced-zero
 deltas — recomputed identically here, not reinvented) rather than
 market_value's n_books, since it's this family's own real "how much do
-we actually know" count. Investigated whether completeness should
-combine two independent axes the way Market Intelligence's geometric
-mean does (market_value_completeness x book_coverage) — decided NOT to:
-role_momentum_completeness ALREADY substantially captures games_played's
-effect (role_trend's own trend-delta inputs mask to NaN, and therefore
-route through completeness's own fallback tracking, at exactly the same
-games_played <= window boundary sample_size reports here), so a second
-geometric-mean axis here would mostly double-count the same underlying
-signal rather than add a genuinely independent one — unlike n_books,
-which measured something market_value_completeness had no way to see at
-all. completeness = role_momentum_completeness directly; confidence
-equals it (no second independent axis exists here either — same "both
-fields always exist, not always different numbers" allowance the shared
-schema's own docstring documents, Market Intelligence's V1 already uses
-this same equality for the same reason). sample_size (games_played)
+we actually know" count.
+
+CONFIDENCE / COMPLETENESS, TWO PATHS (2026-10-06). The two fields used to
+be one number for every story: a copy of role_momentum_completeness,
+on the reasoning that it already captured games_played and no second
+independent axis existed. That was true for the role-trend path and
+wrong for the opportunity path. role_momentum_completeness counts how
+many of Role Trend's five percentile inputs (3- and 5-game touch-share
+and snap-share deltas, depth-chart movement) were real rather than
+neutral fallbacks; external_opportunity -- the injury ladder that makes
+an opportunity-driven story a story at all -- is not one of those five,
+so an "Out" ahead on the depth chart earned nothing. In the first six
+weeks of a season the five inputs are masked for almost every player,
+and every live 2026 Week 1-4 Role Changes story (all opportunity-
+driven) carried confidence 0.0 and completeness 0.0, which EPS reads as
+evidence_strength 0 and the card reads as "limited".
+
+  - role-trend-driven: unchanged, both fields are role_momentum_
+    completeness. It is the right measure for that path and is non-
+    zero by the time trend stories appear.
+  - opportunity-driven (_opportunity_confidence_completeness below):
+    completeness is the share of the inputs the story actually cites
+    that are real -- an identified injured teammate, a known
+    depth_rank, a real current-week snap_share, and games_played at or
+    above thin_games_played. confidence is external_opportunity (the
+    injury ladder: Out 100 / Doubtful 70 / Questionable 40) scaled by a
+    games-played factor (1 game 0.5, 2 games 0.75, 3 or more 1.0).
+
+EVIDENCE CAP, A DELIBERATE EDITORIAL RULE, NOT A FORMULA ARTIFACT: for
+an opportunity-driven story the average of confidence and completeness
+may not exceed opportunity_evidence_cap (35) unless role_momentum_
+completeness >= 40, i.e. at least two of the five real trend inputs
+have cleared their masks. An injury ahead on the depth chart shows that
+an opportunity EXISTS; it does not show that the player's role has
+actually changed -- only the usage trend can show that, and until it
+can be read the story stays below the Big One evidence floor on
+purpose. Implemented as a per-field ceiling of 35 at the point where
+the two fields are set, so evidence_classification (this module) and
+EPS evidence_strength (eps.py reads the same two fields) both see the
+capped values; a field already below the ceiling is left alone, so a
+single-game "Questionable" read lands well under the cap rather than
+being lifted to it. sample_size (games_played)
 still independently drives HEADLINE hedging below, same as Market
 Intelligence's n_books did — a real, low games_played count changes the
 language itself, not just a number in a field nobody reads.
@@ -152,6 +179,17 @@ CONFIG = {
     # thresholds already confirmed and shipped for Defensive Trends).
     "evidence_strong_threshold": 80.0,
     "evidence_moderate_threshold": 60.0,
+    # Opportunity-driven confidence/completeness (see module docstring,
+    # "CONFIDENCE / COMPLETENESS, TWO PATHS" and "EVIDENCE CAP").
+    # games_played -> factor applied to external_opportunity; any count
+    # not listed uses the default (3 or more real games = full weight).
+    "opportunity_games_played_factor": {1: 0.5, 2: 0.75},
+    "opportunity_games_played_factor_default": 1.0,
+    # Per-field ceiling while the usage trend is still unreadable.
+    "opportunity_evidence_cap": 35.0,
+    # role_momentum_completeness at or above this lifts the cap: two of
+    # the five real trend inputs have cleared their masks.
+    "opportunity_cap_lift_role_momentum_completeness": 40.0,
 }
 
 
@@ -458,6 +496,52 @@ def _what_changed_for_row(row: pd.Series, opportunity_driven: bool, evidence_kin
     return items[:3]
 
 
+def _opportunity_confidence_completeness(row: pd.Series, games_played: int, injured_teammates: list, config: dict) -> dict:
+    """
+    confidence/completeness for an OPPORTUNITY-DRIVEN story -- see the
+    module docstring ("CONFIDENCE / COMPLETENESS, TWO PATHS" and
+    "EVIDENCE CAP") for the reasoning. Pure; reads only the row and the
+    already-parsed injured-teammates list.
+
+    completeness: share (0-100) of the four inputs the story cites that
+    are real -- an identified injured teammate, a known depth_rank, a
+    real current-week snap_share, games_played >= thin_games_played.
+    confidence: external_opportunity x games-played factor (1 -> 0.5,
+    2 -> 0.75, 3+ -> 1.0), clamped to 0-100.
+    cap: while role_momentum_completeness is below the lift threshold,
+    each field is capped at opportunity_evidence_cap, so their average
+    cannot exceed it. The editorial rule: an injury shows an
+    opportunity exists, not that the role has changed.
+
+    Returns {"confidence", "completeness", "cap_applied", "inputs_real"}
+    -- the builder stores the first two; the rest is for callers that
+    want to explain the number (tests, dry runs).
+    """
+    inputs_real = {
+        "injured_teammate_identified": bool(injured_teammates),
+        "depth_rank_known": bool(pd.notna(row.get("depth_rank"))),
+        "snap_share_real": bool(pd.notna(row.get("snap_share"))),
+        "games_played_established": int(games_played) >= int(config["thin_games_played"]),
+    }
+    completeness = round(100.0 * sum(inputs_real.values()) / len(inputs_real), 1)
+
+    factor = config["opportunity_games_played_factor"].get(int(games_played), config["opportunity_games_played_factor_default"])
+    external = row.get("external_opportunity")
+    external = float(external) if pd.notna(external) else 0.0
+    confidence = round(min(100.0, max(0.0, external * factor)), 1)
+
+    rmc = row.get("role_momentum_completeness")
+    rmc = float(rmc) if pd.notna(rmc) else 0.0
+    cap = float(config["opportunity_evidence_cap"])
+    cap_applied = False
+    if rmc < float(config["opportunity_cap_lift_role_momentum_completeness"]):
+        if confidence > cap or completeness > cap:
+            cap_applied = True
+        confidence = min(confidence, cap)
+        completeness = min(completeness, cap)
+    return {"confidence": confidence, "completeness": completeness, "cap_applied": cap_applied, "inputs_real": inputs_real}
+
+
 def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
     """Same real formula as Defensive Trends, confirmed directly from Lovable's own trustIndicator(): score = (confidence+completeness)/2, strong >= 80, moderate >= 60, else limited."""
     score = (confidence + completeness) / 2
@@ -498,12 +582,17 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
             trend_direction = "opportunity-driven"
             evidence_kind, evidence_detail = "generic", None
             related_players = _related_players_opportunity(row["_injured_teammates_parsed"], row["posteam"], config)
+            # Two-path confidence/completeness -- see module docstring.
+            cc = _opportunity_confidence_completeness(row, int(row["_games_played"]), row["_injured_teammates_parsed"], config)
+            confidence, completeness = cc["confidence"], cc["completeness"]
         else:
             trend_direction = "role-trend-driven"
             evidence_kind, evidence_detail = _role_trend_evidence(row, config)
             related_players = _related_players_competition(
                 weekly, season, week, row["posteam"], row["position_group"], row["player_id"], config
             )
+            # Unchanged: the trend path's own completeness is the right measure here.
+            confidence = completeness = float(row["role_momentum_completeness"])
 
         headline, story_text = _headline_and_story(row, opportunity_driven, evidence_kind, evidence_detail, thin)
 
@@ -538,8 +627,8 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
             trend_direction=trend_direction,
             trend_strength=float(row["role_momentum"]),
             sample_size=int(row["_games_played"]),
-            completeness=float(row["role_momentum_completeness"]),
-            confidence=float(row["role_momentum_completeness"]),
+            completeness=completeness,
+            confidence=confidence,
             time_window=time_window,
             related_players=related_players,
         )
