@@ -75,8 +75,9 @@ NFL_SHELF_CARD_TOOL_SCHEMA = {
             "story": {
                 "type": "string",
                 "description": (
-                    "The Story tier ('Why It's Tasty') — 1-2 short paragraphs that translate the "
-                    "given Tension Object into something a reader wants to read. Never a sentence "
+                    "The Story tier ('Why It's Tasty') — 2 short paragraphs, 70-100 words total: "
+                    "receipt, interpretation, the one unresolved piece, price relevance. Evidence for "
+                    "the headline's tension, never a restatement of it. Never a sentence "
                     "that could be produced by reading a Story Object field aloud in prose, and "
                     "never a raw number, percentage, or score — those stay in why_reasons."
                 ),

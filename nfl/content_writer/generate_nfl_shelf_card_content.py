@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
-from banned_language import find_banned_phrases  # noqa: E402 -- reused unmodified
+from banned_language import find_banned_phrases, find_stock_phrases  # noqa: E402
 from card_writer_common import (  # noqa: E402
     MODEL_NAME,
     call_claude_with_tool,
@@ -396,6 +396,79 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     return issues
 
 
+# Story tightening (2026-10-06). The prompt asks for 70-100 words; this
+# is the matching WARN-ONLY check. A warning is a note for the reviewer
+# and the run log, never a validation issue: it lives in its own
+# `validation_warnings` list on the draft, never in validation_issues,
+# so validation_passed and review_status cannot move because of it.
+# Real Week 5 2026 stories ran about 95-140 words, which is why the
+# range is checked at all; the schema's own 60-900 CHARACTER bounds
+# (validate_schema_shape) are untouched and still the blocking check.
+STORY_WORD_RANGE = (70, 100)
+
+_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+(?:['\u2019\-][A-Za-z0-9]+)*")
+
+
+def story_word_count(story) -> int:
+    """Words in `story`: letters/digits, with internal apostrophes and
+    hyphens keeping a word whole ("goal-line", "he's" are one word
+    each). Standalone dashes and punctuation never count. 0 for an
+    empty or non-string story."""
+    if not isinstance(story, str):
+        return 0
+    return len(_WORD_PATTERN.findall(story))
+
+
+def validate_story_length(story) -> list[dict]:
+    """[] when the story is inside STORY_WORD_RANGE (inclusive), otherwise
+    one warning dict naming the real count and the range. Warn-only --
+    see STORY_WORD_RANGE's own comment."""
+    lo, hi = STORY_WORD_RANGE
+    n = story_word_count(story)
+    if lo <= n <= hi:
+        return []
+    return [{"check": "story_length", "word_count": n, "min_words": lo, "max_words": hi}]
+
+
+def run_all_warnings(output: dict) -> list[dict]:
+    """
+    The warn-only companion to run_all_validators: story length
+    (validate_story_length) and stock phrases (banned_language.
+    find_stock_phrases) over title, story and every reason_text. Returns
+    a list of {"check": "story_length" | "stock_phrase", ...} dicts, or
+    [] when clean. Tolerates a malformed output (missing/non-string
+    story, non-list why_reasons) by checking only what is there --
+    validate_schema_shape already reports malformation as a real issue,
+    and a warning pass must never crash the draft.
+
+    Deliberately NOT merged into run_all_validators' list: that list
+    drives validation_passed and review_status ("flagged"), and the
+    whole point of these two checks is that a card is never pulled out
+    of review for style. See generate_nfl_shelf_card_draft's
+    `validation_warnings` key for where this lands.
+    """
+    warnings: list[dict] = []
+    story = output.get("story") if isinstance(output, dict) else None
+    if isinstance(story, str):
+        warnings.extend(validate_story_length(story))
+
+    targets = []
+    if isinstance(output.get("title"), str):
+        targets.append(("title", output["title"]))
+    if isinstance(story, str):
+        targets.append(("story", story))
+    reasons = output.get("why_reasons")
+    if isinstance(reasons, list):
+        for i, reason in enumerate(reasons):
+            if isinstance(reason, dict) and isinstance(reason.get("reason_text"), str):
+                targets.append((f"why_reasons[{i}].reason_text", reason["reason_text"]))
+    for field, text in targets:
+        found = find_stock_phrases(text)
+        if found:
+            warnings.append({"check": "stock_phrase", "field": field, "phrases": found})
+    return warnings
+
+
 def generate_nfl_shelf_card_draft(
     row: dict, shelf: str, confidence_band: str, anthropic_api_key: str,
     debug_inject_violation_instruction: str = None,
@@ -521,7 +594,15 @@ def generate_nfl_shelf_card_draft(
         max_tokens=max_tokens,
     )
     issues = run_all_validators(output, source_facts)
+    warnings = run_all_warnings(output)
     title = output.get("title")
+    if warnings:
+        print(
+            f"[nfl_shelf_card_warnings] player_id={candidate.get('player_id')!r} shelf={shelf!r} "
+            f"story_words={story_word_count(output.get('story'))} warnings={warnings!r} "
+            f"(warn-only -- validation_passed unaffected)",
+            flush=True,
+        )
 
     return {
         "player_id": candidate.get("player_id"),
@@ -535,6 +616,11 @@ def generate_nfl_shelf_card_draft(
         "validation_passed": len(issues) == 0,
         "validation_issues": issues,
         "review_status": "pending_review" if not issues else "flagged",
+        # Warn-only notes (story length, stock phrases) -- see
+        # run_all_warnings. Separate from validation_issues on purpose;
+        # stripped by draft_for_write (no column), threaded by curate_
+        # home_shelves as the preview-only _validation_warnings row key.
+        "validation_warnings": warnings,
         "opening_phrase": opening_phrase(title),
         "_editorial_lens": lens,
         "_tension": tension,
@@ -544,9 +630,13 @@ def generate_nfl_shelf_card_draft(
     }
 
 
+_LOCAL_ONLY_DRAFT_KEYS = frozenset({"opening_phrase", "validation_warnings"})
+
+
 def draft_for_write(draft: dict) -> dict:
     """Strips every local-only (underscore-prefixed) field AND
-    opening_phrase (real output, but nfl_content_drafts has no column
-    for it — see generate_nfl_shelf_card_draft's own docstring) before a
+    opening_phrase / validation_warnings (real output, but
+    nfl_content_drafts has no column for either — see generate_nfl_
+    shelf_card_draft's own docstring and run_all_warnings) before a
     real write."""
-    return {k: v for k, v in draft.items() if not k.startswith("_") and k != "opening_phrase"}
+    return {k: v for k, v in draft.items() if not k.startswith("_") and k not in _LOCAL_ONLY_DRAFT_KEYS}
