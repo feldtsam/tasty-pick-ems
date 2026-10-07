@@ -65,7 +65,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
-from banned_language import GUARANTEE_LANGUAGE, LITERAL_BETTING_SLANG  # noqa: E402 -- reused unmodified
+from banned_language import GUARANTEE_LANGUAGE, LITERAL_BETTING_SLANG, STOCK_PHRASES  # noqa: E402 -- reused unmodified
 from emotional_intensity import intensity_for_band  # noqa: E402 -- reused unmodified
 from nfl_shelf_personalities import personality_for_shelf  # noqa: E402 -- NFL's own
 
@@ -88,10 +88,10 @@ def _tension_block(tension: dict) -> str:
     if tension["uncertainty"]:
         confidence_instruction = (
             f"This claim is only THINLY supported by the evidence right now — {tension['uncertainty']} "
-            f"Write `story` as an early/observational read, not a confident declaration. The thinness itself "
-            f"is part of the honest story here, not a footnote to hide (TPE's own \"we keep receipts\" ethos) — "
-            f"something like \"we don't fully know why yet, but X seems to\" is the right register, not a "
-            f"confidence-interval disclaimer and not false certainty either."
+            f"Write `story` as an observational read, not a confident declaration. Name what is unresolved "
+            f"once, in one clause, in the UNRESOLVED PIECE slot of the story structure -- then spend the rest "
+            f"on the receipt. Not a confidence-interval disclaimer, not false certainty, and not a second "
+            f"sentence saying the same thing is unclear in different words."
         )
     else:
         confidence_instruction = (
@@ -105,9 +105,9 @@ def _tension_block(tension: dict) -> str:
             "\nThis card's tension type is \"forming\": state the sample-size limit ONCE, briefly, in your own "
             "words -- then stop repeating it. Spend the rest of `story` on the one concrete, real thing that IS "
             "there in the source facts (a specific usage fact or event this player's own data actually shows), "
-            "not on restating in different words that the sample is thin. If source_facts has nothing concrete "
-            "beyond the sample-size limit itself, say that plainly and stop -- don't pad the gap with more ways "
-            "of saying \"not enough data yet\"."
+            "not on restating in different words that the sample is thin. That single mention is the story's one "
+            "uncertainty statement. If source_facts has nothing concrete beyond the sample-size limit itself, "
+            "say that plainly and stop -- don't pad the gap with more ways of saying \"not enough data yet\"."
         )
 
     return f"""
@@ -120,6 +120,7 @@ FIND THE TENSION — the analysis stage already did this work; your job is to tr
 
 
 BANNED_PHRASES = ", ".join(GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG)
+STOCK_PHRASE_LIST = ", ".join(f'"{p}"' for p in STOCK_PHRASES)
 
 # PROMPT CACHING -- the frozen half of the system prompt, hoisted to a module
 # constant so it is byte-for-byte identical on every call in every batch.
@@ -143,7 +144,11 @@ HARD RULES -- apply regardless of shelf or confidence band:
 - Write 2-3 why_reasons. Each one's `pillar` field must be EXACTLY one of these five literal strings, spelled exactly as written here -- never a shortened or paraphrased version (not "opportunity", not "role", not "market"): "td_opportunity", "role_momentum", "matchup", "environment", "market_value". Tag each reason with whichever of those five its own real evidence actually comes from, and give it a star rating (1-5) that genuinely reflects that pillar's real score -- not an independent creative choice. At least one why_reason must be tagged with this card's own primary lens's pillar (matchup or environment if the lens is "situation").
 - tpe_score, when it appears in the facts below, is the OVERALL blended reading across every real pillar -- never one pillar's own score, and never "the market read," "the role read," or any other pillar-specific framing. If you cite it, describe it as the overall picture, not as evidence for any single pillar. A why_reason tagged "market_value" must ground its number in market_value_score when that key is present; when it is NOT present (this shelf's lens doesn't make it available), ground that reason in consensus_price_american instead -- never tpe_score, and never an invented percentile-style market number that isn't one of those two real fields.
 - why_reasons is the EVIDENCE layer -- the lowest-personality text on the card (about 2 on a 0-10 scale), and it stays there no matter how dramatic the shelf is or how high the confidence band. Receipts, not verdicts: each reason states a number, a comparison, a window, a sample size, or a source, in plain language. The reader opened this to verify the pick, not to be entertained -- the title already made the argument, so a reason just shows the math under it. State the fact first, plainly; only then consider whether the material supports any personality at all, and it usually will not. No joke is required or expected here. At most one dry aside across all of the reasons, only if it genuinely fits, and never load-bearing -- the point has to stand completely without it. Never soften, hedge, or joke around a thin sample size or a low pillar score -- report it straight.
-- `story` is the STORY tier -- it should sound like a sportswriter who already read the analysis, not like the analysis talking. HARD RULE: story must NEVER contain a sentence that could be produced by reading a Story Object field aloud in prose -- e.g. never "Market value scored 72.9" or "TD opportunity grades out at 57.1, though that figure is built on only 30% completeness." If a human editor could regenerate a line of `story` just by narrating the JSON you were given, it fails. Do not put ANY raw number, percentage, or score in `story` -- not even a rounded one. Numbers are evidence; they belong in why_reasons, never here. Write 1-2 short paragraphs that translate the tension above into something a reader actually wants to read.
+- `story` is the STORY tier -- it should sound like a sportswriter who already read the analysis, not like the analysis talking. HARD RULE: story must NEVER contain a sentence that could be produced by reading a Story Object field aloud in prose -- e.g. never "Market value scored 72.9" or "TD opportunity grades out at 57.1, though that figure is built on only 30% completeness." If a human editor could regenerate a line of `story` just by narrating the JSON you were given, it fails. Do not put ANY raw number, percentage, or score in `story` -- not even a rounded one. Numbers are evidence; they belong in why_reasons, never here.
+- STORY STRUCTURE: `story` is at most 2 short paragraphs, under 100 words. Open with the RECEIPT: the one concrete thing this player's own facts show (a role, a usage pattern, a matchup), in plain football language. Then the INTERPRETATION: one sentence on why that matters. Then the UNRESOLVED PIECE: the single thing limiting conviction, said once, in one clause. The price is optional context that belongs inside that unresolved piece if it belongs anywhere -- one clause describing the current price in words such as "a long shot" or "mid-range plus-money", never the price itself as a number, and never a required closing beat. The title already states the tension -- `story` gives the evidence for it and never restates it. Every sentence after the opening observation must add a new fact, qualification, implication or uncertainty. When nothing new remains, stop, even if the story is under 70 words -- a short story beats a padded one. Never write a sentence whose main purpose is to summarise, rename or re-emphasise a tension already established ("something has to give", "that gap is worth watching", "one of these signals will move"). One central tension only. At most one uncertainty statement in the whole story: do not say the sample is thin twice in different words, and do not re-explain the headline.
+- MARKET CLAIMS: a price may be reported as a current discrepancy between what this player's own evidence shows and what the market charges -- never as something that will correct. No forecasts of market movement in any wording: not "before the market adjusts", "before the market catches up", "has to correct", "won't stay here", "the number will move", or any equivalent.
+- PLAIN LANGUAGE: never use scoring or column names in `story` -- not proven heat, emerging heat, td_opportunity, role_momentum, situation (as a score), market value score, evidence quality, completeness, percentile, pillar, or any snake_case field name. Say what they measure in football terms: red-zone chances, goal-line work, a defense that gives up scores, a role that is growing.
+- Do not use these stock phrases or close variants of them: {STOCK_PHRASE_LIST}. Each of them is a placeholder for a specific fact you have not written yet -- write the fact instead.
 - If role_momentum, touch_share_trend_pct, snap_share_trend_pct, or touch_volume_trend_pct are missing from the facts below, that is deliberate -- the real reading wasn't trustworthy yet (not enough games played) and was removed rather than handed to you as a fallback number. Do not reconstruct or guess at a "flat" or "average" role reading from their absence. A why_reason tagged role_momentum in that situation must state that the real reading isn't available yet (citing role_momentum_completeness if it's present) and nothing more about the role itself -- never a number or a direction for a field you were not given.
 - Do not state how many games a player has played, or a number of games in any form ("one game", "two games", "last three games", "a 3-game window"), anywhere on this card -- not in the title, not in `story`, not in why_reasons. Describe the sample as limited, early, or still forming instead. This applies regardless of whether a games-played figure is present in the facts below.
 - Do not manufacture drama that isn't in the tension you were given. If the tension type is "convergence" and the editorial_claim is modest (signals quietly agreeing, or a routine market position), `story` should be modest too -- a quiet, honest read is a real story, not a failure to find one. Never invent a contradiction, urgency, or stakes that aren't genuinely there.

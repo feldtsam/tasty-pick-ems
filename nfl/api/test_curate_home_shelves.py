@@ -1403,6 +1403,7 @@ if __name__ == "__main__":
             "title": "A Test Title", "story": "A test story.", "why_reasons": [],
             "confidence_band": band, "model_name": "test-model",
             "validation_passed": True, "validation_issues": [], "opening_phrase": None,
+            "validation_warnings": [{"check": "story_length", "word_count": 3, "min_words": 70, "max_words": 100}],
             "_tension": {"tension_type": "forming", "editorial_claim": "Still forming, test claim."},
         }
 
@@ -1417,12 +1418,18 @@ if __name__ == "__main__":
         "_run_writer_llm_for_plan's own return dict carries the real tension_type/tension_claim through",
         llm_result.get("tension_type") == "forming" and llm_result.get("tension_claim") == "Still forming, test claim.",
     ))
+    results.append(check(
+        "_run_writer_llm_for_plan carries the draft's warn-only validation_warnings through, separate from validation_issues",
+        llm_result.get("validation_warnings") == [{"check": "story_length", "word_count": 3, "min_words": 70, "max_words": 100}]
+        and llm_result.get("validation_issues") == [] and llm_result.get("validation_passed") is True,
+    ))
 
     # Simulated final row (same shape shape_content_draft_rows' own PASS
     # 3 loop builds), carrying the underscore-prefixed preview fields.
     simulated_row = {
         "player_id": "TENSION_TEST", "title": "A Test Title", "story": "A test story.",
         "_tension_type": llm_result["tension_type"], "_tension_claim": llm_result["tension_claim"],
+        "_validation_warnings": llm_result["validation_warnings"],
     }
     # The exact stripping expression api/index.py uses before rows_to_write
     # is ever built, reproduced here so this test fails if that expression

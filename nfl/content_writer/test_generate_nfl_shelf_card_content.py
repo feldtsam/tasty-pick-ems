@@ -20,11 +20,14 @@ import inspect
 
 import generate_nfl_shelf_card_content as gnscc
 import generate_tasty_six_content as gtsc
-from generate_nfl_shelf_card_content import run_all_validators, strip_masked_role_fields, validate_no_field_narration
+from generate_nfl_shelf_card_content import (
+    STORY_WORD_RANGE, draft_for_write, find_column_names, run_all_validators, run_all_warnings, story_word_count,
+    strip_masked_role_fields, validate_no_column_names, validate_no_field_narration, validate_story_length,
+)
 from nfl_shelf_card_prompt import build_system_prompt
 from nfl_shelf_card_writer_schema import validate_schema_shape
 from nfl_tension import find_tension
-from banned_language import find_banned_phrases
+from banned_language import PRICE_MOVEMENT_PREDICTION_PHRASES, STOCK_PHRASES, find_banned_phrases, find_stock_phrases
 from card_writer_common import MAX_TOKENS as SHARED_MAX_TOKENS, validate_numeric_grounding
 from nfl_writer_common import nfl_tolerance_for_key, validate_pillar_field_consistency
 
@@ -539,6 +542,237 @@ if __name__ == "__main__":
     r.append(check(
         "call_claude_with_tool(return_all_tool_use_blocks=True): returns every matching block's input, in order",
         all_result == [MALFORMED_BLOCK, WELL_FORMED_BLOCK],
+    ))
+
+    # ============================================================
+    # STORY TIGHTENING (2026-10-06): structure instruction, warn-only
+    # stock-phrase list, warn-only 70-100 word check. None of these
+    # touch validate_no_field_narration or the no-numbers rule, and
+    # none of them can change validation_passed.
+    # ============================================================
+
+    # --- prompt: the story-structure block ---
+    for needle in (
+        "STORY STRUCTURE", "at most 2 short paragraphs", "RECEIPT", "INTERPRETATION",
+        "UNRESOLVED PIECE", "never restates it", "One central tension only",
+        "At most one uncertainty statement",
+    ):
+        r.append(check(f"prompt carries the story-structure instruction: {needle!r}", needle in prompt))
+    # Structure change (2026-10-06, after the 12-card dry run): the price is
+    # optional context inside the unresolved piece, never a required close.
+    r.append(check(
+        "prompt no longer asks the story to end on a price sentence",
+        "End on that price sentence" not in prompt and "PRICE RELEVANCE" not in prompt,
+    ))
+    r.append(check(
+        "prompt makes the price optional context, one clause, never a required closing beat",
+        "never a required closing beat" in prompt and "never the price itself as a number" in prompt,
+    ))
+    r.append(check(
+        "prompt carries the add-something-new rule and tells the model to stop when nothing new remains",
+        "must add a new fact, qualification, implication or uncertainty" in prompt
+        and "When nothing new remains, stop, even if the story is under 70 words" in prompt,
+    ))
+    r.append(check(
+        "prompt forbids a sentence whose purpose is to summarise, rename or re-emphasise the tension",
+        "summarise, rename or re-emphasise a tension already established" in prompt,
+    ))
+    r.append(check(
+        "prompt broadens the market guardrail to the claim itself: report a discrepancy, never assume it corrects",
+        "never as something that will correct" in prompt and "No forecasts of market movement in any wording" in prompt
+        and '"before the market adjusts"' in prompt and '"has to correct"' in prompt,
+    ))
+    r.append(check(
+        "prompt bans scoring/column names in story and asks for plain football language",
+        "never use scoring or column names in `story`" in prompt and "proven heat" in prompt
+        and "role_momentum" in prompt and "plain football" in prompt.lower(),
+    ))
+    r.append(check(
+        "prompt keeps a 100-word ceiling without a padded floor",
+        "under 100 words" in prompt and "70-100 words" not in prompt,
+    ))
+    r.append(check(
+        "prompt no longer suggests the \"we don't fully know why yet\" register for thin evidence",
+        "we don't fully know why yet" not in prompt and "we don't fully know why yet" not in forming_prompt,
+    ))
+    r.append(check(
+        "thin-evidence instruction now points the hedge at the UNRESOLVED PIECE slot, said once",
+        "THINLY supported" in prompt and "once" in prompt.split("THINLY supported", 1)[1][:400],
+    ))
+    r.append(check(
+        "prompt names every stock phrase as something to avoid",
+        all(phrase in prompt.lower() for phrase in STOCK_PHRASES),
+    ))
+    r.append(check(
+        "the no-numbers HARD RULE's own exact wording is STILL present after the story-structure addition",
+        "Do not put ANY raw number, percentage, or score in `story` -- not even a rounded one." in prompt,
+    ))
+    r.append(check(
+        "the old open-ended '1-2 short paragraphs' story instruction is gone from the static prompt",
+        "Write 1-2 short paragraphs that translate the tension above" not in prompt,
+    ))
+    r.append(check(
+        "forming cards keep the say-it-once instruction after the restructure",
+        "state the sample-size limit ONCE" in forming_prompt and "stop repeating it" in forming_prompt,
+    ))
+
+    # --- stock phrases: WARN-ONLY, via find_stock_phrases, never find_banned_phrases ---
+    STOCK_EXAMPLES = {
+        "something is building here": "Something is building here, even if the box score hasn't noticed.",
+        "we don't fully know yet": "We don't fully know yet why the targets moved his way.",
+        "early, honest signal": "Call it an early, honest signal rather than a verdict.",
+        "honest watch": "This is an honest watch, nothing more.",
+        "that's the whole intrigue": "He keeps getting the ball near the goal line. That's the whole intrigue.",
+        "that's the real tension": "The role says yes, the price says maybe. That's the real tension.",
+        "that's the puzzle": "Why the market shrugs at that usage -- that's the puzzle.",
+    }
+    for phrase, text in STOCK_EXAMPLES.items():
+        r.append(check(f"find_stock_phrases catches {phrase!r}", phrase in find_stock_phrases(text)))
+        r.append(check(f"find_banned_phrases does NOT block {phrase!r} (warn-only)", find_banned_phrases(text) == []))
+    r.append(check(
+        "find_stock_phrases is case-insensitive and tolerates a curly apostrophe",
+        find_stock_phrases("WE DON’T FULLY KNOW YET what to make of it.") == ["we don't fully know yet"],
+    ))
+    r.append(check(
+        "find_stock_phrases also catches the 'why yet' variant the old prompt suggested",
+        "we don't fully know yet" in find_stock_phrases("we don't fully know why yet, but he keeps showing up"),
+    ))
+    r.append(check(
+        "a clean story has no stock phrases",
+        find_stock_phrases(CLEAN_STORY) == [],
+    ))
+    r.append(check(
+        "'the price hasn't caught up' stays on the BLOCKING price-movement list and is not duplicated on the stock list",
+        "the price hasn't caught up" in PRICE_MOVEMENT_PREDICTION_PHRASES and "the price hasn't caught up" not in STOCK_PHRASES,
+    ))
+
+    # --- story length: WARN-ONLY, 70-100 words ---
+    r.append(check("STORY_WORD_RANGE is 55-100 (softened floor, still warn-only)", STORY_WORD_RANGE == (55, 100)))
+    r.append(check(
+        "story_word_count counts hyphenated and apostrophe words as one word each",
+        story_word_count("He's a goal-line back -- and that's it.") == 7,
+    ))
+    r.append(check("story_word_count of an empty/None story is 0", story_word_count("") == 0 and story_word_count(None) == 0))
+    words = lambda n: " ".join(["word"] * n)
+    r.append(check("validate_story_length: 54 words warns", validate_story_length(words(54)) != []))
+    r.append(check("validate_story_length: 55 words is silent", validate_story_length(words(55)) == []))
+    r.append(check("validate_story_length: 70 words is silent", validate_story_length(words(70)) == []))
+    r.append(check("validate_story_length: 100 words is silent", validate_story_length(words(100)) == []))
+    r.append(check("validate_story_length: 101 words warns", validate_story_length(words(101)) != []))
+    short_warn = validate_story_length(words(40))
+    r.append(check(
+        "a length warning names the check, the real word count and the range",
+        short_warn[0]["check"] == "story_length" and short_warn[0]["word_count"] == 40
+        and short_warn[0]["min_words"] == 55 and short_warn[0]["max_words"] == 100,
+    ))
+
+    # --- column names in story: WARN-ONLY (real Moore dry-run leak: "proven heat metrics") ---
+    r.append(check(
+        "find_column_names catches the real Moore leak ('proven heat metrics')",
+        find_column_names("with proven heat metrics backing up that he's finding real estate") == ["proven heat"],
+    ))
+    r.append(check(
+        "find_column_names catches a bare snake_case field name and the spaced pillar names",
+        set(find_column_names("His td_opportunity reading and role momentum both grade well, and the emerging heat agrees."))
+        == {"td_opportunity", "role momentum", "emerging heat"},
+    ))
+    r.append(check(
+        "find_column_names catches scoring jargon (completeness, percentile, pillar, market value score)",
+        set(find_column_names("The market value score sits in a high percentile, though completeness on that pillar is low."))
+        == {"market value score", "percentile", "completeness", "pillar"},
+    ))
+    r.append(check(
+        "find_column_names flags 'situation' only as a score/read/pillar, not the plain English word",
+        find_column_names("The situation read is middling.") == ["situation read"]
+        and find_column_names("The situation in front of him this week is ordinary.") == [],
+    ))
+    r.append(check(
+        "find_column_names leaves plain football language alone",
+        find_column_names("He keeps getting goal-line work against a defense that gives up scores inside the ten, and the market has him as a long shot.") == [],
+    ))
+    r.append(check(
+        "find_column_names is case-insensitive and returns [] for an empty/None story",
+        find_column_names("Proven Heat says yes") == ["proven heat"] and find_column_names("") == [] and find_column_names(None) == [],
+    ))
+    col_warn = validate_no_column_names("His td_opportunity grade is high.")
+    r.append(check(
+        "validate_no_column_names returns one warning naming the check, the field and the terms",
+        col_warn == [{"check": "column_name", "field": "story", "terms": ["td_opportunity"]}],
+    ))
+    r.append(check("validate_no_column_names is silent on a clean story", validate_no_column_names(CLEAN_STORY) == []))
+    r.append(check(
+        "a column name in story is a warning, never a validation issue",
+        any(w["check"] == "column_name" for w in run_all_warnings({"title": "t", "story": words(60) + " proven heat.", "why_reasons": VALID_WHY_REASONS}))
+        and [i for i in run_all_validators({"title": "t", "story": words(60) + " proven heat.", "why_reasons": VALID_WHY_REASONS}, SOURCE_FACTS) if i["check"] == "column_name"] == [],
+    ))
+    r.append(check(
+        "column names in why_reasons are NOT warned -- citing fields is that layer's job",
+        not any(w["check"] == "column_name" for w in run_all_warnings({
+            "title": "t", "story": words(60),
+            "why_reasons": [{"pillar": "td_opportunity", "stars": 3, "reason_text": "td_opportunity reads 57.", "source_fact_keys": ["td_opportunity"]}],
+        })),
+    ))
+
+    # --- run_all_warnings vs run_all_validators: warnings live in their own list ---
+    long_stock_story = ("Something is building here. " + words(115)).strip()
+    warn_output = {"title": "The Market Won't Let Golden Drift", "story": long_stock_story, "why_reasons": VALID_WHY_REASONS}
+    warnings = run_all_warnings(warn_output)
+    r.append(check(
+        "run_all_warnings returns a story_length warning and a stock_phrase warning for a long, stock-laden story",
+        {w["check"] for w in warnings} == {"story_length", "stock_phrase"},
+    ))
+    r.append(check(
+        "the stock_phrase warning names the field and the phrases found",
+        any(w["check"] == "stock_phrase" and w["field"] == "story" and w["phrases"] == ["something is building here"] for w in warnings),
+    ))
+    r.append(check(
+        "run_all_validators ignores length and stock phrases entirely -- validation_passed is unaffected",
+        [i for i in run_all_validators(warn_output, SOURCE_FACTS) if i["check"] in ("story_length", "stock_phrase")] == []
+        and run_all_validators(warn_output, SOURCE_FACTS) == run_all_validators(clean_output, SOURCE_FACTS),
+    ))
+    r.append(check(
+        "run_all_warnings on a malformed output (no story string) returns [] instead of crashing",
+        run_all_warnings({"title": "t", "story": None, "why_reasons": "garbage"}) == [],
+    ))
+    r.append(check(
+        "a stock phrase in a why_reason is warned with the indexed field name",
+        any(w.get("field") == "why_reasons[0].reason_text" for w in run_all_warnings({
+            "title": "t", "story": CLEAN_STORY,
+            "why_reasons": [{"pillar": "market_value", "stars": 4, "reason_text": "That's the puzzle.", "source_fact_keys": ["consensus_price_american"]}],
+        })),
+    ))
+
+    # --- the full draft: warnings ride along, never flip the gate, never reach a write ---
+    WARNED_BLOCK = {
+        "title": "A Real Title",
+        "story": long_stock_story,
+        "why_reasons": [
+            {"pillar": "market_value", "stars": 4, "reason_text": "Consensus price sits at +310.", "source_fact_keys": ["consensus_price_american"]},
+            {"pillar": "td_opportunity", "stars": 3, "reason_text": "TD opportunity grades out at 57.", "source_fact_keys": ["td_opportunity"]},
+        ],
+    }
+    box, restore = _with_mocked_call([[WARNED_BLOCK]])
+    try:
+        draft = gnscc.generate_nfl_shelf_card_draft(dict(CANDIDATE), "ATTD +300-499", "developing_angle", "key")
+    finally:
+        restore()
+    r.append(check(
+        "generate_nfl_shelf_card_draft returns validation_warnings as its own list",
+        isinstance(draft.get("validation_warnings"), list) and {w["check"] for w in draft["validation_warnings"]} == {"story_length", "stock_phrase"},
+    ))
+    r.append(check(
+        "warnings do not change validation_passed / review_status (still a pending_review draft)",
+        draft["validation_passed"] is True and draft["review_status"] == "pending_review"
+        and all(i["check"] not in ("story_length", "stock_phrase") for i in draft["validation_issues"]),
+    ))
+    written = draft_for_write(draft)
+    r.append(check(
+        "draft_for_write strips validation_warnings (nfl_content_drafts has no column for it) along with the underscore fields",
+        "validation_warnings" not in written and not any(k.startswith("_") for k in written) and "validation_issues" in written,
+    ))
+    r.append(check(
+        "a clean in-range story produces an empty validation_warnings list, not a missing key",
+        run_all_warnings({"title": "t", "story": words(85), "why_reasons": VALID_WHY_REASONS}) == [],
     ))
 
     print()

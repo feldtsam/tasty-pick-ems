@@ -133,6 +133,53 @@ PRICE_MOVEMENT_PREDICTION_PHRASES = (
     "primed to move",
 )
 
+# Stock phrases (2026-10-06): the filler the shelf-card writer reaches
+# for when it runs out of evidence -- every one of these showed up in
+# more than one real Week 5 2026 story, often restating a tension the
+# headline had already stated. WARN-ONLY, on purpose: a card is not
+# flagged out of review for style, so these are deliberately NOT part of
+# the three lists find_banned_phrases() checks, and never change
+# validation_passed. They are surfaced through find_stock_phrases()
+# below (generate_nfl_shelf_card_content.run_all_warnings) and named in
+# the prompt. "the price hasn't caught up" is not here because it is
+# already on PRICE_MOVEMENT_PREDICTION_PHRASES above, where it blocks.
+# "we don't fully know yet" is matched as the prefix "we don't fully
+# know" so the "why yet" variant the old prompt used to suggest is
+# caught too.
+STOCK_PHRASES = (
+    "something is building here",
+    "we don't fully know yet",
+    "early, honest signal",
+    "honest watch",
+    "that's the whole intrigue",
+    "that's the real tension",
+    "that's the puzzle",
+)
+
+_STOCK_MATCH_TEXT = {
+    "we don't fully know yet": "we don't fully know",
+}
+
+
+def _normalize_apostrophes(text: str) -> str:
+    return text.replace("\u2019", "'").replace("\u2018", "'")
+
+
+def find_stock_phrases(text: str) -> list[str]:
+    """
+    Returns every STOCK_PHRASES entry found in `text` (case-insensitive,
+    curly apostrophes normalized), in list order, or [] if clean. Same
+    deterministic "say which phrase" shape as find_banned_phrases(), but
+    kept as a separate function so a caller can never confuse a style
+    warning with a blocking validation failure.
+    """
+    haystack = _normalize_apostrophes(text or "").lower()
+    return [
+        phrase for phrase in STOCK_PHRASES
+        if _STOCK_MATCH_TEXT.get(phrase, phrase) in haystack
+    ]
+
+
 _SINGLE_WORD_PATTERNS = {
     phrase: re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE)
     for phrase in GUARANTEE_LANGUAGE + LITERAL_BETTING_SLANG + PRICE_MOVEMENT_PREDICTION_PHRASES

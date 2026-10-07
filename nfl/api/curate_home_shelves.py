@@ -1843,6 +1843,10 @@ def _run_writer_llm_for_plan(
         "model_name": draft.get("model_name"),
         "validation_passed": bool(draft.get("validation_passed", True)),
         "validation_issues": draft.get("validation_issues") or [],
+        # Warn-only story notes (length, stock phrases) -- separate from
+        # validation_issues by design; see generate_nfl_shelf_card_
+        # content.run_all_warnings. Preview/log-only downstream.
+        "validation_warnings": draft.get("validation_warnings") or [],
         "opening_phrase": draft.get("opening_phrase"),
         # PREVIEW-ONLY INSPECTION fields -- see shape_content_draft_rows'
         # own plan dict and api/index.py's row-stripping before any real
@@ -2262,6 +2266,7 @@ def shape_content_draft_rows(
             "writer_type": "tasty_six" if is_tasty_six else "shelf_card",
             "confidence_band": None, "title": None, "editorial_sentence": None, "story_text": None,
             "why_reasons": [], "model_name": None, "validation_passed": True, "validation_issues": [],
+            "validation_warnings": [],
             "gated_out": False, "needs_llm": False, "llm_kind": None, "llm_band": None,
             "fallback_title": None, "fallback_why_reasons": [],
             # PREVIEW-ONLY INSPECTION (never written -- see api/index.py's
@@ -2436,6 +2441,7 @@ def shape_content_draft_rows(
                 plan["model_name"] = result.get("model_name")
                 plan["validation_passed"] = result.get("validation_passed", True)
                 plan["validation_issues"] = result.get("validation_issues") or []
+                plan["validation_warnings"] = result.get("validation_warnings") or []
                 if plan["llm_kind"] == "tasty_six":
                     plan["editorial_sentence"] = result.get("editorial_sentence")
                 else:
@@ -2502,6 +2508,10 @@ def shape_content_draft_rows(
             # dict for where these come from.
             "_tension_type": plan["tension_type"],
             "_tension_claim": plan["tension_claim"],
+            # Same preview-only treatment: warn-only story notes (length,
+            # stock phrases), never persisted, never part of validation_
+            # issues. See generate_nfl_shelf_card_content.run_all_warnings.
+            "_validation_warnings": plan["validation_warnings"],
             # Already computed upstream (scoring.score_evidence_quality) --
             # pulled straight through, same full_row.get(...) pattern as
             # tpe_score above. None (not False) when full_row is missing or
