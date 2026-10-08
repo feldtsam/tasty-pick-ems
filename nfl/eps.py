@@ -610,12 +610,49 @@ def _compute_composite(dimensions: dict) -> float:
     return round(total, 1)
 
 
-def _compute_gates(dimensions: dict, composite_score: float) -> dict:
+# Big One gate, second half (2026-10-07). The evidence floor alone let two
+# real Oct 6 dry-run stories through that should never have been Big One
+# candidates: the ATL WR-defense story, whose interrogation call returned
+# None (so evidence_strength was the raw base of 100 with no challenge
+# ever run), and the Braelon Allen Market story, whose interrogation
+# returned signal_verdict FAILS and still cleared the floor at 67. The
+# verdict lives on the interrogation object itself (story_interrogation.
+# interrogate_story() stores the model's declared signal_verdict field
+# verbatim; it is not a post-generation scan and not an Evidence
+# Validator finding), and compute_eps() already receives that object, so
+# the gate can read it with no schema change. A story is Big One
+# eligible only if ALL of: evidence_strength >= BIG_ONE_EVIDENCE_FLOOR;
+# a completed interrogation is present with its primary_alternate; and
+# signal_verdict is not FAILS. big_one_blocked_reason names which
+# condition failed (None when eligible) -- a reason string inside the
+# existing gates object, not a new top-level key. The Watchlist gate is
+# deliberately untouched here.
+BIG_ONE_FAILING_VERDICT = "FAILS"
+
+
+def _big_one_blocked_reasons(evidence: float, interrogation: dict | None) -> list[str]:
+    reasons = []
+    if evidence < BIG_ONE_EVIDENCE_FLOOR:
+        reasons.append(f"evidence_strength {evidence} below floor {BIG_ONE_EVIDENCE_FLOOR}")
+    if not isinstance(interrogation, dict) or not interrogation:
+        reasons.append("no completed interrogation")
+    else:
+        primary = interrogation.get("primary_alternate")
+        if not isinstance(primary, dict) or not primary.get("alternate_id"):
+            reasons.append("interrogation has no primary_alternate")
+        if interrogation.get("signal_verdict") == BIG_ONE_FAILING_VERDICT:
+            reasons.append(f"signal_verdict {BIG_ONE_FAILING_VERDICT}")
+    return reasons
+
+
+def _compute_gates(dimensions: dict, composite_score: float, interrogation: dict | None = None) -> dict:
     evidence = dimensions["evidence_strength"]["score"]
     novelty = dimensions["novelty"]["score"]
     tension = dimensions["story_tension"]["score"]
+    blocked = _big_one_blocked_reasons(evidence, interrogation)
     return {
-        "big_one_eligible": evidence >= BIG_ONE_EVIDENCE_FLOOR,
+        "big_one_eligible": not blocked,
+        "big_one_blocked_reason": "; ".join(blocked) if blocked else None,
         "watchlist_eligible": (
             composite_score >= WATCHLIST_COMPOSITE_FLOOR
             and evidence >= WATCHLIST_EVIDENCE_FLOOR
@@ -654,7 +691,7 @@ def compute_eps(
         "audience_relevance": audience_relevance,
     }
     composite_score = _compute_composite(dimensions)
-    gates = _compute_gates(dimensions, composite_score)
+    gates = _compute_gates(dimensions, composite_score, interrogation)
 
     return {
         "eps_version": EPS_VERSION,
