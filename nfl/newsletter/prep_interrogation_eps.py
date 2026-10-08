@@ -82,6 +82,14 @@ PREP_CONFIG = {
     # purpose: a family whose stories are clearly better still dominates.
     "family_penalty": (0.0, 3.0, 6.0, 9.0, 12.0, 15.0),
     "near_miss_count": 10,
+    # Tie-break (item 1, 2026-10-08): a deterministic secondary key from
+    # fields already on the story, normalized within family against FIXED
+    # scales (below), averaged, and multiplied by tiebreak_cap. The cap
+    # must stay strictly below the smallest gap between classification
+    # bonuses (5) so a tie-break can never lift a story over a higher
+    # classification -- test_prep_interrogation_eps.py proves that from
+    # these constants, not from a hardcoded number.
+    "tiebreak_cap": 4.0,
     "concurrency": 4,
     "max_cost_usd": 4.0,
     # Rough per-story cost used only to decide whether starting ONE MORE
@@ -97,6 +105,34 @@ PREP_CONFIG = {
         "headline", "story", "primary_signal", "supporting_evidence", "hero_metric", "what_changed",
         "sample_size", "confidence", "completeness", "trend_strength", "time_window", "related_players",
     ),
+}
+
+# Fixed per-family scales for the tie-break. Each metric maps to 0-1 as
+# value / scale, clamped; the scales are documented family constants, not
+# pool statistics, so a story's tie-break never moves because other
+# stories changed. Why these numbers:
+#   market_intelligence: the deviation (hero_metric.delta_value, percentage
+#     points vs. the peer tier; primary_signal.value as fallback) saturates
+#     at 32 pp = 4x the family's own "extreme" threshold
+#     (magnitude_extreme_pp = 8). 2x was tried first against the saved
+#     Oct 6 pool and half the top 20 saturated (deviations there run 5 to
+#     44 pp), which left the order to the story id again; 4x spreads the
+#     real range without letting one outlier gap dominate. Books
+#     (sample_size) saturate at 8, the most books seen quoting a single
+#     player in this market so far (the poller's US region returns about
+#     that many); full_coverage_books (3) is the family's "solid" floor,
+#     too low to separate 3 from 8.
+#   defensive_trends / coaching_trends: trend_strength saturates at 40 =
+#     2x the families' trend_threshold (20, the materiality floor);
+#     sample_size (games) saturates at 6 = 2x the 3-game thin threshold.
+#   role_changes: role_momentum (trend_strength) runs 60-100 above the
+#     family's own 60 threshold, so (value - 60) / 40; games as above.
+# A metric that is missing on a story is simply left out of the average.
+TIEBREAK_SCALES = {
+    "market_intelligence": {"magnitude": 32.0, "sample": 8.0},
+    "defensive_trends": {"magnitude": 40.0, "sample": 6.0},
+    "coaching_trends": {"magnitude": 40.0, "sample": 6.0},
+    "role_changes": {"magnitude": 40.0, "magnitude_offset": 60.0, "sample": 6.0},
 }
 
 # Anthropic list prices per million tokens for the model every call here
@@ -178,6 +214,69 @@ class CostMeter:
 
 
 # ---------------------------------------------------------------------------
+# Per-thread capture of the interrogation/EPS modules' own log lines, so a
+# failure can be attributed to the story that produced it even with four
+# workers interleaving on stdout. Lines still reach the real stdout.
+# ---------------------------------------------------------------------------
+class ThreadLogCapture:
+    def __init__(self):
+        self._local = threading.local()
+        self._real = None
+
+    def install(self):
+        if self._real is None:
+            self._real = sys.stdout
+            sys.stdout = self
+
+    def uninstall(self):
+        if self._real is not None:
+            sys.stdout = self._real
+            self._real = None
+
+    def write(self, text):
+        buf = getattr(self._local, "buf", None)
+        if buf is not None:
+            buf.append(text)
+        (self._real or sys.__stdout__).write(text)
+
+    def flush(self):
+        (self._real or sys.__stdout__).flush()
+
+    def start(self):
+        self._local.buf = []
+
+    def stop(self) -> str:
+        buf = getattr(self._local, "buf", None) or []
+        self._local.buf = None
+        return "".join(buf)
+
+
+_CAPTURE = ThreadLogCapture()
+
+_FAILURE_MARKERS = (
+    ("violation persisted after retry", "language/consistency check persisted after retry"),
+    ("malformed shape persisted", "malformed response shape persisted after retry"),
+    ("retry response also malformed", "malformed response shape persisted after retry"),
+    ("API call failed", "API call failed"),
+)
+
+
+def failure_reason_from_log(log_text: str, prefix: str) -> str | None:
+    """The most specific reason the module's own log gives for a None
+    result: the check name from a '<check> violation persisted' line, or a
+    malformed-shape / API-failure line. None when the log shows no failure."""
+    lines = [ln for ln in (log_text or "").splitlines() if ln.startswith(prefix)]
+    for ln in reversed(lines):
+        for marker, label in _FAILURE_MARKERS:
+            if marker in ln:
+                if marker == "violation persisted after retry":
+                    check = ln.split(prefix, 1)[1].split(" violation persisted", 1)[0].strip()
+                    return f"{check} check persisted after retry"
+                return label
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 1. Pre-filter
 # ---------------------------------------------------------------------------
 def expected_week_for_family(family: str, upcoming_week: int) -> int:
@@ -189,11 +288,50 @@ def story_key(story: dict) -> str:
         "intelligence_family", "entity_key", "primary_signal_name", "season", "week"))
 
 
+def _magnitude_for(story: dict) -> float | None:
+    fam = story.get("intelligence_family")
+    if fam == "market_intelligence":
+        hero = story.get("hero_metric") or {}
+        v = hero.get("delta_value")
+        if v is None:
+            v = (story.get("primary_signal") or {}).get("value")
+        return abs(float(v)) if v is not None else None
+    v = story.get("trend_strength")
+    return float(v) if v is not None else None
+
+
+def tiebreak_score(story: dict, config: dict = PREP_CONFIG) -> dict:
+    """
+    tiebreak = tiebreak_cap x mean(clamp(metric / scale, 0, 1) over the
+    metrics present), i.e. 0 .. tiebreak_cap. Metrics: a family-specific
+    magnitude and the sample size, each against TIEBREAK_SCALES. Returns
+    {"tiebreak", "tiebreak_inputs"}; tiebreak is 0 when nothing is present.
+    """
+    fam = story.get("intelligence_family")
+    scales = TIEBREAK_SCALES.get(fam)
+    if not scales:
+        return {"tiebreak": 0.0, "tiebreak_inputs": {}}
+    parts, inputs = [], {}
+    mag = _magnitude_for(story)
+    if mag is not None:
+        norm = max(0.0, min(1.0, (mag - scales.get("magnitude_offset", 0.0)) / scales["magnitude"]))
+        parts.append(norm); inputs["magnitude"] = {"value": round(mag, 2), "scale": scales["magnitude"], "normalized": round(norm, 3)}
+    size = story.get("sample_size")
+    if size is not None:
+        norm = max(0.0, min(1.0, float(size) / scales["sample"]))
+        parts.append(norm); inputs["sample"] = {"value": size, "scale": scales["sample"], "normalized": round(norm, 3)}
+    tb = round(config["tiebreak_cap"] * (sum(parts) / len(parts)), 2) if parts else 0.0
+    return {"tiebreak": tb, "tiebreak_inputs": inputs}
+
+
 def base_score(story: dict, config: dict = PREP_CONFIG) -> dict:
-    """The deterministic pre-interrogation ranking inputs for one story."""
+    """The deterministic pre-interrogation ranking inputs for one story:
+    base evidence strength + classification bonus + the capped tie-break."""
     evidence = compute_evidence_strength(story, None)["score"]
     bonus = config["classification_bonus"].get(story.get("evidence_classification"), 0.0)
-    return {"base_evidence_strength": evidence, "classification_bonus": bonus, "raw_score": round(evidence + bonus, 1)}
+    tb = tiebreak_score(story, config)
+    return {"base_evidence_strength": evidence, "classification_bonus": bonus, **tb,
+            "raw_score": round(evidence + bonus + tb["tiebreak"], 2)}
 
 
 def prefilter_candidates(stories: list[dict], season: int, upcoming_week: int, config: dict = PREP_CONFIG) -> dict:
@@ -234,7 +372,7 @@ def prefilter_candidates(stories: list[dict], season: int, upcoming_week: int, c
 
     def adjusted(e):
         pen = penalties[min(counts[e["family"]], len(penalties) - 1)]
-        return round(e["raw_score"] - pen, 1), pen
+        return round(e["raw_score"] - pen, 2), pen
 
     while remaining and len(selected) < config["max_candidates"]:
         scored = sorted(((adjusted(e), e) for e in remaining), key=lambda t: (-t[0][0], t[1]["family"], str(t[1]["story_key"])))
@@ -260,7 +398,7 @@ def prefilter_candidates(stories: list[dict], season: int, upcoming_week: int, c
         "near_misses": near[:config["near_miss_count"]],
         "family_counts": {f: counts[f] for f in FAMILIES},
         "families_without_current_stories": [f for f in FAMILIES if f not in present_families],
-        "config": {k: config[k] for k in ("max_candidates", "min_score", "classification_bonus", "family_penalty", "near_miss_count")},
+        "config": {k: config[k] for k in ("max_candidates", "min_score", "classification_bonus", "family_penalty", "near_miss_count", "tiebreak_cap")},
     }
 
 
@@ -400,34 +538,48 @@ def process_story(story: dict, ctx: dict, api_key: str, *, force: bool, now: dat
         "prior_history_provided": prior_history is not None, "market_data_provided": market_data is not None,
         "interrogation_attempts": 0, "interrogation_status": None, "eps_status": None, "error": None,
     }
+    rec["interrogation_failure_reasons"] = []
+    rec["eps_failure_reason"] = None
     interrogation = story.get("interrogation") if decision == "reuse" else None
     if decision == "reuse":
         rec["interrogation_status"] = "reused"
     else:
         for attempt in (1, 2):
             rec["interrogation_attempts"] = attempt
+            _CAPTURE.start()
             try:
                 interrogation = interrogate(story, api_key, prior_history=prior_history, market_data=market_data)
             except Exception as e:  # noqa: BLE001 -- one story's failure must never sink the run
                 interrogation = None
                 rec["error"] = f"interrogation: {e!r}"[:300]
+            log = _CAPTURE.stop()
             if interrogation:
                 break
+            rec["interrogation_failure_reasons"].append(
+                failure_reason_from_log(log, "[story_interrogation]") or (rec["error"] or "returned None (no reason logged)"))
         if interrogation:
             interrogation = stamp_provenance(interrogation, story, now, config)
             rec["interrogation_status"] = "completed"
         else:
             rec["interrogation_status"] = "failed"
+            reasons = rec["interrogation_failure_reasons"]
+            rec["same_reason_both_attempts"] = len(reasons) == 2 and reasons[0] == reasons[1]
+    _CAPTURE.start()
     try:
         eps = eps_fn(story, interrogation, prior_history, api_key)
     except Exception as e:  # noqa: BLE001
         eps = None
         rec["error"] = (rec["error"] or "") + f" eps: {e!r}"[:300]
+    log = _CAPTURE.stop()
     if eps:
         eps = dict(eps, computed_at=now.isoformat())
         rec["eps_status"] = "completed"
     else:
         rec["eps_status"] = "failed"
+        rec["eps_failure_reason"] = failure_reason_from_log(log, "[eps]") or (rec["error"] or "returned None (no reason logged)")
+    # A fresh evaluation exists only when BOTH halves succeeded this run
+    # (a reused interrogation counts: it was validated as current).
+    rec["evaluated_this_run"] = rec["interrogation_status"] in ("completed", "reused") and rec["eps_status"] == "completed"
     rec["interrogation"] = interrogation
     rec["eps"] = eps
     rec["signal_verdict"] = (interrogation or {}).get("signal_verdict")
@@ -479,9 +631,13 @@ def run_execution(candidates: list[dict], stories_by_key: dict, ctx: dict, api_k
             with lock:
                 results.append(rec)
 
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        for _ in range(max(1, concurrency)):
-            ex.submit(worker)
+    _CAPTURE.install()
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
+            for _ in range(max(1, concurrency)):
+                ex.submit(worker)
+    finally:
+        _CAPTURE.uninstall()
     results.sort(key=lambda r: r.get("selection_rank") or 0)
     return {"results": results, "cost_ceiling_hit": stop["hit"], "cost_at_stop": stop["at_cost"],
             "skipped_for_cost": [{"story_key": s["story_key"], "entity": s.get("entity"), "family": s.get("family")} for s in skipped],
@@ -496,11 +652,14 @@ _DB_ONLY_FIELDS = ("id", "created_at", "updated_at")
 
 def rows_for_write(results: list[dict], stories_by_key: dict) -> list[dict]:
     """The read row, unchanged except interrogation/eps, for every story
-    that has at least one of the two to store. DB-generated fields are
-    dropped; the route upserts on the stories' unique key."""
+    EVALUATED THIS RUN (interrogation completed or reused AND eps
+    completed). A story whose interrogation or EPS failed is not written
+    at all: its row keeps its previous database state exactly, including
+    any older interrogation and eps. DB-generated fields are dropped; the
+    route upserts on the stories' unique key."""
     rows = []
     for r in results:
-        if r.get("interrogation") is None and r.get("eps") is None:
+        if not r.get("evaluated_this_run"):
             continue
         row = {k: v for k, v in stories_by_key[r["story_key"]].items() if k not in _DB_ONLY_FIELDS}
         row["interrogation"] = r.get("interrogation")
@@ -534,8 +693,47 @@ def _reason_counts(results: list[dict], key: str) -> dict:
     return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
 
+def stale_evaluations_in_pool(stories: list[dict], run_started_at: datetime, config: dict = PREP_CONFIG) -> list[dict]:
+    """
+    Report only. Every story in the pool whose STORED interrogation or
+    eps predates this run or no longer matches the story's content --
+    what could leak into the publication pool if a reader trusted the
+    stored columns as current. Reasons: no provenance (not produced by
+    this step, age unknown), computed_at older than this run, content
+    fingerprint mismatch, eps computed_at older than this run.
+    """
+    out = []
+    for s in stories:
+        it, eps = s.get("interrogation"), s.get("eps")
+        if not isinstance(it, dict) and not isinstance(eps, dict):
+            continue
+        reasons = []
+        if isinstance(it, dict):
+            prov = it.get("provenance") or {}
+            if not prov:
+                reasons.append("interrogation has no provenance (age unknown)")
+            else:
+                ts = _parse_ts(prov.get("computed_at"))
+                if ts is None or ts < run_started_at:
+                    reasons.append("interrogation computed before this run")
+                if prov.get("content_fingerprint") != content_fingerprint(s, config):
+                    reasons.append("story content changed since the interrogation")
+        if isinstance(eps, dict):
+            ts = _parse_ts(eps.get("computed_at"))
+            if ts is None or ts < run_started_at:
+                reasons.append("eps computed before this run (or undated)")
+        if reasons:
+            gates = (eps or {}).get("gates") or {}
+            out.append({"story_key": story_key(s), "family": s.get("intelligence_family"),
+                        "entity": (s.get("entity") or {}).get("player_name") or (s.get("entity") or {}).get("team"),
+                        "stored_big_one_eligible": gates.get("big_one_eligible"), "stored_watchlist_eligible": gates.get("watchlist_eligible"),
+                        "reasons": reasons})
+    return out
+
+
 def build_summary(prefilter: dict, execution: dict, meter: CostMeter, *, season: int, upcoming_week: int,
-                  mode: str, write_result: dict | None, started_at: datetime, ctx_notes: list, reads: list) -> dict:
+                  mode: str, write_result: dict | None, started_at: datetime, ctx_notes: list, reads: list,
+                  stale_in_pool: list | None = None) -> dict:
     results = execution["results"]
     by_status = lambda s: sum(1 for r in results if r["interrogation_status"] == s)  # noqa: E731
     gates_rows = []
@@ -548,7 +746,17 @@ def build_summary(prefilter: dict, execution: dict, meter: CostMeter, *, season:
             "signal_verdict": r.get("signal_verdict"), "big_one_eligible": g.get("big_one_eligible"), "watchlist_eligible": g.get("watchlist_eligible"),
             "big_one_blocked_reason": g.get("big_one_blocked_reason"), "watchlist_blocked_reason": g.get("watchlist_blocked_reason"),
             "interrogation_status": r["interrogation_status"], "eps_status": r["eps_status"],
+            "evaluated_this_run": bool(r.get("evaluated_this_run")),
         })
+    fresh = [g for g in gates_rows if g["evaluated_this_run"]]
+    marker = "carries stale or no evaluation, excluded from this run's qualifiers"
+    not_written_interrogation = [
+        {"story_key": r["story_key"], "family": r["family"], "entity": r["entity"], "reasons": r.get("interrogation_failure_reasons"),
+         "same_reason_both_attempts": r.get("same_reason_both_attempts"), "status": marker}
+        for r in results if r["interrogation_status"] == "failed"]
+    not_written_eps = [
+        {"story_key": r["story_key"], "family": r["family"], "entity": r["entity"], "reason": r.get("eps_failure_reason"), "status": marker}
+        for r in results if r["interrogation_status"] != "failed" and r["eps_status"] == "failed"]
     return {
         "label": "interrogation candidates",
         "run_at": started_at.isoformat(), "mode": mode, "season": season, "upcoming_week": upcoming_week,
@@ -559,11 +767,16 @@ def build_summary(prefilter: dict, execution: dict, meter: CostMeter, *, season:
         "candidates": prefilter["candidates"], "near_misses": prefilter["near_misses"], "prefilter_config": prefilter["config"],
         "interrogations": {"completed": by_status("completed"), "reused": by_status("reused"), "failed": by_status("failed")},
         "eps": {"completed": sum(1 for r in results if r["eps_status"] == "completed"), "failed": sum(1 for r in results if r["eps_status"] == "failed")},
-        "big_one_qualifiers": [g for g in gates_rows if g["big_one_eligible"]],
-        "watchlist_qualifiers": [g for g in gates_rows if g["watchlist_eligible"]],
-        "big_one_blocked_reasons": _reason_counts(results, "big_one_blocked_reason"),
-        "watchlist_blocked_reasons": _reason_counts(results, "watchlist_blocked_reason"),
+        "evaluated_this_run": len(fresh),
+        "not_written_interrogation_failed": not_written_interrogation,
+        "not_written_eps_failed": not_written_eps,
+        # Qualifiers come ONLY from stories evaluated successfully in this run.
+        "big_one_qualifiers": [g for g in fresh if g["big_one_eligible"]],
+        "watchlist_qualifiers": [g for g in fresh if g["watchlist_eligible"]],
+        "big_one_blocked_reasons": _reason_counts([r for r in results if r.get("evaluated_this_run")], "big_one_blocked_reason"),
+        "watchlist_blocked_reasons": _reason_counts([r for r in results if r.get("evaluated_this_run")], "watchlist_blocked_reason"),
         "gates": gates_rows,
+        "stale_evaluations_in_pool": stale_in_pool or [],
         "cost": {**meter.totals(), "max_cost_usd": execution["max_cost_usd"], "ceiling_hit": execution["cost_ceiling_hit"],
                  "cost_at_stop": execution["cost_at_stop"], "skipped_for_cost": execution["skipped_for_cost"]},
         "write": write_result,
@@ -580,15 +793,15 @@ def summary_markdown(s: dict) -> str:
         f"families without current stories: {s['families_without_current_stories'] or 'none'}.", "",
         f"Candidates selected: {s['candidates_selected']} " + json.dumps(s["candidates_by_family"]), "",
         f"Interrogations: {s['interrogations']['completed']} completed, {s['interrogations']['reused']} reused, {s['interrogations']['failed']} failed. "
-        f"EPS: {s['eps']['completed']} completed, {s['eps']['failed']} failed.", "",
+        f"EPS: {s['eps']['completed']} completed, {s['eps']['failed']} failed. Evaluated this run (both halves): {s['evaluated_this_run']}.", "",
         f"Cost: ${s['cost']['estimated_cost_usd']:.2f} of ${s['cost']['max_cost_usd']:.2f} ceiling"
         + (f" -- CEILING HIT after {len(s['gates'])} stories, {len(s['cost']['skipped_for_cost'])} skipped" if s["cost"]["ceiling_hit"] else "")
         + f"; {s['cost']['calls']} calls, in {s['cost']['input_tokens']}, cache write {s['cost']['cache_creation_input_tokens']}, "
           f"cache read {s['cost']['cache_read_input_tokens']}, out {s['cost']['output_tokens']}.", "",
-        "## Candidates (rank, family, entity, raw, penalty, adjusted)", "",
+        "## Candidates (rank, family, entity, raw incl. tie-break, penalty, adjusted)", "",
     ]
     for c in s["candidates"]:
-        lines.append(f"{c['selection_rank']}. {c['family']} | {c['entity']} | {c['raw_score']} | -{c['family_penalty']} | {c['adjusted_score']} | {c['evidence_classification']}")
+        lines.append(f"{c['selection_rank']}. {c['family']} | {c['entity']} | {c['raw_score']} (tie {c.get('tiebreak', 0)}) | -{c['family_penalty']} | {c['adjusted_score']} | {c['evidence_classification']}")
     lines += ["", "## Near misses (next ranked, adjusted score)", ""]
     for c in s["near_misses"]:
         lines.append(f"- {c['family']} | {c['entity']} | raw {c['raw_score']} | adjusted {c['adjusted_score']} | {c['evidence_classification']}")
@@ -596,7 +809,14 @@ def summary_markdown(s: dict) -> str:
     lines += [row(g) for g in s["big_one_qualifiers"]] or ["| none | | | | |"]
     lines += ["", "## Watchlist qualifiers", "", "| family | entity | composite | evidence | verdict |", "|---|---|---|---|---|"]
     lines += [row(g) for g in s["watchlist_qualifiers"]] or ["| none | | | | |"]
-    lines += ["", "## Blocked reasons", "", "Big One: " + json.dumps(s["big_one_blocked_reasons"]), "", "Watchlist: " + json.dumps(s["watchlist_blocked_reasons"]), ""]
+    lines += ["", "## Blocked reasons (evaluated-this-run stories only)", "", "Big One: " + json.dumps(s["big_one_blocked_reasons"]), "", "Watchlist: " + json.dumps(s["watchlist_blocked_reasons"]), ""]
+    lines += ["## Not written (interrogation failed)", ""]
+    lines += [f"- {x['family']} | {x['entity']} | attempts: {x['reasons']} | same reason both attempts: {x['same_reason_both_attempts']} | {x['status']}" for x in s["not_written_interrogation_failed"]] or ["- none"]
+    lines += ["", "## Not written (EPS failed)", ""]
+    lines += [f"- {x['family']} | {x['entity']} | {x['reason']} | {x['status']}" for x in s["not_written_eps_failed"]] or ["- none"]
+    lines += ["", f"## Stale or unverifiable stored evaluations in the pool ({len(s.get('stale_evaluations_in_pool') or [])})", ""]
+    lines += [f"- {x['family']} | {x['entity']} | stored gates big_one={x['stored_big_one_eligible']} watchlist={x['stored_watchlist_eligible']} | {'; '.join(x['reasons'])}" for x in (s.get("stale_evaluations_in_pool") or [])[:50]] or ["- none"]
+    lines += [""]
     lines += ["## Per story", "", "| rank | family | entity | interrogation | verdict | eps | composite | evidence | big one | watchlist |", "|---|---|---|---|---|---|---|---|---|---|"]
     for i, g in enumerate(s["gates"], 1):
         lines.append(f"| {i} | {g['family']} | {g['entity']} | {g['interrogation_status']} | {g['signal_verdict']} | {g['eps_status']} | {g['composite']} | {g['evidence']} | {g['big_one_eligible']} | {g['watchlist_eligible']} |")
@@ -682,8 +902,9 @@ def main(argv=None) -> int:
     else:
         print(f"[prep] dry run: {len(rows_for_write(execution['results'], stories_by_key))} row(s) would be written with --write; nothing written", flush=True)
 
+    stale = stale_evaluations_in_pool(pool["rows"], started, config)
     summary = build_summary(pre, execution, meter, season=args.season, upcoming_week=args.week, mode=mode, write_result=write_result,
-                            started_at=started, ctx_notes=ctx["notes"], reads=pool["reads"])
+                            started_at=started, ctx_notes=ctx["notes"], reads=pool["reads"], stale_in_pool=stale)
     paths = save_summary(summary)
     print(summary_markdown(summary))
     print(f"[prep] saved {paths['json']} and {paths['markdown']}", flush=True)

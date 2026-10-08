@@ -12,8 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prep_interrogation_eps as prep
 from prep_interrogation_eps import (
-    CostMeter, PREP_CONFIG, content_fingerprint, interrogation_reuse_decision, prefilter_candidates,
-    process_story, rows_for_write, run_execution, stamp_provenance, write_results,
+    CostMeter, PREP_CONFIG, TIEBREAK_SCALES, base_score, build_summary, content_fingerprint, failure_reason_from_log,
+    interrogation_reuse_decision, prefilter_candidates, process_story, rows_for_write, run_execution,
+    stale_evaluations_in_pool, stamp_provenance, tiebreak_score, write_results,
 )
 
 
@@ -67,8 +68,9 @@ if __name__ == "__main__":
     r.append(check("hidden/sanity-failed rows are excluded and counted", pre["hidden_excluded"] == 1 and "hidden" not in sel))
     r.append(check("coaching_trends is reported as a family without current stories", pre["families_without_current_stories"] == ["coaching_trends"]))
     r.append(check("the score floor keeps a weak story out even with room left (floor 30, raw 10)", "weak" not in sel and len(sel) < 20))
-    r.append(check("limited stories are not excluded outright: capped at 35 they compete, and two clear the 30 floor (35, 32); the third (35 - 6 penalty = 29) correctly misses it",
-                   {"r0", "r1"} <= sel and "r2" not in sel and any(n["story_key"] == "r2" and n["adjusted_score"] == 29.0 for n in pre["near_misses"])))
+    r2_raw = base_score(next(s for s in pool if s["id"] == "r2"))["raw_score"]
+    r.append(check(f"limited stories are not excluded outright: capped at 35 they compete; the first two clear the 30 floor, and the third's fate follows the floor exactly (raw {r2_raw} - 6 penalty vs 30)",
+                   {"r0", "r1"} <= sel and (("r2" in sel) == (round(r2_raw - 6.0, 2) >= 30.0))))
     ranks = {c["story_key"]: c["selection_rank"] for c in pre["candidates"]}
     r.append(check("family penalty interleaves equal-strength families: the three defensive stories and the first three market stories fill ranks 1-6 together, before the 4th market story",
                    max(ranks[k] for k in ("d0", "d1", "d2", "m0", "m1", "m2")) == 6 and ranks["m3"] == 7 and ranks["d0"] < ranks["m1"] < ranks["m2"]))
@@ -199,6 +201,101 @@ if __name__ == "__main__":
     r.append(check("no direct database access anywhere in the module (no supabase / psycopg / sql imports)",
                    not any(tok in Path(prep.__file__).read_text().lower() for tok in ("supabase", "psycopg", "sqlalchemy", "postgrest"))))
     r.append(check("nothing with no interrogation and no eps is ever written", rows_for_write([{"story_key": "m0", "interrogation": None, "eps": None}], by_key) == []))
+
+    # ============================================================
+    # Tie-break (item 1): classification-safe, fixed scales, deterministic
+    # ============================================================
+    bonuses = sorted(set(PREP_CONFIG["classification_bonus"].values()))
+    min_gap = min(b - a for a, b in zip(bonuses, bonuses[1:]))
+    r.append(check(
+        f"PROOF from the module's own constants: tiebreak_cap ({PREP_CONFIG['tiebreak_cap']}) is strictly less than the smallest classification gap ({min_gap})",
+        PREP_CONFIG["tiebreak_cap"] < min_gap,
+    ))
+    mk = lambda **o: story("t", "market_intelligence", week=5, confidence=100, completeness=100, **o)  # noqa: E731
+    big = dict(mk(), hero_metric={"delta_value": 40.0}, sample_size=12)      # saturates both metrics
+    r.append(check("tie-break maxes out at exactly the cap when both metrics saturate", tiebreak_score(big)["tiebreak"] == PREP_CONFIG["tiebreak_cap"]))
+    ms = TIEBREAK_SCALES["market_intelligence"]
+    half = dict(mk(), hero_metric={"delta_value": ms["magnitude"] / 2}, sample_size=ms["sample"] / 4)   # 0.5 and 0.25 -> mean 0.375
+    r.append(check("formula: cap x mean(clamp(metric/scale)): half the magnitude scale and a quarter of the book scale -> cap x 0.375",
+                   tiebreak_score(half)["tiebreak"] == round(PREP_CONFIG["tiebreak_cap"] * 0.375, 2)))
+    r.append(check("scales are fixed per family and documented (market 32 pp / 8 books; defensive & coaching 40 / 6 games; role 40 above the 60 threshold / 6 games)",
+                   TIEBREAK_SCALES["market_intelligence"] == {"magnitude": 32.0, "sample": 8.0}
+                   and TIEBREAK_SCALES["defensive_trends"] == {"magnitude": 40.0, "sample": 6.0} and TIEBREAK_SCALES["coaching_trends"] == {"magnitude": 40.0, "sample": 6.0}
+                   and TIEBREAK_SCALES["role_changes"] == {"magnitude": 40.0, "magnitude_offset": 60.0, "sample": 6.0}))
+    one_only = dict(mk(), hero_metric=None, primary_signal={"name": "deviation_pp", "value": -ms["magnitude"]}, sample_size=None)
+    r.append(check("a missing metric is left out of the average, and primary_signal.value is the market fallback for magnitude",
+                   tiebreak_score(one_only)["tiebreak"] == PREP_CONFIG["tiebreak_cap"] and list(tiebreak_score(one_only)["tiebreak_inputs"]) == ["magnitude"]))
+    r.append(check("role_changes magnitude is measured above the family's 60 threshold: role_momentum 60 -> 0, 100 -> 1",
+                   tiebreak_score(story("r", "role_changes", week=4, confidence=50, completeness=50, player=True) | {"trend_strength": 60.0, "sample_size": None})["tiebreak"] == 0.0
+                   and tiebreak_score(story("r", "role_changes", week=4, confidence=50, completeness=50) | {"trend_strength": 100.0, "sample_size": None})["tiebreak"] == PREP_CONFIG["tiebreak_cap"]))
+    # Classification priority: equal evidence, lower tier with max tie-break vs higher tier with zero tie-break.
+    lim_max = dict(story("L", "defensive_trends", week=4, confidence=30, completeness=30, classification="limited"), trend_strength=100.0, sample_size=12)
+    mod_zero = dict(story("M", "defensive_trends", week=4, confidence=30, completeness=30, classification="moderate"), trend_strength=0.0, sample_size=0)
+    str_zero = dict(story("S", "defensive_trends", week=4, confidence=30, completeness=30, classification="strong"), trend_strength=0.0, sample_size=0)
+    order = [c["story_key"] for c in prefilter_candidates([lim_max, mod_zero, str_zero], 2026, 5, dict(PREP_CONFIG, min_score=0.0))["candidates"]]
+    r.append(check("no story ranks above a higher-classification story on the tie-break alone (equal evidence: strong > moderate > limited even with limited at max tie-break)",
+                   order == ["S", "M", "L"] and base_score(lim_max)["tiebreak"] == PREP_CONFIG["tiebreak_cap"] and base_score(mod_zero)["tiebreak"] == 0.0))
+    r.append(check("a tie-break only reorders stories of the SAME classification and evidence",
+                   [c["story_key"] for c in prefilter_candidates([dict(mk(), id="low", hero_metric={"delta_value": 2.0}, sample_size=1), dict(mk(), id="hi", hero_metric={"delta_value": 15.0}, sample_size=5)], 2026, 5)["candidates"]] == ["hi", "low"]))
+    mixed = [dict(story(f"m{i}", "market_intelligence", week=5, confidence=100, completeness=100), hero_metric={"delta_value": 5 + i}, sample_size=1 + (i % 5)) for i in range(12)]
+    runs = [[c["story_key"] for c in prefilter_candidates(mixed, 2026, 5)["candidates"]] for _ in range(5)]
+    r.append(check("order is identical across repeated runs (5 runs on a shuffled-looking pool)", all(x == runs[0] for x in runs)))
+    r.append(check("tie-break inputs are reported on each candidate", all("tiebreak" in c and "tiebreak_inputs" in c for c in prefilter_candidates(mixed, 2026, 5)["candidates"])))
+
+    # ============================================================
+    # Failure handling (item 2): no partial writes, no stale qualifiers
+    # ============================================================
+    stale_story = story("stale", "market_intelligence", week=5, confidence=100, completeness=100, updated_at=NOW - timedelta(days=1))
+    stale_story["interrogation"] = stamp_provenance(dict(CLEAN_INTERROGATION), stale_story, NOW - timedelta(days=1))
+    stale_story["eps"] = {"eps_version": "v1", "computed_at": (NOW - timedelta(days=1)).isoformat(), "dimensions": {"evidence_strength": {"score": 100}},
+                          "composite_score": 70.0, "gates": {"big_one_eligible": True, "watchlist_eligible": True}}
+    stale_story["headline"] = "Changed since then"  # fingerprint no longer matches -> must recompute
+
+    def failing_interrogate(story_, api_key, prior_history=None, market_data=None):
+        print("[story_interrogation] confidence-escalation violation persisted after retry — returning None, not a violating record.")
+        return None
+
+    def failing_eps(story_, interrogation, prior_history, api_key):
+        print("[eps] malformed shape persisted after retry — returning None rather than crashing downstream.")
+        return None
+
+    cand = prefilter_candidates([stale_story], 2026, 5)["candidates"]
+    m3 = CostMeter()
+    ex3 = run_execution(cand, {"stale": stale_story}, ctx, "k", force=False, max_cost_usd=4.0, concurrency=2, meter=m3, interrogate=failing_interrogate, eps_fn=failing_eps, now=NOW)
+    rec = ex3["results"][0]
+    summ = build_summary({"considered": 1, "stale_excluded": [], "hidden_excluded": 0, "families_without_current_stories": [], "candidates": cand, "near_misses": [], "family_counts": {}, "config": {}},
+                         ex3, m3, season=2026, upcoming_week=5, mode="dry-run", write_result=None, started_at=NOW, ctx_notes=[], reads=[],
+                         stale_in_pool=stale_evaluations_in_pool([stale_story], NOW))
+    r.append(check("a story with an older, eligible-looking stored interrogation+eps whose fresh run fails is NOT a qualifier",
+                   summ["big_one_qualifiers"] == [] and summ["watchlist_qualifiers"] == [] and rec["evaluated_this_run"] is False))
+    r.append(check("...and is NOT written (rows_for_write is empty), so its row keeps its previous database state",
+                   rows_for_write(ex3["results"], {"stale": stale_story}) == []))
+    r.append(check("...and is listed under 'not written (interrogation failed)' with the marker and the per-attempt reasons",
+                   len(summ["not_written_interrogation_failed"]) == 1
+                   and summ["not_written_interrogation_failed"][0]["status"] == "carries stale or no evaluation, excluded from this run's qualifiers"
+                   and summ["not_written_interrogation_failed"][0]["reasons"] == ["confidence-escalation check persisted after retry"] * 2
+                   and summ["not_written_interrogation_failed"][0]["same_reason_both_attempts"] is True))
+    r.append(check("the blocked-reason aggregates also count only stories evaluated this run", summ["big_one_blocked_reasons"] == {} and summ["watchlist_blocked_reasons"] == {}))
+    r.append(check("the stale-evaluation report flags the stored evaluation (computed before this run, content changed) with its stored gates",
+                   summ["stale_evaluations_in_pool"][0]["stored_big_one_eligible"] is True
+                   and "interrogation computed before this run" in summ["stale_evaluations_in_pool"][0]["reasons"]
+                   and "story content changed since the interrogation" in summ["stale_evaluations_in_pool"][0]["reasons"]
+                   and "eps computed before this run (or undated)" in summ["stale_evaluations_in_pool"][0]["reasons"]))
+    r.append(check("a stored interrogation without provenance is reported as 'age unknown'",
+                   stale_evaluations_in_pool([dict(base, interrogation=CLEAN_INTERROGATION)], NOW)[0]["reasons"] == ["interrogation has no provenance (age unknown)"]))
+
+    # EPS failed, interrogation fine -> listed under 'not written (EPS failed)', not written, not a qualifier
+    ok_story = story("okint", "market_intelligence", week=5, confidence=100, completeness=100)
+    ex4 = run_execution(prefilter_candidates([ok_story], 2026, 5)["candidates"], {"okint": ok_story}, ctx, "k", force=False, max_cost_usd=4.0, concurrency=1, meter=CostMeter(),
+                        interrogate=fake_interrogate_ok, eps_fn=failing_eps, now=NOW)
+    summ4 = build_summary({"considered": 1, "stale_excluded": [], "hidden_excluded": 0, "families_without_current_stories": [], "candidates": [], "near_misses": [], "family_counts": {}, "config": {}},
+                          ex4, CostMeter(), season=2026, upcoming_week=5, mode="dry-run", write_result=None, started_at=NOW, ctx_notes=[], reads=[])
+    r.append(check("EPS failure with a completed interrogation: not written, listed under 'not written (EPS failed)' with the captured reason",
+                   rows_for_write(ex4["results"], {"okint": ok_story}) == [] and len(summ4["not_written_eps_failed"]) == 1
+                   and summ4["not_written_eps_failed"][0]["reason"] == "malformed response shape persisted after retry"))
+    r.append(check("failure_reason_from_log: no failure line -> None; API failure line -> 'API call failed'",
+                   failure_reason_from_log("[story_interrogation] something fine\n", "[story_interrogation]") is None
+                   and failure_reason_from_log("[eps] API call failed: ValueError('x')", "[eps]") == "API call failed"))
 
     # ============================================================
     # Offline inputs: diagnostics only, never combined with --write
