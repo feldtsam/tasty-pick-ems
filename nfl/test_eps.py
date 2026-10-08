@@ -155,10 +155,79 @@ if __name__ == "__main__":
         gates_does_not_qualify["watchlist_eligible"] is False,
     ))
 
+    # ============================================================
+    # Big One gate, second half (2026-10-07): evidence floor AND a
+    # completed interrogation (with primary_alternate) AND no FAILS
+    # verdict. See eps.py's own comment above _big_one_blocked_reasons.
+    # ============================================================
+    CLEAN_INTERROGATION = {
+        "challenge": {"alternate_explanations": [{"alternate_id": "alt_1", "status": "WEAKENED"}]},
+        "primary_alternate": {"alternate_id": "alt_1", "selection_reason": "the one that matters"},
+        "signal_verdict": "UNRESOLVED",
+    }
+    FAILS_INTERROGATION = dict(CLEAN_INTERROGATION, signal_verdict="FAILS")
+    NO_PRIMARY_INTERROGATION = dict(CLEAN_INTERROGATION, primary_alternate=None)
+    at_floor = {"evidence_strength": {"score": BIG_ONE_EVIDENCE_FLOOR}, "novelty": {"score": 0}, "story_tension": {"score": 0}}
+    below_floor = {"evidence_strength": {"score": BIG_ONE_EVIDENCE_FLOOR - 1}, "novelty": {"score": 100}, "story_tension": {"score": 100}}
+
+    g = _compute_gates(at_floor, composite_score=0, interrogation=CLEAN_INTERROGATION)
     results.append(check(
-        f"big_one_eligible is a real >= {BIG_ONE_EVIDENCE_FLOOR} threshold on evidence_strength alone, independent of composite/novelty/tension",
-        _compute_gates({"evidence_strength": {"score": BIG_ONE_EVIDENCE_FLOOR}, "novelty": {"score": 0}, "story_tension": {"score": 0}}, composite_score=0)["big_one_eligible"] is True
-        and _compute_gates({"evidence_strength": {"score": BIG_ONE_EVIDENCE_FLOOR - 1}, "novelty": {"score": 100}, "story_tension": {"score": 100}}, composite_score=100)["big_one_eligible"] is False,
+        f"evidence >= {BIG_ONE_EVIDENCE_FLOOR} with a clean, complete interrogation -> big_one_eligible True, blocked_reason None, independent of composite/novelty/tension",
+        g["big_one_eligible"] is True and g["big_one_blocked_reason"] is None,
+    ))
+    g = _compute_gates(at_floor, composite_score=0, interrogation=None)
+    results.append(check(
+        "interrogation None -> blocked, reason names the missing interrogation (the evidence floor alone is no longer enough)",
+        g["big_one_eligible"] is False and g["big_one_blocked_reason"] == "no completed interrogation",
+    ))
+    g = _compute_gates(at_floor, composite_score=0, interrogation=FAILS_INTERROGATION)
+    results.append(check(
+        "signal_verdict FAILS -> blocked, reason names the verdict",
+        g["big_one_eligible"] is False and g["big_one_blocked_reason"] == "signal_verdict FAILS",
+    ))
+    g = _compute_gates(below_floor, composite_score=100, interrogation=CLEAN_INTERROGATION)
+    results.append(check(
+        f"evidence {BIG_ONE_EVIDENCE_FLOOR - 1} with a clean interrogation -> still blocked, reason names the floor",
+        g["big_one_eligible"] is False and g["big_one_blocked_reason"].startswith("evidence_strength") and "below floor" in g["big_one_blocked_reason"],
+    ))
+    g = _compute_gates(at_floor, composite_score=0, interrogation=NO_PRIMARY_INTERROGATION)
+    results.append(check(
+        "interrogation present but primary_alternate missing -> blocked, reason says so",
+        g["big_one_eligible"] is False and g["big_one_blocked_reason"] == "interrogation has no primary_alternate",
+    ))
+    g = _compute_gates(below_floor, composite_score=0, interrogation=FAILS_INTERROGATION)
+    results.append(check(
+        "several failing conditions are all listed, floor first",
+        g["big_one_eligible"] is False and g["big_one_blocked_reason"].startswith("evidence_strength") and g["big_one_blocked_reason"].endswith("signal_verdict FAILS"),
+    ))
+    results.append(check(
+        "_compute_gates called the old way (no interrogation argument) is the conservative case: blocked, never eligible",
+        _compute_gates(at_floor, composite_score=0)["big_one_eligible"] is False,
+    ))
+    # The two real Oct 6 2026 dry-run cases the rule exists for (values
+    # as computed that day, dimensions abbreviated to the gate inputs).
+    atl_dims = {"evidence_strength": {"score": 100.0}, "novelty": {"score": 20}, "story_tension": {"score": 10}}
+    g = _compute_gates(atl_dims, composite_score=42.5, interrogation=None)
+    results.append(check(
+        "real ATL WR-defense case (interrogation returned None, evidence 100): was Big One eligible on the floor alone, now blocked for no interrogation",
+        g["big_one_eligible"] is False and g["big_one_blocked_reason"] == "no completed interrogation",
+    ))
+    allen_interrogation = {
+        "challenge": {"alternate_explanations": [{"alternate_id": "alt_1", "status": "UNRESOLVED"}, {"alternate_id": "alt_2", "status": "SUPPORTED"}, {"alternate_id": "alt_3", "status": "SUPPORTED"}]},
+        "primary_alternate": {"alternate_id": "alt_2", "selection_reason": "gap already closed at the latest odds reading"},
+        "signal_verdict": "FAILS",
+    }
+    allen_dims = {"evidence_strength": {"score": 67.0}, "novelty": {"score": 35}, "story_tension": {"score": 55}}
+    g = _compute_gates(allen_dims, composite_score=41.3, interrogation=allen_interrogation)
+    results.append(check(
+        "real Braelon Allen Market case (FAILS verdict, evidence 67): was Big One eligible, now blocked for the verdict",
+        g["big_one_eligible"] is False and g["big_one_blocked_reason"] == "signal_verdict FAILS",
+    ))
+    results.append(check(
+        "the Watchlist gate is unchanged by the new rule: same inputs, same answer with or without an interrogation",
+        _compute_gates(qualifies_dims, composite_score=63, interrogation=None)["watchlist_eligible"] is True
+        and _compute_gates(qualifies_dims, composite_score=63, interrogation=FAILS_INTERROGATION)["watchlist_eligible"] is True
+        and _compute_gates(does_not_qualify_dims, composite_score=57, interrogation=CLEAN_INTERROGATION)["watchlist_eligible"] is False,
     ))
 
     # ============================================================
