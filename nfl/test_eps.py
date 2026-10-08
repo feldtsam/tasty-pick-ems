@@ -137,22 +137,28 @@ if __name__ == "__main__":
     # Gates -- §9, acceptance test #4, the exact two worked contrasts
     # from the spec's own text.
     # ============================================================
+    # A clean, complete interrogation -- both gates now require one (2026-10-07).
+    CLEAN_INTERROGATION = {
+        "challenge": {"alternate_explanations": [{"alternate_id": "alt_1", "status": "WEAKENED"}]},
+        "primary_alternate": {"alternate_id": "alt_1", "selection_reason": "the one that matters"},
+        "signal_verdict": "UNRESOLVED",
+    }
     qualifies_dims = {
         "evidence_strength": {"score": 32}, "novelty": {"score": 84}, "story_tension": {"score": 78},
     }
-    gates_qualifies = _compute_gates(qualifies_dims, composite_score=63)
+    gates_qualifies = _compute_gates(qualifies_dims, composite_score=63, interrogation=CLEAN_INTERROGATION)
     results.append(check(
-        "ACCEPTANCE TEST #4: EPS 63/Evidence 32/Novelty 84/Tension 78 -> watchlist_eligible=True, matching the spec's own worked example",
-        gates_qualifies["watchlist_eligible"] is True,
+        "ACCEPTANCE TEST #4: EPS 63/Evidence 32/Novelty 84/Tension 78 with a clean interrogation -> watchlist_eligible=True, blocked_reason None, matching the spec's own worked example",
+        gates_qualifies["watchlist_eligible"] is True and gates_qualifies["watchlist_blocked_reason"] is None,
     ))
 
     does_not_qualify_dims = {
         "evidence_strength": {"score": 31}, "novelty": {"score": 49}, "story_tension": {"score": 52},
     }
-    gates_does_not_qualify = _compute_gates(does_not_qualify_dims, composite_score=57)
+    gates_does_not_qualify = _compute_gates(does_not_qualify_dims, composite_score=57, interrogation=CLEAN_INTERROGATION)
     results.append(check(
-        "ACCEPTANCE TEST #4: EPS 57/Evidence 31/Novelty 49/Tension 52 -> watchlist_eligible=False, matching the spec's own worked example",
-        gates_does_not_qualify["watchlist_eligible"] is False,
+        "ACCEPTANCE TEST #4: EPS 57/Evidence 31/Novelty 49/Tension 52 -> watchlist_eligible=False, reason names novelty and tension, matching the spec's own worked example",
+        gates_does_not_qualify["watchlist_eligible"] is False and "both below" in gates_does_not_qualify["watchlist_blocked_reason"],
     ))
 
     # ============================================================
@@ -160,11 +166,6 @@ if __name__ == "__main__":
     # completed interrogation (with primary_alternate) AND no FAILS
     # verdict. See eps.py's own comment above _big_one_blocked_reasons.
     # ============================================================
-    CLEAN_INTERROGATION = {
-        "challenge": {"alternate_explanations": [{"alternate_id": "alt_1", "status": "WEAKENED"}]},
-        "primary_alternate": {"alternate_id": "alt_1", "selection_reason": "the one that matters"},
-        "signal_verdict": "UNRESOLVED",
-    }
     FAILS_INTERROGATION = dict(CLEAN_INTERROGATION, signal_verdict="FAILS")
     NO_PRIMARY_INTERROGATION = dict(CLEAN_INTERROGATION, primary_alternate=None)
     at_floor = {"evidence_strength": {"score": BIG_ONE_EVIDENCE_FLOOR}, "novelty": {"score": 0}, "story_tension": {"score": 0}}
@@ -223,11 +224,44 @@ if __name__ == "__main__":
         "real Braelon Allen Market case (FAILS verdict, evidence 67): was Big One eligible, now blocked for the verdict",
         g["big_one_eligible"] is False and g["big_one_blocked_reason"] == "signal_verdict FAILS",
     ))
+    # ============================================================
+    # Watchlist gate, same interrogation requirement (2026-10-07).
+    # ============================================================
+    g = _compute_gates(qualifies_dims, composite_score=63, interrogation=None)
     results.append(check(
-        "the Watchlist gate is unchanged by the new rule: same inputs, same answer with or without an interrogation",
-        _compute_gates(qualifies_dims, composite_score=63, interrogation=None)["watchlist_eligible"] is True
-        and _compute_gates(qualifies_dims, composite_score=63, interrogation=FAILS_INTERROGATION)["watchlist_eligible"] is True
-        and _compute_gates(does_not_qualify_dims, composite_score=57, interrogation=CLEAN_INTERROGATION)["watchlist_eligible"] is False,
+        "Watchlist: a story meeting every other condition (EPS 63/Evidence 32/Novelty 84/Tension 78) but with no interrogation -> blocked, the interrogation is the ONLY reason",
+        g["watchlist_eligible"] is False and g["watchlist_blocked_reason"] == "no completed interrogation",
+    ))
+    g = _compute_gates(qualifies_dims, composite_score=63, interrogation=FAILS_INTERROGATION)
+    results.append(check(
+        "Watchlist: FAILS verdict -> blocked, reason names the verdict",
+        g["watchlist_eligible"] is False and g["watchlist_blocked_reason"] == "signal_verdict FAILS",
+    ))
+    g = _compute_gates(qualifies_dims, composite_score=63, interrogation=NO_PRIMARY_INTERROGATION)
+    results.append(check(
+        "Watchlist: interrogation without primary_alternate -> blocked",
+        g["watchlist_eligible"] is False and g["watchlist_blocked_reason"] == "interrogation has no primary_alternate",
+    ))
+    g = _compute_gates(qualifies_dims, composite_score=63, interrogation=CLEAN_INTERROGATION)
+    results.append(check(
+        "Watchlist: clean interrogation with every other condition met -> eligible, reason None",
+        g["watchlist_eligible"] is True and g["watchlist_blocked_reason"] is None,
+    ))
+    g = _compute_gates(does_not_qualify_dims, composite_score=50, interrogation=None)
+    results.append(check(
+        "Watchlist: every failing condition is listed, composite first, interrogation last",
+        g["watchlist_eligible"] is False and g["watchlist_blocked_reason"].startswith("composite_score 50 below floor")
+        and "both below" in g["watchlist_blocked_reason"] and g["watchlist_blocked_reason"].endswith("no completed interrogation"),
+    ))
+    results.append(check(
+        "the existing composite/evidence/novelty-or-tension conditions still hold on their own: a clean interrogation does not rescue a story below them",
+        _compute_gates({"evidence_strength": {"score": 24}, "novelty": {"score": 90}, "story_tension": {"score": 90}}, composite_score=90, interrogation=CLEAN_INTERROGATION)["watchlist_eligible"] is False
+        and _compute_gates({"evidence_strength": {"score": 90}, "novelty": {"score": 64}, "story_tension": {"score": 64}}, composite_score=90, interrogation=CLEAN_INTERROGATION)["watchlist_eligible"] is False,
+    ))
+    results.append(check(
+        "Big One gate is unaffected by the Watchlist change: the ATL/Allen outcomes above still hold and a clean at-floor story is still eligible",
+        _compute_gates(at_floor, composite_score=0, interrogation=CLEAN_INTERROGATION)["big_one_eligible"] is True
+        and _compute_gates(allen_dims, composite_score=41.3, interrogation=allen_interrogation)["big_one_eligible"] is False,
     ))
 
     # ============================================================
