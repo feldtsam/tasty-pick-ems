@@ -630,34 +630,61 @@ def _compute_composite(dimensions: dict) -> float:
 BIG_ONE_FAILING_VERDICT = "FAILS"
 
 
+def _interrogation_blocked_reasons(interrogation: dict | None) -> list[str]:
+    """The interrogation half of both gates (2026-10-07): a completed
+    interrogation must be present, with its primary_alternate, and its
+    signal_verdict must not be FAILS. Shared by the Big One and Watchlist
+    gates so the two can never drift apart on what "completed" means."""
+    if not isinstance(interrogation, dict) or not interrogation:
+        return ["no completed interrogation"]
+    reasons = []
+    primary = interrogation.get("primary_alternate")
+    if not isinstance(primary, dict) or not primary.get("alternate_id"):
+        reasons.append("interrogation has no primary_alternate")
+    if interrogation.get("signal_verdict") == BIG_ONE_FAILING_VERDICT:
+        reasons.append(f"signal_verdict {BIG_ONE_FAILING_VERDICT}")
+    return reasons
+
+
 def _big_one_blocked_reasons(evidence: float, interrogation: dict | None) -> list[str]:
     reasons = []
     if evidence < BIG_ONE_EVIDENCE_FLOOR:
         reasons.append(f"evidence_strength {evidence} below floor {BIG_ONE_EVIDENCE_FLOOR}")
-    if not isinstance(interrogation, dict) or not interrogation:
-        reasons.append("no completed interrogation")
-    else:
-        primary = interrogation.get("primary_alternate")
-        if not isinstance(primary, dict) or not primary.get("alternate_id"):
-            reasons.append("interrogation has no primary_alternate")
-        if interrogation.get("signal_verdict") == BIG_ONE_FAILING_VERDICT:
-            reasons.append(f"signal_verdict {BIG_ONE_FAILING_VERDICT}")
-    return reasons
+    return reasons + _interrogation_blocked_reasons(interrogation)
+
+
+# Watchlist gate, same second half (2026-10-07, one step after the Big One
+# change): the composite, evidence and novelty-or-tension conditions are
+# unchanged; a completed, non-FAILS interrogation with its primary_
+# alternate is now also required, and watchlist_blocked_reason names the
+# failing condition(s) the same way big_one_blocked_reason does. Before
+# this, a story with no interrogation could reach the Watchlist through
+# novelty alone (the EPS prompt caps story_tension at 40 when the
+# interrogation is null, but nothing in the gate itself looked).
+def _watchlist_blocked_reasons(
+    evidence: float, novelty: float, tension: float, composite_score: float, interrogation: dict | None,
+) -> list[str]:
+    reasons = []
+    if composite_score < WATCHLIST_COMPOSITE_FLOOR:
+        reasons.append(f"composite_score {composite_score} below floor {WATCHLIST_COMPOSITE_FLOOR}")
+    if evidence < WATCHLIST_EVIDENCE_FLOOR:
+        reasons.append(f"evidence_strength {evidence} below floor {WATCHLIST_EVIDENCE_FLOOR}")
+    if novelty < WATCHLIST_NOVELTY_OR_TENSION_FLOOR and tension < WATCHLIST_NOVELTY_OR_TENSION_FLOOR:
+        reasons.append(f"novelty {novelty} and story_tension {tension} both below {WATCHLIST_NOVELTY_OR_TENSION_FLOOR}")
+    return reasons + _interrogation_blocked_reasons(interrogation)
 
 
 def _compute_gates(dimensions: dict, composite_score: float, interrogation: dict | None = None) -> dict:
     evidence = dimensions["evidence_strength"]["score"]
     novelty = dimensions["novelty"]["score"]
     tension = dimensions["story_tension"]["score"]
-    blocked = _big_one_blocked_reasons(evidence, interrogation)
+    big_one_blocked = _big_one_blocked_reasons(evidence, interrogation)
+    watchlist_blocked = _watchlist_blocked_reasons(evidence, novelty, tension, composite_score, interrogation)
     return {
-        "big_one_eligible": not blocked,
-        "big_one_blocked_reason": "; ".join(blocked) if blocked else None,
-        "watchlist_eligible": (
-            composite_score >= WATCHLIST_COMPOSITE_FLOOR
-            and evidence >= WATCHLIST_EVIDENCE_FLOOR
-            and (novelty >= WATCHLIST_NOVELTY_OR_TENSION_FLOOR or tension >= WATCHLIST_NOVELTY_OR_TENSION_FLOOR)
-        ),
+        "big_one_eligible": not big_one_blocked,
+        "big_one_blocked_reason": "; ".join(big_one_blocked) if big_one_blocked else None,
+        "watchlist_eligible": not watchlist_blocked,
+        "watchlist_blocked_reason": "; ".join(watchlist_blocked) if watchlist_blocked else None,
     }
 
 
