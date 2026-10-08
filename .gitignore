@@ -34,3 +34,7 @@ venv/
 # from a manual, by-hand tool, not source; would otherwise show up as
 # a dirty git status after every single hand-run.
 pipeline/scripts/bookmaker_coverage_log.csv
+
+# ── Newsletter prep step run reports (prep_interrogation_eps.py) ──
+nfl/newsletter/outputs/*
+!nfl/newsletter/outputs/.gitkeep
