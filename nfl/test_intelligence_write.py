@@ -318,6 +318,35 @@ if __name__ == "__main__":
     except Exception as e:
         pace_hotfix_results.append(check(f"real 2026 week-3 pace/process_family hotfix check (skipped -- {type(e).__name__}: {e})", True))
 
+    # ============================================================
+    # Item 3 (2026-10): sanity_check_story is the Intelligence publishing
+    # boundary (a failing story is written with is_visible=False). A
+    # "full season" claim is unsupported unless the row's maturity is
+    # the codebase's own mature tier ("confirmed").
+    # ============================================================
+    full_season = _real_story(story="With X out, Y steps into a clearly bigger role — and a full season of usage data says it should stick.")
+    issues = sanity_check_story(full_season)
+    results.append(check(
+        "a 'full season' claim on a story with no methodology_maturity is a sanity failure (hidden, never published)",
+        any("duration claim" in i and "full season" in i for i in issues),
+    ))
+    thin = dict(full_season, methodology_maturity="thin")
+    results.append(check(
+        "a 'full season' claim on a thin-maturity story is a sanity failure",
+        any("duration claim" in i for i in sanity_check_story(thin)),
+    ))
+    confirmed = dict(full_season, methodology_maturity="confirmed")
+    results.append(check(
+        "the same claim on a confirmed-maturity story passes",
+        not any("duration claim" in i for i in sanity_check_story(confirmed)),
+    ))
+    in_evidence = _real_story(supporting_evidence=["3 game(s) played this season (a full season read)"])
+    results.append(check(
+        "the rule also reads supporting_evidence and what_changed, not just the story",
+        any("duration claim" in i for i in sanity_check_story(in_evidence)),
+    ))
+    results.append(check("the original clean story is unaffected by the new rule", sanity_check_story(clean) == []))
+
     print()
     all_results = results + real_results + pace_hotfix_results
     if all(all_results):

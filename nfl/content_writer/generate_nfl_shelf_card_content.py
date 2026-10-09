@@ -73,6 +73,7 @@ from nfl_tension import find_tension  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from editorial_lenses import citable_fields_for_lens, is_masked_fallback, resolve_editorial_lens  # noqa: E402
+from factual_validation import categorize_issues, split_issues, trend_evidence_for_row, validate_trend_claims  # noqa: E402 -- Item 3
 
 WRITER_TYPE = "shelf_card"
 
@@ -375,7 +376,7 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     shape_errors = validate_schema_shape(output)
     issues.extend({"check": "schema_shape", "issue": e} for e in shape_errors)
     if shape_errors:
-        return issues
+        return categorize_issues(issues)
 
     why_reasons = output["why_reasons"]
     story = output["story"]
@@ -393,7 +394,11 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
         if found:
             issues.append({"check": "banned_language", "field": field, "phrases": found})
 
-    return issues
+    # Item 3 (2026-10): every issue carries its category -- "factual"
+    # (hard gate at the write boundary) or "stylistic" (flags for review,
+    # overridable) -- see factual_validation.FACTUAL_CHECKS/STYLISTIC_
+    # CHECKS for the split and the reasoning.
+    return categorize_issues(issues)
 
 
 # Story tightening (2026-10-06). The prompt asks for 70-100 words; this
@@ -622,6 +627,13 @@ def generate_nfl_shelf_card_draft(
     scoped_fields = citable_fields_for_lens(lens)
     source_facts = flatten_source_facts(candidate, scoped_fields)
     source_facts = strip_masked_role_fields(source_facts, candidate)
+    # Item 3 (2026-10): the row's real trend state for this shelf --
+    # drives prompt-side prevention below (no trend vocabulary when every
+    # trend field is masked) and the trend-claim check on the finished
+    # title/story. The write-boundary gate in curate_home_shelves
+    # recomputes this from the same row; this copy is for the draft's
+    # own validation_issues and for inspection.
+    trend_evidence = trend_evidence_for_row(candidate, shelf)
     tension = find_tension(candidate, lens, interrogation_result)
     if tension is None:
         raise CandidateGatedOut(
@@ -636,6 +648,7 @@ def generate_nfl_shelf_card_draft(
     # card_writer_common.py for why the order is load-bearing.
     dynamic_system_prompt = build_dynamic_system_prompt(
         shelf, confidence_band, lens, tension, avoid_headlines=avoid_headlines, avoid_opening_phrases=avoid_opening_phrases,
+        trend_data_available=trend_evidence["has_unmasked"],
     )
     user_prompt = build_user_prompt(source_facts)
 
@@ -647,6 +660,10 @@ def generate_nfl_shelf_card_draft(
         max_tokens=max_tokens,
     )
     issues = run_all_validators(output, source_facts)
+    # Item 3: trend words in title/story must be backed by an unmasked,
+    # non-zero trend delta on this row (factual_validation). Factual.
+    issues.extend(validate_trend_claims({"title": output.get("title"), "story": output.get("story")}, trend_evidence))
+    factual_issues = split_issues(issues)["factual"]
     warnings = run_all_warnings(output)
     title = output.get("title")
     if warnings:
@@ -668,6 +685,12 @@ def generate_nfl_shelf_card_draft(
         "model_name": MODEL_NAME,
         "validation_passed": len(issues) == 0,
         "validation_issues": issues,
+        # Item 3: the factual/stylistic split, made explicit. False here
+        # means curate_home_shelves' write boundary WILL replace this
+        # draft's title/story/why_reasons with the deterministic fallback
+        # -- a reviewer never sees the unsupported text, let alone
+        # approves it. Stylistic-only failures leave this True.
+        "factual_validation_passed": len(factual_issues) == 0,
         "review_status": "pending_review" if not issues else "flagged",
         # Warn-only notes (story length, stock phrases) -- see
         # run_all_warnings. Separate from validation_issues on purpose;
@@ -680,10 +703,11 @@ def generate_nfl_shelf_card_draft(
         "_interrogation_result": interrogation_result,
         "_raw_model_output": output,
         "_retry_stats": retry_stats,
+        "_trend_evidence": trend_evidence,
     }
 
 
-_LOCAL_ONLY_DRAFT_KEYS = frozenset({"opening_phrase", "validation_warnings"})
+_LOCAL_ONLY_DRAFT_KEYS = frozenset({"opening_phrase", "validation_warnings", "factual_validation_passed"})
 
 
 def draft_for_write(draft: dict) -> dict:

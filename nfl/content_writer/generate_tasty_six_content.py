@@ -59,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
 from banned_language import find_banned_phrases  # noqa: E402 -- reused unmodified
+from factual_validation import categorize_issues  # noqa: E402 -- Item 3: factual/stylistic split
 from card_writer_common import (  # noqa: E402
     MODEL_NAME,
     call_claude_with_tool,
@@ -190,7 +191,7 @@ def generate_nfl_tasty_six_draft(
     output = call_claude_for_nfl_tasty_six_card(
         anthropic_api_key, system_blocks(STATIC_SYSTEM_PROMPT, dynamic_system_prompt), user_prompt,
     )
-    issues = run_all_validators(output, source_facts)
+    issues = categorize_issues(run_all_validators(output, source_facts))
 
     return {
         "player_id": candidate.get("player_id"),

@@ -71,6 +71,7 @@ from nfl_shelf_personalities import personality_for_shelf  # noqa: E402 -- NFL's
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from editorial_lenses import signal_phrase as _signal_phrase  # noqa: E402 -- shared home, see that module's own docstring
+from factual_validation import TREND_UNAVAILABLE_PROMPT_LINE, strip_trend_phrases  # noqa: E402 -- Item 3 prevention
 
 
 def _tension_block(tension: dict) -> str:
@@ -158,10 +159,21 @@ HARD RULES -- apply regardless of shelf or confidence band:
 def build_dynamic_system_prompt(
     shelf: str, confidence_band: str, editorial_lens: dict, tension: dict,
     avoid_headlines: list[str] | None = None, avoid_opening_phrases: list[str] | None = None,
+    trend_data_available: bool | None = None,
 ) -> str:
     """The per-candidate half of the system prompt -- everything that legitimately
     differs call to call. Goes AFTER the cache breakpoint, so none of it can
     invalidate the cached prefix.
+
+    `trend_data_available` (Item 3, 2026-10): False when every trend
+    field this shelf is allowed to lean on is masked for this row (see
+    factual_validation.trend_evidence_for_row). Then the shelf voice
+    pool is handed over WITHOUT its trend phrases ("the opportunities
+    are climbing", "the usage is trending his way", ...) and one line
+    tells the model to describe the current level only. PREVENTION
+    only -- the hard gate is factual_validation's trend-claim rule at
+    the write boundary, never this prompt. None (the default) keeps the
+    pool exactly as before for callers that haven't computed evidence.
 
     Raises KeyError for an unrecognized shelf or band — same fail-loud
     reasoning as personality_for_shelf()/intensity_for_band() themselves.
@@ -186,6 +198,11 @@ def build_dynamic_system_prompt(
     """
     personality = personality_for_shelf(shelf)
     intensity = intensity_for_band(confidence_band)
+    imagery_pool = personality.imagery_pool
+    trend_block = ""
+    if trend_data_available is False:
+        imagery_pool = strip_trend_phrases(imagery_pool)
+        trend_block = f"\n{TREND_UNAVAILABLE_PROMPT_LINE}"
 
     primary_phrase = _signal_phrase(editorial_lens["primary"])
     supporting = editorial_lens["supporting"]
@@ -213,8 +230,8 @@ OPENING ANGLES ALREADY USED -- these are the OPENING clause/angle of headlines a
 Find a genuinely different way to open THIS headline -- a different angle, image, or sentence shape -- even when this player's own numbers look similar to a card you've already seen."""
     return f"""
 You are writing for the "{shelf}" shelf: {personality.description}
-Vocabulary/imagery this shelf draws from: {", ".join(personality.imagery_pool)}
-Specifically avoid: {" ".join(personality.avoid)}
+Vocabulary/imagery this shelf draws from: {", ".join(imagery_pool)}
+Specifically avoid: {" ".join(personality.avoid)}{trend_block}
 
 This candidate's confidence band is "{confidence_band}":
 {intensity.assertiveness}
@@ -228,6 +245,7 @@ THE REAL STORY HERE is {primary_phrase} -- write the title and every why_reason 
 def build_system_prompt(
     shelf: str, confidence_band: str, editorial_lens: dict, tension: dict,
     avoid_headlines: list[str] | None = None, avoid_opening_phrases: list[str] | None = None,
+    trend_data_available: bool | None = None,
 ) -> str:
     """The two halves concatenated -- the exact text the model reads, minus the
     block boundary. Kept so the existing test suite and any caller that only
@@ -236,6 +254,7 @@ def build_system_prompt(
     """
     return STATIC_SYSTEM_PROMPT + build_dynamic_system_prompt(
         shelf, confidence_band, editorial_lens, tension, avoid_headlines, avoid_opening_phrases,
+        trend_data_available=trend_data_available,
     )
 
 

@@ -181,6 +181,38 @@ if __name__ == "__main__":
         and "Questionable" in story["why_this_hits"],
     ))
 
+    # ============================================================
+    # Item 3 (2026-10): "climbing" needs an upward delta, not just an
+    # unmasked read. Unmasked + delta 0 is "no change", its own wording.
+    # ============================================================
+    row = rz_row(touch_share_trend_pct=64.0, snap_share_trend_pct=61.0,
+                 rz_touch_share_last3=0.2, rz_touch_share_season_avg=0.2,
+                 rz_touches_last3=2.0, rz_touches_season_avg=2.0,
+                 snap_share_last3=0.5, snap_share_season_avg=0.5)
+    story = red_zone_story(row)
+    results.append(check(
+        "red_zone_story: both trend fields unmasked but every raw delta is 0 -> 'holding steady' headline, no trend word, percentile sentence kept",
+        story["headline"] == "The red-zone opportunity is holding steady so far."
+        and "climbing" not in story["headline"]
+        and story["why_this_hits"] == "Red-zone touch share trending 64th percentile, snap share trending 61th percentile",
+    ))
+    row = rz_row(touch_share_trend_pct=64.0, snap_share_trend_pct=61.0,
+                 rz_touch_share_last3=0.3, rz_touch_share_season_avg=0.2)
+    story = red_zone_story(row)
+    results.append(check(
+        "red_zone_story: unmasked with a real upward raw delta -> the 'climbing' headline",
+        story["headline"] == "The opportunity is climbing before the touchdowns have arrived.",
+    ))
+    row = rz_row(touch_share_trend_pct=64.0, snap_share_trend_pct=61.0,
+                 rz_touch_share_last3=0.1, rz_touch_share_season_avg=0.2,
+                 rz_touches_last3=1.0, rz_touches_season_avg=2.0,
+                 snap_share_last3=0.4, snap_share_season_avg=0.5)
+    story = red_zone_story(row)
+    results.append(check(
+        "red_zone_story: unmasked with every raw delta negative -> never 'climbing'",
+        "climbing" not in story["headline"],
+    ))
+
     print()
     p = sum(results)
     print(f"{p}/{len(results)} checks passed")

@@ -115,4 +115,37 @@ def sanity_check_story(story: dict) -> list:
         if not isinstance(value, str) or not value.strip():
             issues.append(f"{field} is empty or not a string: {value!r}")
 
+    issues.extend(_duration_claim_issues(story))
+
+    return issues
+
+
+# Item 3 (2026-10): a duration claim the row cannot support is a factual
+# failure, and for Intelligence stories THIS function is the publishing
+# boundary (a failing story is written with is_visible=False). The only
+# sample-depth tier the codebase already calls mature is methodology_
+# maturity "confirmed" (defensive_trends / team_tendencies: 9+ games
+# played); a family with no maturity field (role_changes, market_
+# intelligence) can never back a "full season" claim in-season.
+_DURATION_CLAIM_PHRASES = ("full season",)
+
+
+def _duration_claim_issues(story: dict) -> list:
+    texts = [story.get("headline"), story.get("story")]
+    texts += [e for e in (story.get("supporting_evidence") or []) if isinstance(e, str)]
+    texts += [c.get("observation") for c in (story.get("what_changed") or []) if isinstance(c, dict)]
+    maturity = story.get("methodology_maturity")
+    if maturity == "confirmed":
+        return []
+    issues = []
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        low = text.lower()
+        hit = [p for p in _DURATION_CLAIM_PHRASES if p in low]
+        if hit:
+            issues.append(
+                f"duration claim {hit!r} is not supported by this row (methodology_maturity={maturity!r}, "
+                f"sample_size={story.get('sample_size')!r}): {text!r}"
+            )
     return issues

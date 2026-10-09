@@ -334,6 +334,39 @@ if __name__ == "__main__":
         real_classification_dist["moderate"] > 0 and real_classification_dist["limited"] > 0 and real_classification_dist["strong"] > 0,
     ))
 
+    # ============================================================
+    # Item 3 (2026-10): no duration claim past the real games count.
+    # "a full season of usage data says it should stick" appeared live
+    # at 3 and 4 games played (2026 week 4, Oronde Gadsden II / Braelon
+    # Allen). Role Changes has no methodology_maturity; its only depth
+    # threshold is CONFIG["thin_games_played"], which separates "early"
+    # from "not early", never "a full season".
+    # ============================================================
+    def _texts(st):
+        return [st["headline"], st["story"]] + list(st["supporting_evidence"]) + [c["observation"] for c in st["what_changed"]]
+    all_stories = []
+    for (season, week), _ in weekly.groupby(["season", "week"]):
+        all_stories += build_role_changes_stories(weekly, season, week)
+    results.append(check(
+        f"no Role Changes story anywhere in the real backfill claims 'a full season' or 'season-established' (checked {len(all_stories)} stories)",
+        len(all_stories) > 0 and not any("full season" in t.lower() or "season-established" in t.lower() for st in all_stories for t in _texts(st)),
+    ))
+    established_opp = [st for st in all_stories if st["trend_direction"] == "opportunity-driven" and st["sample_size"] >= CONFIG["thin_games_played"]]
+    results.append(check(
+        "a non-thin opportunity-driven story states its real games count instead ('N games of usage data this season')",
+        len(established_opp) > 0 and all(f"{st['sample_size']} games of usage data this season" in st["story"] for st in established_opp),
+    ))
+    thin_opp = [st for st in all_stories if st["trend_direction"] == "opportunity-driven" and st["sample_size"] < CONFIG["thin_games_played"]]
+    results.append(check(
+        "a thin opportunity-driven story keeps its early-season hedge and never carries a duration claim",
+        len(thin_opp) > 0 and all("early" in st["story"].lower() and "full season" not in st["story"].lower() for st in thin_opp),
+    ))
+    from intelligence_sanity import sanity_check_story
+    results.append(check(
+        "every real Role Changes story passes the sanity gate's new duration-claim rule (none would be hidden by it)",
+        all(not any("duration claim" in i for i in sanity_check_story(st)) for st in all_stories),
+    ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")

@@ -349,9 +349,18 @@ def _headline_and_story(row: pd.Series, opportunity_driven: bool, evidence_kind:
             )
         else:
             headline = f"{who}'s injury has handed {name} a real opportunity."
+            # Item 3 (2026-10): this used to claim "a full season of usage
+            # data says it should stick" -- a duration claim no in-season
+            # row can support (live week-4 rows said it at 3 and 4 games
+            # played). Role Changes has no methodology_maturity; its only
+            # sample-depth threshold is CONFIG["thin_games_played"] (3),
+            # which separates "early" from "not early" -- never "a full
+            # season". So the story now states the real count instead,
+            # the same "{n} game(s) of data this season" pattern the thin
+            # branch already uses.
             story = (
-                f"With {who} {status.lower()}, {name} ({position}) steps into a clearly bigger role — and a full "
-                f"season of usage data says it should stick."
+                f"With {who} {status.lower()}, {name} ({position}) steps into a clearly bigger role — "
+                f"{int(row['_games_played'])} games of usage data this season back that read."
             )
     else:
         if evidence_kind != "generic" and evidence_detail:
@@ -486,7 +495,7 @@ def _what_changed_for_row(row: pd.Series, opportunity_driven: bool, evidence_kin
 
     items.append({
         "label": "Sample size",
-        "observation": f"Based on {int(row['_games_played'])} real game(s) this season" + (" — still an early read." if thin else ", a season-established read."),
+        "observation": f"Based on {int(row['_games_played'])} real game(s) this season" + (" — still an early read." if thin else "."),
     })
     if pd.notna(row.get("depth_rank")):
         items.append({
@@ -599,8 +608,11 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
         evidence = [
             f"role_momentum {row['role_momentum']:.0f}/100 (role_trend {row['role_trend']:.0f}, "
             f"external_opportunity {row['external_opportunity']:.0f})",
-            f"{int(row['_games_played'])} game(s) played this season "
-            f"({'a thin, early read' if thin else 'a season-established read'})",
+            # Item 3: no duration claim past the real count -- "a season-
+            # established read" at 3 games was the same unsupported claim
+            # as the story's old "full season" wording.
+            f"{int(row['_games_played'])} game(s) played this season"
+            + (" (a thin, early read)" if thin else ""),
         ]
         if opportunity_driven and row["_injured_teammates_parsed"]:
             evidence.append(

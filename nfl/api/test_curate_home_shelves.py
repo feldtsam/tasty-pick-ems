@@ -1444,6 +1444,143 @@ if __name__ == "__main__":
         simulated_row["_tension_type"] == "forming" and simulated_row["_tension_claim"] == "Still forming, test claim.",
     ))
 
+    # ============================================================
+    # Item 3 (2026-10): THE HARD FACTUAL GATE AT THE WRITE BOUNDARY.
+    # shape_content_draft_rows is the last step before rows go to the
+    # write route (forward_to_lovable -> nfl-content-drafts-write.ts);
+    # nothing after it checks a claim against the row (the review queue
+    # can approve a flagged card with a note, the published-picks RPC
+    # publishes every approved row). So the row THIS function emits is
+    # exactly what a reviewer can approve -- and it must never carry a
+    # trend claim the row cannot support, whatever the (mocked) model
+    # wrote. Same real-row technique as the shelf_card_llm_top_n test.
+    # ============================================================
+    from factual_validation import FALLBACK_TITLE_MASKED, safe_fallback_title, trend_evidence_for_row, validate_trend_claims
+
+    def _gate_rows(masked: bool):
+        g = sub[sub["tpe_score"].notna()].head(20).copy().reset_index(drop=True)
+        g["consensus_price_american"] = 600
+        g["td_opportunity_completeness"] = 0.0
+        g["role_momentum_completeness"] = 0.0
+        g["tpe_score"] = [90.0 - i for i in range(len(g))]
+        for col in ("touch_share_trend_pct", "touch_volume_trend_pct", "snap_share_trend_pct",
+                    "touch_share_trend_pct_role", "snap_share_trend_pct_role"):
+            g[col] = 50.0
+        g["target_share_trend"] = np.nan
+        for raw in ("rz_touch_share", "rz_touches", "snap_share"):
+            g[f"{raw}_season_avg"] = g[f"{raw}_last3"]  # delta exactly 0, the real pre-game-5 shape
+        if not masked:
+            g["touch_share_trend_pct"] = 78.0
+            g["rz_touch_share_last3"] = g["rz_touch_share_season_avg"].fillna(0.1) + 0.10  # real upward delta
+        return g
+
+    def _run_gate(rows_frame, fake_draft):
+        home = assign_home_shelves(rows_frame)
+        capped = apply_shelf_cap(home, CONFIG)
+        orig = chs.generate_nfl_shelf_card_draft
+        chs.generate_nfl_shelf_card_draft = fake_draft
+        try:
+            out = shape_content_draft_rows(capped, {}, 2026, 1, weekly=rows_frame, anthropic_api_key="fake-key", config=CONFIG)["rows"]
+        finally:
+            chs.generate_nfl_shelf_card_draft = orig
+        llm = [r for r in out if r["shelf"] == "attd_500_699" and r["rank"] <= CONFIG["shelf_card_llm_top_n"]]
+        llm.sort(key=lambda r: r["rank"])
+        return llm
+
+    def _climbing_draft(row, shelf, confidence_band, api_key, **kw):
+        return {
+            "title": f"{row['player_name']}'s Red-Zone Touches Are Climbing Past His Price",
+            "story": "His touches keep climbing while the price sits still.",
+            "why_reasons": [{"pillar": "market_value", "stars": 3, "text": "real llm text", "citation": ["tpe_score"]}],
+            "confidence_band": confidence_band, "model_name": "fake-model",
+            "validation_passed": True, "validation_issues": [],
+        }
+
+    masked_frame = _gate_rows(masked=True)
+    gated = _run_gate(masked_frame, _climbing_draft)
+    results.append(check(
+        f"factual gate (masked rows): {len(gated)} LLM-path rows exist to check (sanity, not vacuous)",
+        len(gated) >= 2,
+    ))
+    results.append(check(
+        "factual gate (masked rows): NO emitted row carries the model's 'climbing' title -- approval has nothing unsupported to override",
+        all("limbing" not in r["title"] for r in gated),
+    ))
+    results.append(check(
+        "factual gate (masked rows): the emitted title is this row's own deterministic fallback (or the safe masked title), never a new claim",
+        all(
+            r["title"] in (
+                chs.odds_band_story(masked_frame[masked_frame["player_id"] == r["player_id"]].iloc[0], "ATTD +500-699")["headline"],
+                FALLBACK_TITLE_MASKED,
+            )
+            for r in gated
+        ),
+    ))
+    results.append(check(
+        "factual gate (masked rows): the model's story is dropped (None), model_name cleared, why_reasons are the deterministic ones",
+        all(r["story"] is None and r["model_name"] is None and isinstance(r["why_reasons"], list) and len(r["why_reasons"]) > 0
+            and not any(w.get("text") == "real llm text" for w in r["why_reasons"]) for r in gated),
+    ))
+    results.append(check(
+        "factual gate (masked rows): the row is flagged (validation_passed=False) with a trend_claim issue (reason 'masked') and a factual_gate record naming the replaced title",
+        all(
+            r["validation_passed"] is False
+            and any(i.get("check") == "trend_claim" and i.get("reason") == "masked" and i.get("category") == "factual" for i in r["validation_issues"])
+            and any(i.get("check") == "factual_gate" and "Climbing" in (i.get("replaced_title") or "") for i in r["validation_issues"])
+            for r in gated
+        ),
+    ))
+    results.append(check(
+        "factual gate (masked rows): every emitted title passes the same trend rule the gate applied (the fallback introduces no new claim)",
+        all(validate_trend_claims({"title": r["title"]}, trend_evidence_for_row(masked_frame[masked_frame["player_id"] == r["player_id"]].iloc[0], "ATTD +500-699")) == [] for r in gated),
+    ))
+
+    up_frame = _gate_rows(masked=False)
+    kept = _run_gate(up_frame, _climbing_draft)
+    results.append(check(
+        "factual gate (unmasked rows, positive delta): the SAME 'climbing' title is kept, story kept, model_name kept, validation_passed True",
+        len(kept) >= 2 and all("Climbing" in r["title"] and r["story"] is not None and r["model_name"] == "fake-model" and r["validation_passed"] is True for r in kept),
+    ))
+
+    def _stylistic_only_draft(row, shelf, confidence_band, api_key, **kw):
+        return {
+            "title": f"{row['player_name']}: Real Red-Zone Reps, Rough Matchup",
+            "story": "A steady role against a soft front, priced like a long shot.",
+            "why_reasons": [{"pillar": "market_value", "stars": 3, "text": "real llm text", "citation": ["tpe_score"]}],
+            "confidence_band": confidence_band, "model_name": "fake-model",
+            "validation_passed": False,
+            "validation_issues": [{"check": "banned_language", "category": "stylistic", "field": "story", "phrases": ["lock"]}],
+        }
+
+    styl = _run_gate(masked_frame, _stylistic_only_draft)
+    results.append(check(
+        "factual gate: a STYLISTIC-only failure (banned_language) is NOT hard-gated -- title/story/model_name kept, still flagged for review exactly as before",
+        len(styl) >= 2 and all("Rough Matchup" in r["title"] and r["story"] is not None and r["model_name"] == "fake-model" and r["validation_passed"] is False
+                               and not any(i.get("check") == "factual_gate" for i in r["validation_issues"]) for r in styl),
+    ))
+
+    def _citation_failure_draft(row, shelf, confidence_band, api_key, **kw):
+        return {
+            "title": f"{row['player_name']}: Real Red-Zone Reps, Rough Matchup",
+            "story": "A steady role against a soft front.",
+            "why_reasons": [{"pillar": "market_value", "stars": 3, "text": "real llm text", "citation": ["tpe_score"]}],
+            "confidence_band": confidence_band, "model_name": "fake-model",
+            "validation_passed": False,
+            "validation_issues": [{"check": "citation", "category": "factual", "reason_index": 0, "issue": "cites a key not in source_facts"}],
+        }
+
+    cit = _run_gate(masked_frame, _citation_failure_draft)
+    results.append(check(
+        "factual gate: an existing FACTUAL failure (citation) with a clean title is also hard-gated to the deterministic fallback",
+        len(cit) >= 2 and all("Rough Matchup" not in r["title"] and r["story"] is None and r["model_name"] is None
+                              and any(i.get("check") == "factual_gate" and "citation" in i.get("reasons", []) for i in r["validation_issues"]) for r in cit),
+    ))
+    results.append(check(
+        "factual gate: the original shelf_card_llm_top_n run above (clean titles, no trend words) was untouched by the gate -- "
+        "its bespoke titles and fake-model model_name survived",
+        on_shelf_drafts[0]["title"].startswith("Bespoke title for") and on_shelf_drafts[0]["model_name"] == "fake-model",
+    ))
+
     print()
     if all(results):
         print(f"All {len(results)} checks passed.")

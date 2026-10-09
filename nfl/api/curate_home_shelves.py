@@ -135,6 +135,9 @@ from story_interrogation import interrogate_story
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "content_writer"))
 from generate_tasty_six_content import generate_nfl_tasty_six_draft  # noqa: E402
 from generate_nfl_shelf_card_content import CandidateGatedOut, generate_nfl_shelf_card_draft  # noqa: E402
+from factual_validation import (  # noqa: E402 -- Item 3: the hard gate at the write boundary
+    safe_fallback_title, split_issues, trend_evidence_for_row, validate_trend_claims,
+)
 from nfl_writer_common import nfl_confidence_band_for_score, nfl_regular_row_confidence_band_for_score  # noqa: E402
 
 SHELF_ORDER = [
@@ -1857,6 +1860,92 @@ def _run_writer_llm_for_plan(
     }
 
 
+def _enforce_factual_gate(plan: dict) -> None:
+    """
+    THE HARD GATE (Item 3, 2026-10) -- the last thing that happens to a
+    plan before its row is shaped for the write route, i.e. the real
+    boundary between "generated" and "stored". Downstream of this point
+    nothing on the publishing path checks a claim against the row:
+    nfl-content-drafts-write.ts stores whatever arrives (validation_
+    passed is just a column), the review queue lets a flagged card be
+    approved with an override note (admin.server.ts setNflReviewDecision),
+    and get_published_nfl_shelf_picks publishes every approved row. So a
+    claim the row cannot support must never reach the write at all.
+
+    Rule: if the plan's LLM output carries ANY factual issue (category
+    "factual" -- citation / numeric grounding / star consistency / pillar
+    consistency / schema shape, see factual_validation.FACTUAL_CHECKS) or
+    the final title / story / editorial_sentence makes a trend claim the
+    row's own trend evidence does not back (validate_trend_claims), the
+    plan takes the SAME deterministic fallback path a failed API call
+    already takes (title + why_reasons from the row's own template, no
+    story, no editorial sentence, no model name). No retry, no second
+    model call. The replaced text and the reason are recorded in
+    validation_issues (check "factual_gate") so the reviewer and the run
+    log can see exactly what was swapped and why; validation_passed is
+    False so the card still shows as flagged in the queue -- but what a
+    reviewer would approve is the supported fallback, never the
+    unsupported original.
+
+    The fallback is then checked against the SAME trend rule (a template
+    can carry a trend word too -- red_zone_story's own "climbing"
+    headline), and if it fails it is replaced by factual_validation.
+    safe_fallback_title(), which says only "cannot say" (masked) or "no
+    change" (unmasked, delta 0) -- never one when the other is true.
+
+    Stylistic issues (banned_language, field_narration) are untouched:
+    they keep flagging the card for review exactly as before and remain
+    overridable. Runs for EVERY plan with a real row -- LLM success,
+    LLM fallback, and deterministic rows alike -- so the check is on
+    what will actually be written, not on which path produced it.
+    """
+    full_row = plan.get("full_row")
+    if full_row is None or plan.get("gated_out"):
+        return
+    shelf_name = plan["r"]["home_shelf"]
+    evidence = trend_evidence_for_row(full_row, shelf_name)
+    plan["_trend_evidence_status"] = evidence["status"]
+
+    factual = list(split_issues(plan.get("validation_issues") or [])["factual"])
+    factual += validate_trend_claims(
+        {"title": plan.get("title"), "story": plan.get("story_text"), "editorial_sentence": plan.get("editorial_sentence")},
+        evidence,
+    )
+    used_llm_text = plan.get("model_name") is not None or plan.get("story_text") or plan.get("editorial_sentence")
+    if factual and used_llm_text:
+        replaced_title = plan.get("title")
+        print(
+            f"[_enforce_factual_gate] FACTUAL GATE player_id={plan['r']['player_id']!r} shelf={shelf_name!r} "
+            f"evidence={evidence['status']!r} issues={[i.get('check') for i in factual]!r} -- "
+            f"replacing LLM title/story with this row's deterministic fallback (no retry)",
+            flush=True,
+        )
+        plan["title"] = plan.get("fallback_title")
+        plan["why_reasons"] = plan.get("fallback_why_reasons") or []
+        plan["story_text"] = None
+        plan["editorial_sentence"] = None
+        plan["model_name"] = None
+        plan["validation_passed"] = False
+        plan["validation_issues"] = list(plan.get("validation_issues") or []) + [
+            i for i in factual if i.get("check") == "trend_claim"
+        ] + [{
+            "check": "factual_gate", "category": "factual", "action": "replaced_by_deterministic_fallback",
+            "replaced_title": replaced_title, "reasons": sorted({i.get("check") for i in factual}),
+            "evidence_status": evidence["status"],
+        }]
+
+    # The fallback (or a deterministic title) must pass the same rule.
+    title_issues = validate_trend_claims({"title": plan.get("title")}, evidence) if plan.get("title") else []
+    if title_issues:
+        unsafe = plan["title"]
+        plan["title"] = safe_fallback_title(evidence)
+        plan["validation_passed"] = False
+        plan["validation_issues"] = list(plan.get("validation_issues") or []) + title_issues + [{
+            "check": "factual_gate", "category": "factual", "action": "fallback_title_replaced_by_safe_title",
+            "replaced_title": unsafe, "evidence_status": evidence["status"],
+        }]
+
+
 def shape_content_draft_rows(
     capped_assignments: pd.DataFrame, tasty_six: dict, season: int, week: int,
     weekly: pd.DataFrame = None, schedules: pd.DataFrame = None, anthropic_api_key: str = None,
@@ -2462,6 +2551,10 @@ def shape_content_draft_rows(
     for plan in row_plans:
         if plan["gated_out"]:
             continue
+        # Item 3: the hard factual gate, at the write boundary (see
+        # _enforce_factual_gate). Applied to every plan, whichever path
+        # produced its text.
+        _enforce_factual_gate(plan)
         r = plan["r"]
         full_row = plan["full_row"]
         rows.append({

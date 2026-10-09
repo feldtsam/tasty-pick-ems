@@ -956,12 +956,43 @@ def red_zone_story(row: pd.Series) -> dict:
             "too early in the season to read this role's direction."
         )
     else:
-        headline = "The opportunity is climbing before the touchdowns have arrived."
+        # Item 3 (2026-10): "climbing" is a directional claim, so it needs
+        # a real upward delta, not just an unmasked read. Both trend
+        # fields are unmasked here; the direction comes from the raw
+        # rolling deltas (rz_touch_share / rz_touches / snap_share
+        # _last3 - _season_avg) when the row carries them, else from the
+        # percentile reads themselves (above 50 = up). An unmasked read
+        # with no upward delta is "no change", which is a different fact
+        # from "cannot say" (the masked branch above) and gets its own
+        # wording. The same rule factual_validation enforces at the write
+        # boundary -- applied here so the deterministic template never
+        # needs rescuing there.
+        if _red_zone_delta_is_up(row):
+            headline = "The opportunity is climbing before the touchdowns have arrived."
+        else:
+            headline = "The red-zone opportunity is holding steady so far."
         why_this_hits = (
             f"Red-zone touch share trending {row['touch_share_trend_pct']:.0f}th percentile, "
             f"snap share trending {row['snap_share_trend_pct']:.0f}th percentile"
         )
     return {"headline": headline, "why_this_hits": why_this_hits, "role_signals": red_zone_trends_role_signals(row)}
+
+
+def _red_zone_delta_is_up(row) -> bool:
+    """True when at least one Red Zone trend input has moved UP: a raw
+    rolling delta > 0 where the row carries the raw columns, otherwise a
+    percentile-trend read above the neutral 50. See red_zone_story."""
+    pairs = (("rz_touch_share", "touch_share_trend_pct"), ("rz_touches", "touch_volume_trend_pct"), ("snap_share", "snap_share_trend_pct"))
+    for raw, pct_col in pairs:
+        last, avg = row.get(f"{raw}_last3"), row.get(f"{raw}_season_avg")
+        if pd.notna(last) and pd.notna(avg):
+            if float(last) - float(avg) > 0:
+                return True
+            continue
+        pct = row.get(pct_col)
+        if pd.notna(pct) and float(pct) > 50.0:
+            return True
+    return False
 
 
 def position_story(row: pd.Series, position: str) -> dict:
