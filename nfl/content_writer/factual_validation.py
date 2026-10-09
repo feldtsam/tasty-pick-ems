@@ -220,14 +220,18 @@ def _subject_of_hit(clause: str, hit_start: int, hit_end: int, phrase: str) -> s
     if phrase.lower() == "building":
         if _BUILDING_NON_TREND.match(after) or re.search(r"\b(?:a|an|the)\s*$", before, re.IGNORECASE):
             return "other"
-    # The noun the word modifies directly ("a hot matchup", "hot hand").
-    tail = _SKIP_AFTER.sub("", after, count=1)
-    head = re.match(r"\s*([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*)?)", tail)
-    if head:
-        if _OTHER_NOUN.match(head.group(1).split()[0]):
-            return "other"
-        if _USAGE_NOUN.search(head.group(1)):
-            return "usage"
+    # ADJECTIVES ONLY ("hot", "heated"): the noun the word modifies
+    # directly ("a hot matchup", "hot hand"). A VERB's object never
+    # decides its subject -- "his work outpaces the matchup" is still a
+    # claim about his work, exactly as "outpaces" was gated before.
+    if phrase.lower() in ("hot", "heated"):
+        tail = _SKIP_AFTER.sub("", after, count=1)
+        head = re.match(r"\s*([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*)?)", tail)
+        if head:
+            if _OTHER_NOUN.match(head.group(1).split()[0]):
+                return "other"
+            if _USAGE_NOUN.search(head.group(1)):
+                return "usage"
     # Otherwise the nearest listed noun before the hit (subject position).
     nearest = None
     for kind, rx in (("usage", _USAGE_NOUN), ("other", _OTHER_NOUN)):

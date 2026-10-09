@@ -380,6 +380,9 @@ if __name__ == "__main__":
                    validate_trend_claims({"title": "The hot seat is the story"}, up_ev) == []))
     r.append(check("'Outpace a Middling Matchup' (usage subject, no baseline figure) is still a trend claim, as 'outpaces' always was",
                    validate_trend_claims({"title": "Robinson's Scoring Chances Outpace a Middling Tennessee Matchup"}, masked_ev) != []))
+    r.append(check("a verb's OBJECT never decides its subject: 'Goal-Line Work Outpaces the Matchup Backing It' is still a usage-subject claim (41e5a43 behavior kept)",
+                   [c.get("subject") for c in find_trend_claims("Fant's Goal-Line Work Outpaces the Matchup Backing It")] == ["usage"]
+                   and validate_trend_claims({"title": "Fant's Goal-Line Work Outpaces the Matchup Backing It"}, masked_ev) != []))
     r.append(check("every pre-existing lexicon case in this file still classifies the same way (climbing/outrunning/surging/growing/rising)",
                    all(c["direction"] == "up" and c["kind"] == "affirmative"
                        for c in find_trend_claims("His share is climbing, outrunning, surging, growing, rising"))))
