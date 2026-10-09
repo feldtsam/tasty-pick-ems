@@ -170,7 +170,17 @@ SIGNAL_TO_CITABLE_FIELDS = {
 # not evidence for any one signal. Kept separate from SIGNAL_TO_CITABLE_
 # FIELDS so adding/removing a signal from a lens never accidentally
 # drops the player's own name or team.
-ALWAYS_INCLUDED_FIELDS = ("player_name", "posteam", "position_group", "consensus_price_american")
+# role_momentum_completeness added (Item 3 refinement, 2026-10-09): the
+# prompt tells the model that a role_momentum reason written when the
+# role fields are masked must cite role_momentum_completeness "if it's
+# present" -- but only the three role-led lenses ever made it citable,
+# so on a Red Zone card the model cited the nearest completeness key
+# (td_opportunity_completeness) and tripped pillar_field_consistency
+# (3 of 8 live Red Zone cards, dry run 2026-10-09). It is a real,
+# verified field on every row and is exactly what that instruction
+# names, so supplying it is the truthful fix; the instruction itself is
+# unchanged and no citation check is weakened.
+ALWAYS_INCLUDED_FIELDS = ("player_name", "posteam", "position_group", "consensus_price_american", "role_momentum_completeness")
 
 # Natural-language framing per real signal name — MOVED here (Editorial
 # Voice Spec, Find the Tension addition) from nfl_shelf_card_prompt.py's

@@ -73,7 +73,10 @@ from nfl_tension import find_tension  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from editorial_lenses import citable_fields_for_lens, is_masked_fallback, resolve_editorial_lens  # noqa: E402
-from factual_validation import categorize_issues, split_issues, trend_evidence_for_row, validate_trend_claims  # noqa: E402 -- Item 3
+from factual_validation import (  # noqa: E402 -- Item 3
+    annotate_numeric_grounding, categorize_issues, is_schema_count_error, normalize_receipts, receipt_count_issues,
+    split_issues, trend_claim_warnings, trend_evidence_for_row, validate_trend_claims,
+)
 
 WRITER_TYPE = "shelf_card"
 
@@ -373,10 +376,15 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     """
     issues = []
 
-    shape_errors = validate_schema_shape(output)
+    # Item 3 refinement: the receipt COUNT is handled by rule (see
+    # factual_validation.receipt_count_issues / normalize_receipts), not
+    # as a schema failure that replaces the whole card. Every other shape
+    # error still short-circuits: a malformed draft has nothing checkable.
+    shape_errors = [e for e in validate_schema_shape(output) if not e.startswith("why_reasons must have")]
     issues.extend({"check": "schema_shape", "issue": e} for e in shape_errors)
     if shape_errors:
         return categorize_issues(issues)
+    issues.extend(receipt_count_issues(output))
 
     why_reasons = output["why_reasons"]
     story = output["story"]
@@ -395,10 +403,12 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
             issues.append({"check": "banned_language", "field": field, "phrases": found})
 
     # Item 3 (2026-10): every issue carries its category -- "factual"
-    # (hard gate at the write boundary) or "stylistic" (flags for review,
-    # overridable) -- see factual_validation.FACTUAL_CHECKS/STYLISTIC_
-    # CHECKS for the split and the reasoning.
-    return categorize_issues(issues)
+    # (hard gate at the write boundary), "stylistic" (flags for review,
+    # overridable) or "deferred" (numeric_grounding inside its warn-only
+    # window) -- see factual_validation for the split and the reasoning.
+    # numeric_grounding issues carry the claim text and the evidence
+    # reference so the stored payload says what was checked.
+    return categorize_issues(annotate_numeric_grounding(issues, why_reasons))
 
 
 # Story tightening (2026-10-06). The prompt asks for 70-100 words; this
@@ -659,12 +669,18 @@ def generate_nfl_shelf_card_draft(
         anthropic_api_key, system_blocks(STATIC_SYSTEM_PROMPT, dynamic_system_prompt), user_prompt,
         max_tokens=max_tokens,
     )
+    # Item 3 refinement: more than three receipts are trimmed to the
+    # writer's first three (warning), never a reason to replace the card.
+    output, receipt_warnings = normalize_receipts(output)
     issues = run_all_validators(output, source_facts)
-    # Item 3: trend words in title/story must be backed by an unmasked,
-    # non-zero trend delta on this row (factual_validation). Factual.
-    issues.extend(validate_trend_claims({"title": output.get("title"), "story": output.get("story")}, trend_evidence))
+    # Item 3: an AFFIRMATIVE trend claim in title/story must be backed by
+    # an unmasked, non-zero trend delta on this row (factual). A clause
+    # that declines to make the claim passes; a hedged story clause is a
+    # warning only (factual_validation._trend_findings).
+    trend_texts = {"title": output.get("title"), "story": output.get("story")}
+    issues.extend(validate_trend_claims(trend_texts, trend_evidence))
     factual_issues = split_issues(issues)["factual"]
-    warnings = run_all_warnings(output)
+    warnings = run_all_warnings(output) + receipt_warnings + trend_claim_warnings(trend_texts, trend_evidence)
     title = output.get("title")
     if warnings:
         print(

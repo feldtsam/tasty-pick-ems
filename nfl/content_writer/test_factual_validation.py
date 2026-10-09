@@ -19,10 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
+from datetime import date  # noqa: E402
+
 from factual_validation import (  # noqa: E402
-    FACTUAL_CHECKS, FALLBACK_TITLE_GENERIC, FALLBACK_TITLE_MASKED, FALLBACK_TITLE_NO_CHANGE, STYLISTIC_CHECKS,
-    TREND_UNAVAILABLE_PROMPT_LINE, WARNING_CHECKS, categorize_issue, find_trend_claims, safe_fallback_title,
-    split_issues, strip_trend_phrases, trend_evidence_for_row, validate_trend_claims,
+    FACTUAL_CHECKS, FALLBACK_TITLE_GENERIC, FALLBACK_TITLE_MASKED, FALLBACK_TITLE_NO_CHANGE, MAX_RECEIPTS,
+    NUMERIC_GROUNDING_WARN_ONLY_UNTIL, STYLISTIC_CHECKS, TREND_UNAVAILABLE_PROMPT_LINE, WARNING_CHECKS,
+    annotate_numeric_grounding, categorize_issue, find_trend_claims, normalize_receipts, numeric_grounding_is_hard_gate,
+    receipt_count_issues, safe_fallback_title, split_issues, strip_trend_phrases, trend_claim_warnings,
+    trend_evidence_for_row, validate_trend_claims,
 )
 from nfl_shelf_card_prompt import build_dynamic_system_prompt  # noqa: E402
 from nfl_shelf_personalities import NFL_SHELF_PERSONALITIES, personality_for_shelf  # noqa: E402
@@ -86,14 +90,14 @@ if __name__ == "__main__":
     # ------------------------------------------------------------
     # Lexicon: verbs/adjectives only, nouns never.
     # ------------------------------------------------------------
-    r.append(check("'climbing' is an up-claim", find_trend_claims("His looks are climbing") == [{"phrase": "climbing", "direction": "up"}]))
+    r.append(check("'climbing' is an up-claim", [(c["phrase"], c["direction"]) for c in find_trend_claims("His looks are climbing")] == [("climbing", "up")]))
     r.append(check("'Keep Climbing' / 'Outrunning' / 'surging' / 'growing' / 'rising' are up-claims",
                    all(c["direction"] == "up" for c in find_trend_claims("Keep Climbing, Outrunning, surging, growing, rising"))
                    and len(find_trend_claims("Keep Climbing, Outrunning, surging, growing, rising")) == 5))
     r.append(check("'fading' / 'declining' / 'trending down' are down-claims",
                    [c["direction"] for c in find_trend_claims("fading, declining, trending down")] == ["down", "down", "down"]))
     r.append(check("bare 'trending' is a neutral (direction-free) claim",
-                   find_trend_claims("the usage is trending his way") == [{"phrase": "trending", "direction": "neutral"}]))
+                   [(c["phrase"], c["direction"]) for c in find_trend_claims("the usage is trending his way")] == [("trending", "neutral")]))
     r.append(check("the shelf name 'Red Zone Trends' does NOT trigger the rule (noun forms are never matched)",
                    find_trend_claims("Red Zone Trends: the matchup is the story") == []
                    and find_trend_claims("A trend worth a look, per the trends shelf") == []))
@@ -186,8 +190,8 @@ if __name__ == "__main__":
     r.append(check("existing factual checks are in FACTUAL_CHECKS",
                    {"citation", "numeric_grounding", "star_consistency", "pillar_field_consistency", "schema_shape", "trend_claim"} <= FACTUAL_CHECKS))
     r.append(check("banned_language and field_narration are STYLISTIC (flag + overridable, never the hard gate)",
-                   STYLISTIC_CHECKS == {"banned_language", "field_narration"} and not (STYLISTIC_CHECKS & FACTUAL_CHECKS)))
-    r.append(check("story_length / column_name / stock_phrase are warnings", WARNING_CHECKS == {"story_length", "column_name", "stock_phrase"}))
+                   {"banned_language", "field_narration"} <= STYLISTIC_CHECKS and not (STYLISTIC_CHECKS & FACTUAL_CHECKS)))
+    r.append(check("story_length / column_name / stock_phrase are warnings", {"story_length", "column_name", "stock_phrase"} <= WARNING_CHECKS))
     r.append(check("categorize_issue tags each check with its category and preserves an explicit one",
                    categorize_issue({"check": "citation"})["category"] == "factual"
                    and categorize_issue({"check": "banned_language"})["category"] == "stylistic"
@@ -230,6 +234,82 @@ if __name__ == "__main__":
     r.append(check("trend_data_available=True: no prevention line, pool intact",
                    TREND_UNAVAILABLE_PROMPT_LINE not in available and "the opportunities are climbing" in available))
     r.append(check("default (None): byte-identical to the available prompt -- existing callers are unchanged", default == available))
+
+    # ------------------------------------------------------------
+    # Refinement (2026-10-09): claims vs disclaimers, at clause level.
+    # ------------------------------------------------------------
+    def kinds(text):
+        return [c["kind"] for c in find_trend_claims(text)]
+    r.append(check("affirmative: 'His touches are climbing.'", kinds("His touches are climbing.") == ["affirmative"]))
+    r.append(check("negated: 'His touches are not climbing.'", kinds("His touches are not climbing.") == ["negated"]))
+    r.append(check("qualified/declined: 'too early to say his usage is climbing' -> negated",
+                   kinds("It is too early to say his usage is climbing.") == ["negated"]))
+    r.append(check("ambiguous (hedged): 'His touches may be climbing.'", kinds("His touches may be climbing.") == ["ambiguous"]))
+    r.append(check("mixed sentence: disclaimer clause + affirmative clause -> the claim is still affirmative",
+                   kinds("Whether his role is trending up isn't clear, but his touches are climbing.") == ["negated", "affirmative"]))
+    r.append(check("a trailing 'isn't surprising' does NOT excuse an affirmative claim in the same clause",
+                   kinds("His touches are climbing, which isn't surprising.") == ["affirmative"]))
+    r.append(check("enumeration of opposite directions declines to pick one -> negated",
+                   kinds("His usage is rising, falling, or holding steady depending on the week.") == ["negated", "negated"]))
+    # The six live disclaimer sentences, EXACT text from the committed
+    # fixture (fixtures/week5_2026_llm_cards.json), not paraphrased.
+    import json as _json
+    _fixture = _json.load(open(Path(__file__).resolve().parent / "fixtures" / "week5_2026_llm_cards.json"))["cards"]
+    _story_by_player = {c["player_name"]: c["story"] for c in _fixture}
+    live_disclaimers = [(who, _story_by_player[who]) for who in ("Cole Kmet", "Zach Ertz", "Noah Fant", "Darius Cooper", "Josh Cameron", "Jahdae Walker")]
+    masked_ev = trend_evidence_for_row(MASKED_ROW, "Red Zone Trends")
+    for who, sentence in live_disclaimers:
+        r.append(check(f"live disclaimer story passes on a masked row (exact fixture text): {who}",
+                       validate_trend_claims({"story": sentence}, masked_ev) == []))
+    r.append(check("title policy: an ambiguous title on a masked row is a HARD failure",
+                   validate_trend_claims({"title": "His touches may be climbing"}, masked_ev) != []))
+    r.append(check("title policy: a negated title on a masked row passes",
+                   validate_trend_claims({"title": "Not climbing yet, but worth a look"}, masked_ev) == []))
+    r.append(check("story policy: an ambiguous story clause on a masked row is a WARNING, not a hard failure",
+                   validate_trend_claims({"story": "His touches may be climbing."}, masked_ev) == []
+                   and trend_claim_warnings({"story": "His touches may be climbing."}, masked_ev)[0]["check"] == "trend_claim_ambiguous"))
+    r.append(check("story policy: an unambiguous affirmative story claim on a masked row is still a HARD failure",
+                   validate_trend_claims({"story": "His touches are climbing every week."}, masked_ev)[0]["kind"] == "affirmative"))
+    r.append(check("the 7 live unsupported titles are still all flagged (affirmative, masked)",
+                   {p for p, t in LIVE_WEEK5_RED_ZONE if validate_trend_claims({"title": t}, masked_ev)} == EXPECTED_FLAGGED))
+    r.append(check("trend_claim_ambiguous and receipts_trimmed are warnings; receipts_missing is factual; receipts_below_minimum is stylistic",
+                   {"trend_claim_ambiguous", "receipts_trimmed"} <= WARNING_CHECKS and "receipts_missing" in FACTUAL_CHECKS and "receipts_below_minimum" in STYLISTIC_CHECKS))
+
+    # ------------------------------------------------------------
+    # Refinement: numeric_grounding warn-only window, enforced in code.
+    # ------------------------------------------------------------
+    inside = date(2026, 10, 15); expiry = NUMERIC_GROUNDING_WARN_ONLY_UNTIL; after = date(2026, 10, 17)
+    r.append(check("the window is 2026-10-16 and is a hard gate strictly after it",
+                   expiry == date(2026, 10, 16) and not numeric_grounding_is_hard_gate(inside) and not numeric_grounding_is_hard_gate(expiry) and numeric_grounding_is_hard_gate(after)))
+    ng = {"check": "numeric_grounding", "reason_index": 0, "issue": "number 20.0 in reason_text does not appear in any real source fact value within that value's expected tolerance"}
+    inside_cat = categorize_issue(ng, today=inside); after_cat = categorize_issue(ng, today=after)
+    r.append(check("inside the window numeric_grounding is 'deferred' with would_have_gated=True and the expiry date recorded",
+                   inside_cat["category"] == "deferred" and inside_cat["would_have_gated"] is True and inside_cat["warn_only_until"] == "2026-10-16"))
+    r.append(check("after the window numeric_grounding is plain 'factual' (hard) with no change to any constant",
+                   after_cat["category"] == "factual" and "would_have_gated" not in after_cat))
+    r.append(check("split_issues keeps deferred issues OUT of the factual list the gate acts on, but does not drop them",
+                   split_issues([inside_cat])["factual"] == [] and split_issues([inside_cat])["deferred"] == [inside_cat]))
+    why = [{"pillar": "role_momentum", "stars": 2, "reason_text": "only 20% complete", "source_fact_keys": ["td_opportunity_completeness"]}]
+    ann = annotate_numeric_grounding([ng], why)[0]
+    r.append(check("annotate_numeric_grounding records the claim text and the evidence reference (cited keys + number) for the stored payload",
+                   ann["claim_text"] == "only 20% complete" and ann["evidence_reference"] == {"cited_keys": ["td_opportunity_completeness"], "number": "20.0"}))
+    r.append(check("citation stays a hard gate regardless of the window", categorize_issue({"check": "citation"}, today=inside)["category"] == "factual"))
+
+    # ------------------------------------------------------------
+    # Refinement: receipts by rule.
+    # ------------------------------------------------------------
+    four = {"title": "t", "story": "s", "why_reasons": [{"pillar": "a", "stars": 1, "reason_text": str(i), "source_fact_keys": ["k"]} for i in range(4)]}
+    out, notes = normalize_receipts(four)
+    r.append(check("four receipts -> the writer's first three are kept, in order, with a receipts_trimmed warning (not an issue)",
+                   [w["reason_text"] for w in out["why_reasons"]] == ["0", "1", "2"] and notes[0]["check"] == "receipts_trimmed" and notes[0]["dropped"] == 1 and notes[0]["category"] == "warning"))
+    r.append(check("three / two receipts pass through untouched with no note",
+                   normalize_receipts({"why_reasons": four["why_reasons"][:3]})[1] == [] and receipt_count_issues({"why_reasons": four["why_reasons"][:2]}) == []))
+    r.append(check("one receipt -> receipts_below_minimum (stylistic flag, kept, never padded)",
+                   receipt_count_issues({"why_reasons": four["why_reasons"][:1]})[0]["check"] == "receipts_below_minimum"))
+    r.append(check("zero receipts -> receipts_missing (factual)", receipt_count_issues({"why_reasons": []})[0]["check"] == "receipts_missing"))
+    r.append(check("the shelf-card writer's run_all_validators no longer reports the schema count error, it reports receipts_missing instead",
+                   [i["check"] for i in gnscc.run_all_validators({"title": "t", "story": "x" * 70, "why_reasons": []}, {})] == ["receipts_missing"]))
+    r.append(check("MAX_RECEIPTS is the contract's 3", MAX_RECEIPTS == 3))
 
     # ------------------------------------------------------------
     # draft_for_write never ships factual_validation_passed (no column).

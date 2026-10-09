@@ -1575,6 +1575,71 @@ if __name__ == "__main__":
         len(cit) >= 2 and all("Rough Matchup" not in r["title"] and r["story"] is None and r["model_name"] is None
                               and any(i.get("check") == "factual_gate" and "citation" in i.get("reasons", []) for i in r["validation_issues"]) for r in cit),
     ))
+    # --- Refinement (2026-10-09): receipts by rule, withhold, bypass ---
+    def _zero_receipt_draft(row, shelf, confidence_band, api_key, **kw):
+        return {
+            "title": f"{row['player_name']}: Real Red-Zone Reps, Rough Matchup",
+            "story": "A steady role against a soft front, priced like a long shot.",
+            "why_reasons": [], "confidence_band": confidence_band, "model_name": "fake-model",
+            "validation_passed": False,
+            "validation_issues": [{"check": "receipts_missing", "category": "factual", "count": 0}],
+        }
+    zero = _run_gate(masked_frame, _zero_receipt_draft)
+    results.append(check(
+        "zero receipts: the model's supported title/story are KEPT and the row gets the deterministic receipt (never evidence-free, never invented)",
+        len(zero) >= 2 and all("Rough Matchup" in r["title"] and r["story"] is not None and isinstance(r["why_reasons"], list) and len(r["why_reasons"]) >= 1
+                               and all(w.get("citation") for w in r["why_reasons"]) for r in zero),
+    ))
+    results.append(check(
+        "zero receipts: the row is flagged with a factual_gate 'receipts_replaced_by_deterministic' record",
+        all(r["validation_passed"] is False and any(i.get("action") == "receipts_replaced_by_deterministic" for i in r["validation_issues"]) for r in zero),
+    ))
+
+    def _four_receipt_draft(row, shelf, confidence_band, api_key, **kw):
+        return {
+            "title": f"{row['player_name']}: Real Red-Zone Reps, Rough Matchup",
+            "story": "A steady role against a soft front, priced like a long shot.",
+            "why_reasons": [{"pillar": "market_value", "stars": 3, "text": f"receipt {i}", "citation": ["tpe_score"]} for i in range(4)],
+            "confidence_band": confidence_band, "model_name": "fake-model", "validation_passed": True, "validation_issues": [],
+        }
+    four = _run_gate(masked_frame, _four_receipt_draft)
+    results.append(check(
+        "four receipts (already trimmed by the writer in production; untouched here) never trigger replacement: title, story, model_name kept, validation_passed True",
+        len(four) >= 2 and all("Rough Matchup" in r["title"] and r["story"] is not None and r["model_name"] == "fake-model" and r["validation_passed"] is True for r in four),
+    ))
+
+    # Withhold: drive the gate directly with a plan whose row cannot produce any receipt.
+    wplan = {"full_row": masked_frame.iloc[0], "gated_out": False, "r": {"home_shelf": "ATTD +500-699", "player_id": "W"},
+             "title": "A supported title", "story_text": "A supported story.", "editorial_sentence": None, "model_name": "fake-model",
+             "validation_passed": False, "validation_issues": [{"check": "receipts_missing", "category": "factual", "count": 0}],
+             "why_reasons": [], "fallback_title": "Deterministic title", "fallback_why_reasons": []}
+    chs._enforce_factual_gate(wplan)
+    results.append(check(
+        "withhold: zero model receipts AND no deterministic receipts -> the plan is gated_out (row never written) with a stated reason",
+        wplan["gated_out"] is True and "no verified receipts" in (wplan.get("withheld_reason") or ""),
+    ))
+    # Structural: force the row's deterministic path to produce no receipts, then every LLM-path
+    # zero-receipt card must be ABSENT from the emitted rows (never written), and the shelf shrinks.
+    _orig_det = chs._deterministic_why_reasons
+    chs._deterministic_why_reasons = lambda row, shelf_name, story: []
+    try:
+        withheld_run = _run_gate(masked_frame, _zero_receipt_draft)
+    finally:
+        chs._deterministic_why_reasons = _orig_det
+    results.append(check(
+        f"withhold: with no deterministic receipts available, the {len(zero)} zero-receipt LLM-path rows are withheld at the write boundary "
+        f"(emitted LLM-path rows: {len(withheld_run)}) -- the shelf gets that many cards fewer, other ranks untouched",
+        len(zero) >= 2 and len(withheld_run) == 0,
+    ))
+
+    # Bypass, stated precisely: the gate reads nothing about review status. The row it emits is the only
+    # thing the write route ever receives, and it always leaves here as pending_review with the supported text.
+    results.append(check(
+        "bypass: every emitted masked-row card leaves the boundary as pending_review carrying the supported text, so there is no "
+        "approvable row containing the unsupported title (a later manual quick-edit in the admin tool is OUTSIDE this gate)",
+        all(r["review_status"] == "pending_review" and "limbing" not in r["title"] for r in gated),
+    ))
+
     results.append(check(
         "factual gate: the original shelf_card_llm_top_n run above (clean titles, no trend words) was untouched by the gate -- "
         "its bespoke titles and fake-model model_name survived",

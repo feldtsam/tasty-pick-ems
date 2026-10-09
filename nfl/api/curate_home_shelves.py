@@ -1912,6 +1912,28 @@ def _enforce_factual_gate(plan: dict) -> None:
         evidence,
     )
     used_llm_text = plan.get("model_name") is not None or plan.get("story_text") or plan.get("editorial_sentence")
+
+    # Item 3 refinement: an evidence-free card (zero receipts) whose text
+    # is otherwise supported keeps its text and gets the row's own
+    # deterministic receipts (built from verified row fields, never
+    # invented). If the row cannot produce any, the row is WITHHELD --
+    # not written at all -- see the end of this function.
+    receipts_missing_only = bool(factual) and all(i.get("check") == "receipts_missing" for i in factual)
+    if receipts_missing_only and used_llm_text:
+        if plan.get("fallback_why_reasons"):
+            print(
+                f"[_enforce_factual_gate] RECEIPTS player_id={plan['r']['player_id']!r} shelf={shelf_name!r}: "
+                f"zero model receipts -- using this row's deterministic receipts (text kept)",
+                flush=True,
+            )
+            plan["why_reasons"] = list(plan["fallback_why_reasons"])
+            plan["validation_passed"] = False
+            plan["validation_issues"] = list(plan.get("validation_issues") or []) + [{
+                "check": "factual_gate", "category": "factual", "action": "receipts_replaced_by_deterministic",
+                "reasons": ["receipts_missing"], "evidence_status": evidence["status"],
+            }]
+        factual = []  # handled (or withheld below if no receipts exist at all)
+
     if factual and used_llm_text:
         replaced_title = plan.get("title")
         print(
@@ -1944,6 +1966,21 @@ def _enforce_factual_gate(plan: dict) -> None:
             "check": "factual_gate", "category": "factual", "action": "fallback_title_replaced_by_safe_title",
             "replaced_title": unsafe, "evidence_status": evidence["status"],
         }]
+
+    # Never publish an evidence-free card. If nothing on this row can
+    # produce a verified receipt, the row is withheld: shape_content_
+    # draft_rows skips it, so it is never written. The backend cannot
+    # un-approve a previously written row for the same (player, event,
+    # shelf, writer_type) -- that stays as it is; the shelf simply gets
+    # one card fewer this run and other ranks are unchanged.
+    if used_llm_text and not plan.get("why_reasons"):
+        plan["gated_out"] = True
+        plan["withheld_reason"] = "no verified receipts: model returned none and the row's deterministic path produced none"
+        print(
+            f"[_enforce_factual_gate] WITHHELD player_id={plan['r']['player_id']!r} shelf={shelf_name!r}: "
+            f"{plan['withheld_reason']}",
+            flush=True,
+        )
 
 
 def shape_content_draft_rows(
@@ -2553,8 +2590,11 @@ def shape_content_draft_rows(
             continue
         # Item 3: the hard factual gate, at the write boundary (see
         # _enforce_factual_gate). Applied to every plan, whichever path
-        # produced its text.
+        # produced its text. It may WITHHOLD the plan (gated_out=True):
+        # an evidence-free card is never written.
         _enforce_factual_gate(plan)
+        if plan["gated_out"]:
+            continue
         r = plan["r"]
         full_row = plan["full_row"]
         rows.append({

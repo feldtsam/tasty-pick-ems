@@ -96,21 +96,104 @@ _UP_RE = re.compile(r"^(?:" + "|".join(_UP) + r")$", re.IGNORECASE)
 _DOWN_RE = re.compile(r"^(?:" + "|".join(_DOWN) + r")$", re.IGNORECASE)
 
 
+# --------------------------------------------------------------------
+# Clause-level classification (Item 3 refinement, 2026-10-09). A trend
+# word is only a CLAIM when its own clause asserts it. The first dry run
+# found every story-level flag sitting inside a sentence that declined
+# to make the claim ("too early to say his usage is climbing, fading, or
+# holding steady") -- legitimate uncertainty the prompt itself asks for.
+# Classification is per CLAUSE, never per sentence, so a disclaimer in
+# one clause cannot excuse an affirmative claim in the next ("isn't
+# clear yet, but his touches are climbing" -> the second clause fails).
+#
+#   negated   -- the clause declines to make the claim: a negation or
+#                "cannot say" cue BEFORE the hit in the same clause, a
+#                "remains unclear" cue AFTER it, or an enumeration of
+#                opposite directions ("rising, falling, or holding
+#                steady"). Passes everywhere.
+#   ambiguous -- hedged ("may be climbing", "looks like it's rising") or
+#                a question. Fails in a title, warns in a story.
+#   affirmative -- everything else. Fails wherever the evidence does not
+#                back it.
+# --------------------------------------------------------------------
+# Dashes are deliberately NOT clause breaks: a dash usually attaches a
+# qualifier to the claim it follows ("how his role has been trending --
+# that read isn't established"), and splitting there would strand the
+# qualifier. Contrasting conjunctions ("but", "however", ...) are.
+_CLAUSE_SPLIT = re.compile(
+    r"(?<=[.!?])\s+|;\s*|\s*\(|\)\s*"
+    r"|\s+(?:but|however|while|whereas|although|though|except)\s+",
+    re.IGNORECASE,
+)
+# Cues that must come BEFORE the hit inside the clause.
+_NEGATION_BEFORE = re.compile(
+    r"\b(?:not|no|never|neither|nor|without|nothing|n't|cannot|can't|too early|too soon|hard to say|unclear|"
+    r"isn't clear|is not clear|not clear|no way to|whether|unknown|unsure|uncertain|no reliable read|not enough|"
+    r"isn't enough|hasn't|haven't|hadn't|doesn't|don't|didn't|isn't|aren't|wasn't|weren't|won't|wouldn't|"
+    r"impossible to|remains to be seen|yet to|has yet|question (?:is|of)|rather than|instead of)\b",
+    re.IGNORECASE,
+)
+# Cues that may come AFTER the hit and still mean "declines to say":
+# only the explicitly declining ones, so "...are climbing, which isn't
+# surprising" is NOT excused.
+_DECLINE_AFTER = re.compile(
+    r"\b(?:isn't clear|is not clear|not clear|unclear|isn't established|is not established|not established|"
+    r"isn't known|unknown|remains to be seen|isn't certain|uncertain|hasn't firmed|hasn't settled|hasn't shown|"
+    r"is (?:still )?fuzzy|still fuzzy|too early to (?:say|call|tell|read)|can't (?:say|call|tell|read)|"
+    r"cannot (?:say|call|tell|read)|no reliable read|isn't reliable|not reliable|yet to (?:show|settle|firm))\b",
+    re.IGNORECASE,
+)
+_HEDGE = re.compile(r"\b(?:may|might|could|possibly|perhaps|maybe|seems?|appears?|looks? like|likely|if)\b", re.IGNORECASE)
+
+
+def _clauses(text: str) -> list:
+    """[(start, end, clause_text)] -- clause spans of `text`."""
+    out, pos = [], 0
+    for m in _CLAUSE_SPLIT.finditer(text):
+        if m.start() > pos:
+            out.append((pos, m.start(), text[pos:m.start()]))
+        pos = m.end()
+    if pos < len(text):
+        out.append((pos, len(text), text[pos:]))
+    return out
+
+
+def _classify_hit(clause: str, hit_start: int, hit_end: int, hits_in_clause: list) -> str:
+    before, after = clause[:hit_start], clause[hit_end:]
+    if _NEGATION_BEFORE.search(before):
+        return "negated"
+    if _DECLINE_AFTER.search(after):
+        return "negated"
+    directions = {h["direction"] for h in hits_in_clause}
+    if "up" in directions and "down" in directions and re.search(r"\bor\b", clause, re.IGNORECASE):
+        return "negated"  # "rising, falling, or holding steady": lists possibilities, asserts none
+    if _HEDGE.search(before) or clause.strip().endswith("?"):
+        return "ambiguous"
+    return "affirmative"
+
+
 def find_trend_claims(text) -> list:
-    """[{phrase, direction}] for every trend verb/adjective in `text`,
-    direction in {"up", "down", "neutral"}. [] for a non-string."""
+    """[{phrase, direction, kind, clause}] for every trend verb/adjective
+    in `text`: direction in {"up", "down", "neutral"}, kind in
+    {"affirmative", "negated", "ambiguous"} (see the block comment
+    above). [] for a non-string."""
     if not isinstance(text, str) or not text:
         return []
     found = []
-    for m in _PATTERN.finditer(text):
-        phrase = m.group(0)
-        if _UP_RE.match(phrase):
-            direction = "up"
-        elif _DOWN_RE.match(phrase):
-            direction = "down"
-        else:
-            direction = "neutral"
-        found.append({"phrase": phrase, "direction": direction})
+    for c_start, c_end, clause in _clauses(text):
+        hits = []
+        for m in _PATTERN.finditer(clause):
+            phrase = m.group(0)
+            if _UP_RE.match(phrase):
+                direction = "up"
+            elif _DOWN_RE.match(phrase):
+                direction = "down"
+            else:
+                direction = "neutral"
+            hits.append({"phrase": phrase, "direction": direction, "_span": (m.start(), m.end())})
+        for h in hits:
+            kind = _classify_hit(clause, h["_span"][0], h["_span"][1], hits)
+            found.append({"phrase": h["phrase"], "direction": h["direction"], "kind": kind, "clause": clause.strip()})
     return found
 
 
@@ -211,38 +294,63 @@ def trend_evidence_for_row(row, shelf: str) -> dict:
     }
 
 
+def _unsupported_reason(claim: dict, evidence: dict):
+    """Why this claim is unsupported by the evidence, or None if it is backed."""
+    status = evidence["status"]
+    if status == "masked":
+        return "masked"
+    if status == "no_change":
+        return "no_change"
+    if claim["direction"] == "up" and not evidence["positive"]:
+        return "wrong_direction"
+    if claim["direction"] == "down" and not evidence["negative"]:
+        return "wrong_direction"
+    return None  # neutral with any non-zero delta, or a backed direction
+
+
+def _trend_findings(texts: dict, evidence: dict) -> tuple:
+    """(hard_issues, warnings) per the title/story policy:
+       title: affirmative or ambiguous unsupported -> hard; negated -> pass.
+       story / editorial_sentence: affirmative unsupported -> hard;
+       negated -> pass; ambiguous unsupported -> warning only."""
+    hard, warn = [], []
+    for field, text in texts.items():
+        bad, ambiguous, reason, ok = [], [], None, []
+        for c in find_trend_claims(text):
+            why = _unsupported_reason(c, evidence)
+            if why is None or c["kind"] == "negated":
+                ok.append(c["phrase"]); continue
+            if c["kind"] == "ambiguous" and field != "title":
+                ambiguous.append(c["phrase"]); reason = reason or why; continue
+            bad.append(c["phrase"]); reason = reason or why
+        if bad:
+            hard.append({"check": "trend_claim", "category": "factual", "field": field, "phrases": bad,
+                         "kind": "affirmative" if field != "title" else "affirmative_or_ambiguous",
+                         "reason": reason, "evidence_status": evidence["status"]})
+        if ambiguous:
+            warn.append({"check": "trend_claim_ambiguous", "category": "warning", "field": field, "phrases": ambiguous,
+                         "reason": reason, "evidence_status": evidence["status"]})
+    return hard, warn
+
+
 def validate_trend_claims(texts: dict, evidence: dict) -> list:
     """
     texts: {field_name: text_or_None} -- e.g. {"title": ..., "story": ...}.
-    Returns [] when every trend word is backed by the evidence, else one
-    issue per offending field:
+    Returns the HARD issues only (see _trend_findings for the policy):
       {"check": "trend_claim", "category": "factual", "field": ...,
-       "phrases": [...], "reason": "masked" | "no_change" | "wrong_direction",
-       "evidence_status": ...}
+       "phrases": [...], "kind": ..., "reason": "masked" | "no_change" |
+       "wrong_direction", "evidence_status": ...}
+    A clause that declines to make the claim ("too early to say his usage
+    is climbing") never appears here. Ambiguous story hits are warnings:
+    see trend_claim_warnings().
     """
-    issues = []
-    status = evidence["status"]
-    for field, text in texts.items():
-        claims = find_trend_claims(text)
-        if not claims:
-            continue
-        bad, reason = [], None
-        for c in claims:
-            if status == "masked":
-                bad.append(c["phrase"]); reason = reason or "masked"
-            elif status == "no_change":
-                bad.append(c["phrase"]); reason = reason or "no_change"
-            elif c["direction"] == "up" and not evidence["positive"]:
-                bad.append(c["phrase"]); reason = reason or "wrong_direction"
-            elif c["direction"] == "down" and not evidence["negative"]:
-                bad.append(c["phrase"]); reason = reason or "wrong_direction"
-            # neutral with any non-zero delta (status up/down/mixed): allowed
-        if bad:
-            issues.append({
-                "check": "trend_claim", "category": "factual", "field": field,
-                "phrases": bad, "reason": reason, "evidence_status": status,
-            })
-    return issues
+    return _trend_findings(texts, evidence)[0]
+
+
+def trend_claim_warnings(texts: dict, evidence: dict) -> list:
+    """Warn-only findings: hedged ("may be climbing") trend language in a
+    story/editorial_sentence on a row that cannot back it."""
+    return _trend_findings(texts, evidence)[1]
 
 
 # --------------------------------------------------------------------
@@ -250,18 +358,50 @@ def validate_trend_claims(texts: dict, evidence: dict) -> list:
 # --------------------------------------------------------------------
 FACTUAL_CHECKS = frozenset({
     "schema_shape", "citation", "numeric_grounding", "star_consistency",
-    "pillar_field_consistency", "trend_claim", "factual_gate",
+    "pillar_field_consistency", "trend_claim", "factual_gate", "receipts_missing",
 })
-STYLISTIC_CHECKS = frozenset({"banned_language", "field_narration"})
-WARNING_CHECKS = frozenset({"story_length", "column_name", "stock_phrase"})
+STYLISTIC_CHECKS = frozenset({"banned_language", "field_narration", "receipts_below_minimum"})
+WARNING_CHECKS = frozenset({"story_length", "column_name", "stock_phrase", "trend_claim_ambiguous", "receipts_trimmed"})
+
+# ====================================================================
+# TEMPORARY -- numeric_grounding warn-only window. REVIEW REQUIRED
+# BEFORE EXTENDING. Remove this block (and the two call sites that read
+# it: categorize_issue below and annotate_numeric_grounding) to make
+# numeric_grounding a plain hard gate again.
+#
+# Why (dry run, 2026-10-09): numeric_grounding could not be replayed
+# faithfully over stored cards (source facts had drifted), and its only
+# surviving hits were unconfirmed. Until this date a numeric_grounding
+# issue still flags the card (validation_passed=False, overridable in
+# review) and is recorded in the STORED validation_issues with the claim
+# text, the evidence reference, and would_have_gated=True -- it is never
+# treated as supported. After this date the gate is hard automatically.
+# ====================================================================
+from datetime import date as _date  # noqa: E402
+
+NUMERIC_GROUNDING_WARN_ONLY_UNTIL = _date(2026, 10, 16)
+NUMERIC_GROUNDING_WARN_ONLY_REASON = (
+    "numeric_grounding could not be replayed faithfully in the 2026-10-09 dry run; overridable until "
+    f"{NUMERIC_GROUNDING_WARN_ONLY_UNTIL.isoformat()}, hard gate after. Review required before extending."
+)
 
 
-def categorize_issue(issue: dict) -> dict:
+def numeric_grounding_is_hard_gate(today=None) -> bool:
+    """True once the warn-only window has expired (strictly after the date)."""
+    return (today or _date.today()) > NUMERIC_GROUNDING_WARN_ONLY_UNTIL
+
+
+def categorize_issue(issue: dict, today=None) -> dict:
     """Returns the same dict with a "category" key: factual | stylistic |
-    warning | unknown (an unrecognized check is treated as factual by
-    the gate -- failing closed is the whole point of this module)."""
+    warning | deferred | unknown. "deferred" is numeric_grounding inside
+    its warn-only window (see NUMERIC_GROUNDING_WARN_ONLY_UNTIL): it
+    still flags the card and is stored, but the gate does not act on it.
+    An unrecognized check is treated as factual by the gate -- failing
+    closed is the whole point of this module."""
     check = issue.get("check")
-    if check in FACTUAL_CHECKS:
+    if check == "numeric_grounding" and not numeric_grounding_is_hard_gate(today):
+        cat = "deferred"
+    elif check in FACTUAL_CHECKS:
         cat = "factual"
     elif check in STYLISTIC_CHECKS:
         cat = "stylistic"
@@ -269,7 +409,31 @@ def categorize_issue(issue: dict) -> dict:
         cat = "warning"
     else:
         cat = "unknown"
-    return {**issue, "category": issue.get("category", cat)}
+    out = {**issue, "category": issue.get("category", cat)}
+    if check == "numeric_grounding" and out["category"] == "deferred":
+        out.setdefault("would_have_gated", True)
+        out.setdefault("warn_only_until", NUMERIC_GROUNDING_WARN_ONLY_UNTIL.isoformat())
+    return out
+
+
+_NUMBER_IN_ISSUE = re.compile(r"number ([\-\d.]+) in reason_text")
+
+
+def annotate_numeric_grounding(issues: list, why_reasons: list) -> list:
+    """Adds claim_text and evidence_reference to every numeric_grounding
+    issue so the STORED validation_issues payload carries what was
+    claimed and what it was checked against -- required during the
+    warn-only window, harmless after it."""
+    out = []
+    for i in issues:
+        if i.get("check") == "numeric_grounding":
+            idx = i.get("reason_index")
+            reason = why_reasons[idx] if isinstance(idx, int) and isinstance(why_reasons, list) and idx < len(why_reasons) and isinstance(why_reasons[idx], dict) else {}
+            m = _NUMBER_IN_ISSUE.search(i.get("issue") or "")
+            i = {**i, "claim_text": reason.get("reason_text"),
+                 "evidence_reference": {"cited_keys": list(reason.get("source_fact_keys") or []), "number": m.group(1) if m else None}}
+        out.append(i)
+    return out
 
 
 def categorize_issues(issues) -> list:
@@ -277,15 +441,67 @@ def categorize_issues(issues) -> list:
 
 
 def split_issues(issues) -> dict:
-    """{"factual": [...], "stylistic": [...], "other": [...]} -- "other"
-    (warning/unknown-tagged) is reported, never used to decide anything
-    here; "unknown" checks are gated as factual by is_factual_failure."""
+    """{"factual": [...], "stylistic": [...], "deferred": [...], "other": [...]}.
+    "factual" (incl. unknown checks -- fail closed) is what the gate acts
+    on; "deferred" is numeric_grounding inside its warn-only window
+    (flags the card, stored, not gated); "other" is warnings."""
     tagged = categorize_issues(issues)
     return {
         "factual": [i for i in tagged if i["category"] in ("factual", "unknown")],
         "stylistic": [i for i in tagged if i["category"] == "stylistic"],
+        "deferred": [i for i in tagged if i["category"] == "deferred"],
         "other": [i for i in tagged if i["category"] == "warning"],
     }
+
+
+# --------------------------------------------------------------------
+# Receipts (why_reasons) -- Item 3 refinement. The writer contract is
+# 2-3 receipts. Counts outside it are handled by rule, never by
+# replacing the whole card for a formatting miss:
+#   > 3 : keep the first three in the WRITER'S OWN ORDER (there is no
+#         existing ranking of reasons to reuse; the writer lists its
+#         strongest first per the prompt's structure) and warn.
+#   = 3 : no change.   1-2 : keep them; 1 is below the contract minimum
+#         and flags for review (stylistic); never invent more.
+#   = 0 : factual failure (an evidence-free card) -- the gate swaps in
+#         the row's own deterministic receipts if they exist, otherwise
+#         withholds the row. See curate_home_shelves._enforce_factual_gate.
+# --------------------------------------------------------------------
+MAX_RECEIPTS = 3
+MIN_RECEIPTS = 2
+_SCHEMA_COUNT_ERROR_PREFIX = "why_reasons must have"
+
+
+def normalize_receipts(output: dict) -> tuple:
+    """(output, warnings): trims a > MAX_RECEIPTS why_reasons list to its
+    first MAX_RECEIPTS entries (writer order) and returns a
+    receipts_trimmed warning; anything else passes through untouched."""
+    reasons = output.get("why_reasons") if isinstance(output, dict) else None
+    if isinstance(reasons, list) and len(reasons) > MAX_RECEIPTS:
+        trimmed = dict(output)
+        trimmed["why_reasons"] = reasons[:MAX_RECEIPTS]
+        return trimmed, [{"check": "receipts_trimmed", "category": "warning", "kept": MAX_RECEIPTS,
+                          "dropped": len(reasons) - MAX_RECEIPTS, "rule": "writer order, first three kept"}]
+    return output, []
+
+
+def receipt_count_issues(output: dict) -> list:
+    """The count-based issues that replace the schema's own
+    'why_reasons must have 2-3 items' error: 0 -> receipts_missing
+    (factual), 1 -> receipts_below_minimum (stylistic)."""
+    reasons = output.get("why_reasons") if isinstance(output, dict) else None
+    if not isinstance(reasons, list):
+        return []
+    n = len([r for r in reasons if isinstance(r, dict)])
+    if n == 0:
+        return [{"check": "receipts_missing", "category": "factual", "count": 0, "issue": "no why_reasons at all -- an evidence-free card"}]
+    if n < MIN_RECEIPTS:
+        return [{"check": "receipts_below_minimum", "category": "stylistic", "count": n, "issue": f"{n} why_reason(s), contract minimum is {MIN_RECEIPTS}"}]
+    return []
+
+
+def is_schema_count_error(issue: dict) -> bool:
+    return issue.get("check") == "schema_shape" and str(issue.get("issue") or "").startswith(_SCHEMA_COUNT_ERROR_PREFIX)
 
 
 # --------------------------------------------------------------------

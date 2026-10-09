@@ -59,7 +59,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "voice"))
 
 from banned_language import find_banned_phrases  # noqa: E402 -- reused unmodified
-from factual_validation import categorize_issues  # noqa: E402 -- Item 3: factual/stylistic split
+from factual_validation import (  # noqa: E402 -- Item 3: factual/stylistic split + receipt rules
+    annotate_numeric_grounding, categorize_issues, normalize_receipts, receipt_count_issues,
+)
 from card_writer_common import (  # noqa: E402
     MODEL_NAME,
     call_claude_with_tool,
@@ -120,10 +122,13 @@ def run_all_validators(output: dict, source_facts: dict) -> list:
     """
     issues = []
 
-    shape_errors = validate_schema_shape(output)
+    # Item 3 refinement: receipt COUNT handled by rule, same as the
+    # shelf-card writer (see factual_validation.receipt_count_issues).
+    shape_errors = [e for e in validate_schema_shape(output) if not e.startswith("why_reasons must have")]
     issues.extend({"check": "schema_shape", "issue": e} for e in shape_errors)
     if shape_errors:
         return issues
+    issues.extend(receipt_count_issues(output))
 
     why_reasons = output["why_reasons"]
 
@@ -191,7 +196,8 @@ def generate_nfl_tasty_six_draft(
     output = call_claude_for_nfl_tasty_six_card(
         anthropic_api_key, system_blocks(STATIC_SYSTEM_PROMPT, dynamic_system_prompt), user_prompt,
     )
-    issues = categorize_issues(run_all_validators(output, source_facts))
+    output, receipt_warnings = normalize_receipts(output)
+    issues = categorize_issues(annotate_numeric_grounding(run_all_validators(output, source_facts), output.get("why_reasons") or []))
 
     return {
         "player_id": candidate.get("player_id"),
