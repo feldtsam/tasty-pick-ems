@@ -536,6 +536,15 @@ def build_deviation_stories(market_snapshot: pd.DataFrame, weekly: pd.DataFrame,
             "before_value": round(expected_pct, 1),
             "after_value": round(observed_pct, 1),
             "delta_value": round(gap_pp, 1),
+            # The two values are true percentages (implied probabilities);
+            # their difference is a gap in percentage POINTS, the same unit
+            # the supporting_evidence "Gap: N percentage points" line and
+            # primary_signal deviation_pp already use. Same enum value
+            # Coaching Trends' rate heroes and Role Changes' share heroes
+            # send. Without it the frontend's formatHeroDelta() falls to its
+            # unit-suffix default and renders "-25.9%" for a 25.9-point gap
+            # (confirmed on every live week-5 Market row, 2026-10-09).
+            "delta_display_mode": "percentage_points",
         }
         story["signal_direction"] = "favorable" if gap_pp > 0 else "unfavorable"
         story["what_changed"] = _still_to_watch_for_row(evidence_state, n_books, magnitude_band)

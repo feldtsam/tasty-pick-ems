@@ -266,6 +266,13 @@ if stories:
         s["hero_metric"]["delta_value"] == s["primary_signal"]["value"],
     ))
     results.append(check(
+        "hero_metric declares its delta as percentage POINTS (delta_display_mode=\"percentage_points\") while the two "
+        "values stay true percentages (unit \"%\", value_format \"percent\") -- the same contract Coaching/Role already send",
+        s["hero_metric"]["delta_display_mode"] == "percentage_points"
+        and s["hero_metric"]["unit"] == "%"
+        and s["hero_metric"]["value_format"] == "percent",
+    ))
+    results.append(check(
         "what_changed (STILL TO WATCH) is real, forward-looking content, not empty",
         len(s["what_changed"]) >= 1 and all(isinstance(c.get("observation"), str) and c["observation"] for c in s["what_changed"]),
     ))
