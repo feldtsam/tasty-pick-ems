@@ -115,8 +115,12 @@ NFL_SHELF_PERSONALITIES = {
     "ATTD +300-499": ShelfPersonality(
         description="The sweet spot.",
         subject_is_batter=True,
+        # Discovery vocabulary cleanup (2026-10-09): "worth a longer look"
+        # removed -- a generic endorsement the writer reproduced verbatim
+        # in titles. Not replaced with a new stock line; the prompt's
+        # DISCOVERY HEADLINE rule carries the guidance instead.
         imagery_pool=(
-            "value", "the math lines up", "worth a longer look", "a real angle at a real price",
+            "value", "the math lines up", "a real angle at a real price",
             "not obvious, not a reach",
         ),
         avoid=(
@@ -127,9 +131,12 @@ NFL_SHELF_PERSONALITIES = {
     "ATTD +500-699": ShelfPersonality(
         description="Bigger swings, bigger payoffs.",
         subject_is_batter=True,
+        # Discovery vocabulary cleanup (2026-10-09): "worth the extra reach"
+        # and "a bolder price with real backing" removed -- both showed up
+        # near-verbatim in live week-5 titles ("A Bolder Price Still Worth
+        # a Look"). Not replaced; see the prompt's DISCOVERY HEADLINE rule.
         imagery_pool=(
             "bigger swing", "real payoff if it hits", "a step further out",
-            "worth the extra reach", "a bolder price with real backing",
         ),
         avoid=(
             "One notch more drama than ATTD +300-499, a clear notch less than +700+ -- don't let it collapse "
@@ -139,9 +146,12 @@ NFL_SHELF_PERSONALITIES = {
     "ATTD +700+": ShelfPersonality(
         description="Long odds, real teeth.",
         subject_is_batter=True,
+        # Discovery vocabulary cleanup (2026-10-09): "worth the reach" and
+        # "a genuine long shot with real backing" removed (generic
+        # endorsement / "with real backing" filler). Not replaced.
         imagery_pool=(
-            "a genuine long shot with real backing", "the price is long, the case isn't thin",
-            "live long shot", "worth the reach", "a real angle at a real long price",
+            "the price is long, the case isn't thin",
+            "live long shot", "a real angle at a real long price",
         ),
         avoid=(
             "The single most important discipline on this shelf, same as MLB's own longest-odds shelf: maximal "

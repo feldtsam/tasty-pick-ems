@@ -775,6 +775,118 @@ if __name__ == "__main__":
         run_all_warnings({"title": "t", "story": words(85), "why_reasons": VALID_WHY_REASONS}) == [],
     ))
 
+    # --- Discovery headline vocabulary cleanup (2026-10-09) ---
+    # The generic endorsement phrases live week-5 titles reproduced came
+    # from TPE's own voice files and Tension strings. These checks pin
+    # three things: (1) none of them reach the Picks shelf-card prompt
+    # from any shelf, band, tension type, or imagery pool; (2) each is a
+    # warn-only stock phrase, never a blocking one; (3) the detail-card /
+    # newsletter / Intelligence / MLB files that legitimately use the
+    # same words were left alone.
+    from pathlib import Path as _Path
+    from banned_language import DISCOVERY_STOCK_PHRASES
+    from emotional_intensity import EMOTIONAL_INTENSITY
+    from nfl_shelf_personalities import NFL_SHELF_PERSONALITIES
+    from editorial_lenses import EDITORIAL_LENSES, resolve_editorial_lens
+
+    removed = tuple(p.lower() for p in DISCOVERY_STOCK_PHRASES)
+
+    def _found(text):
+        return [p for p in removed if p in (text or "").lower()]
+
+    def _prompt_minus_do_not_use_line(prompt):
+        # The static prompt names STOCK_PHRASES in its own "Do not use
+        # these stock phrases" line; that line is the one legitimate
+        # place the removed phrases may appear.
+        return "\n".join(l for l in prompt.splitlines() if not l.startswith("- Do not use these stock phrases"))
+
+    tension_rows = {
+        "divergence_market_high": CANDIDATE,
+        "divergence_market_low": {**CANDIDATE, "market_value_score": 30.0, "td_opportunity": 75.0, "td_opportunity_completeness": 100.0,
+                                  "role_momentum": 72.0, "situation": 68.0, "evidence_quality": 90.0},
+        "contradiction": {**CANDIDATE, "market_value_score": None, "td_opportunity": 80.0, "td_opportunity_completeness": 100.0,
+                          "role_momentum": 30.0, "situation": 55.0, "evidence_quality": 70.0},
+        "change": {**CANDIDATE, "market_value_score": None, "td_opportunity": 52.0, "td_opportunity_completeness": 100.0,
+                   "role_momentum": 48.0, "role_trend": 80.0, "situation": 52.0, "evidence_quality": 70.0},
+        "forming": {**CANDIDATE, "market_value_score": None, "td_opportunity": 52.0, "td_opportunity_completeness": 100.0,
+                    "role_momentum": 50.0, "role_momentum_completeness": 0.0, "situation": 52.0, "evidence_quality": 70.0},
+        "uncertainty": {**CANDIDATE, "market_value_score": 60.0, "td_opportunity": 50.0, "td_opportunity_completeness": 100.0,
+                        "role_momentum": 50.0, "situation": 50.0, "evidence_quality": 40.0},
+        "convergence": {**CANDIDATE, "market_value_score": 62.0, "td_opportunity": 60.0, "td_opportunity_completeness": 100.0,
+                        "role_momentum": 61.0, "situation": 63.0, "evidence_quality": 80.0},
+    }
+    tensions = {name: find_tension(row, None) for name, row in tension_rows.items()}
+    r.append(check(
+        "the seven tension fixtures cover six real tension types (divergence twice)",
+        sorted({t["tension_type"] for t in tensions.values()}) == ["change", "contradiction", "convergence", "divergence", "forming", "uncertainty"],
+    ))
+    tension_leaks = {name: _found(" ".join(str(v) for v in t.values())) for name, t in tensions.items()}
+    r.append(check(
+        "no Tension Object string (claim, angle, counter-signal) carries a removed phrase or a lagging-price claim",
+        all(not leak for leak in tension_leaks.values()) and not any(
+            "won't stay where it is" in (t["story_angle"] or "") or "credit for" in (t["editorial_claim"] or "")
+            for t in tensions.values()),
+    ))
+    pool_leaks = {shelf: _found(" ".join(p.imagery_pool) + " " + p.description + " " + " ".join(p.avoid))
+                  for shelf, p in NFL_SHELF_PERSONALITIES.items()}
+    r.append(check("no NFL shelf imagery pool, description, or avoid note carries a removed phrase", all(not v for v in pool_leaks.values())))
+    intensity_leaks = {band: _found(i.assertiveness + " " + i.title_register + " " + " ".join(i.example_opening_frames))
+                       for band, i in EMOTIONAL_INTENSITY.items()}
+    r.append(check("no confidence-band intensity profile (assertiveness, register, example openers) carries a removed phrase",
+                   all(not v for v in intensity_leaks.values())))
+    assembled_leaks = []
+    for shelf in EDITORIAL_LENSES:
+        for band in EMOTIONAL_INTENSITY:
+            for name, t in tensions.items():
+                lens = resolve_editorial_lens(shelf, tension_rows[name])
+                for tda in (None, False):
+                    prompt = _prompt_minus_do_not_use_line(build_system_prompt(shelf, band, lens, t, trend_data_available=tda))
+                    hit = _found(prompt)
+                    if hit:
+                        assembled_leaks.append((shelf, band, name, tda, hit))
+    r.append(check(
+        "the assembled Picks shelf-card prompt carries no removed phrase for any of 7 shelves x 4 bands x 7 tensions x 2 trend states",
+        assembled_leaks == [],
+    ))
+    rule = ("A discovery headline must state a specific, evidence-supported observation about this player or matchup. "
+            "Avoid generic endorsements, vague intrigue, and any phrase that could apply unchanged to an unrelated player. "
+            "You may state the odds and a level fact. Do not claim the price is wrong, lagging, or overlooked.")
+    r.append(check("the DISCOVERY HEADLINE editorial rule is in the static prompt, byte-for-byte",
+                   rule in build_system_prompt("ATTD +500-699", "quiet_signal", lens, tensions["convergence"])))
+    r.append(check("the prompt's own stock-phrase 'do not use' line now names the removed discovery phrases",
+                   all(f'"{p}"' in build_system_prompt("ATTD +700+", "quiet_signal", lens, tensions["convergence"]) for p in DISCOVERY_STOCK_PHRASES)))
+    for phrase in DISCOVERY_STOCK_PHRASES:
+        title = f"Cole Kmet: A Price {phrase} Right Now"
+        r.append(check(f"removed discovery phrase {phrase!r} is in STOCK_PHRASES and warns in a title",
+                       phrase in STOCK_PHRASES and phrase in find_stock_phrases(title)))
+        r.append(check(f"removed discovery phrase {phrase!r} does NOT block (warn-only, find_banned_phrases is silent)",
+                       find_banned_phrases(title) == []))
+    r.append(check(
+        "the full 'the price hasn't caught up' form still BLOCKS and the bare form only warns",
+        find_banned_phrases("the price hasn't caught up") == ["the price hasn't caught up"]
+        and find_banned_phrases("A +700 price that hasn't caught up") == []
+        and find_stock_phrases("A +700 price that hasn't caught up") == ["hasn't caught up"],
+    ))
+    r.append(check(
+        "run_all_warnings surfaces a removed discovery phrase in a title as a warn-only stock_phrase finding",
+        any(w.get("check") == "stock_phrase" and w.get("field") == "title" and "worth a second look" in w.get("phrases", [])
+            for w in run_all_warnings({"title": "Ertz: A Price Worth a Second Look", "story": words(85), "why_reasons": VALID_WHY_REASONS})),
+    ))
+    _root = _Path(__file__).resolve().parent.parent
+    left_alone = {
+        _root.parent / "pipeline" / "api" / "content_writer" / "voice" / "emotional_intensity.py": "Worth a second look:",
+        _root.parent / "pipeline" / "api" / "content_writer" / "voice" / "shelf_personalities.py": "worth a longer look",
+        _root / "story_interrogation.py": "worth watching for",
+        _root / "newsletter" / "evidence_validator.py": "hasn't caught up",
+        _root / "market_intelligence.py": "worth another look",
+        _root / "role_changes.py": "worth watching",
+    }
+    for path, phrase in left_alone.items():
+        r.append(check(
+            f"left alone: {path.relative_to(_root.parent)} still contains {phrase!r} (MLB / newsletter / Intelligence voice untouched)",
+            path.exists() and phrase in path.read_text(),
+        ))
+
     print()
     p = sum(r)
     print(f"{p}/{len(r)} checks passed")

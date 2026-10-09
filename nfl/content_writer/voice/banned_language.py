@@ -146,7 +146,7 @@ PRICE_MOVEMENT_PREDICTION_PHRASES = (
 # "we don't fully know yet" is matched as the prefix "we don't fully
 # know" so the "why yet" variant the old prompt used to suggest is
 # caught too.
-STOCK_PHRASES = (
+_STORY_STOCK_PHRASES = (
     "something is building here",
     "we don't fully know yet",
     "early, honest signal",
@@ -155,6 +155,39 @@ STOCK_PHRASES = (
     "that's the real tension",
     "that's the puzzle",
 )
+
+# Discovery headline vocabulary cleanup (2026-10-09): the generic
+# endorsement / vague-intrigue phrases the shelf-card writer reproduced
+# in live week-5 titles ("A Bolder Price Still Worth a Look", "A +500
+# Price With Something Behind It", "A +700 Price That Hasn't Caught
+# Up"). Investigation B traced every one of them to text TPE itself
+# handed the model: the quiet_signal intensity profile, the odds-shelf
+# imagery pools, and nfl_tension's story angles. Those sources are now
+# cleaned; this list is the warn-only backstop (find_stock_phrases ->
+# run_all_warnings) so a reappearance is visible in validation_warnings
+# and named in the prompt's "do not use" line. WARN-ONLY, like the rest
+# of STOCK_PHRASES: never blocks, never changes validation_passed. The
+# full-phrase forms "the price hasn't caught up" / "the market hasn't
+# caught up" stay on PRICE_MOVEMENT_PREDICTION_PHRASES (blocking); the
+# bare "hasn't caught up" here only warns on the variants that list
+# does not cover (e.g. "a price that hasn't caught up").
+DISCOVERY_STOCK_PHRASES = (
+    "worth a look",
+    "worth a second look",
+    "worth another look",
+    "worth a longer look",
+    "worth the reach",
+    "worth the extra reach",
+    "worth noting",
+    "worth watching",
+    "bolder price",
+    "longer-odds look",
+    "something behind it",
+    "with real backing",
+    "hasn't caught up",
+)
+
+STOCK_PHRASES = _STORY_STOCK_PHRASES + DISCOVERY_STOCK_PHRASES
 
 _STOCK_MATCH_TEXT = {
     "we don't fully know yet": "we don't fully know",

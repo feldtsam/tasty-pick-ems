@@ -64,8 +64,15 @@ if __name__ == "__main__":
     r.append(check("internal-beats-market divergence resolves correctly", out["tension_type"] == "divergence"))
     r.append(check("internal-beats-market: evidence_strength is strong", out["evidence_strength"] == "strong"))
     r.append(check("internal-beats-market: uncertainty is None (strong evidence)", out["uncertainty"] is None))
-    r.append(check("internal-beats-market: claim credits the player over the market",
-                    "market" in out["editorial_claim"].lower() and "credit" in out["editorial_claim"].lower()))
+    # Discovery vocabulary cleanup (2026-10-09): the claim used to say the
+    # market "gives him [too little] credit" -- a valuation verdict. It now
+    # states the comparison only (signals read higher than the price).
+    r.append(check("internal-beats-market: claim states signals above price, without a valuation verdict",
+                    "market" in out["editorial_claim"].lower() and "higher" in out["editorial_claim"].lower()
+                    and "credit" not in out["editorial_claim"].lower()))
+    r.append(check("internal-beats-market: no string in the Tension Object says the price lags, is wrong, or will move",
+                    not any(p in " ".join(str(v) for v in out.values()).lower()
+                            for p in ("caught up", "won't stay", "credit for", "worth a", "worth another", "worth watching"))))
 
     # --- Contradiction: two internal signals disagree sharply, market flat/absent ---
     row = _row(market_value_score=None, td_opportunity=85.0, role_momentum=30.0, situation=50.0, evidence_quality=90.0)

@@ -509,15 +509,26 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
                     primary_signal=f"{signal_phrase('market_value')} reads {_level_word(mv)} ({mv:.1f}/100)",
                     counter_signal=f"the player's own signals ({internal_names}) read {_level_word(internal_avg)} by comparison ({internal_avg:.1f}/100 blended)",
                     editorial_claim="The market is showing more conviction in this player than his own recent on-field signals do.",
-                    story_angle="The market may be seeing something that hasn't shown up clearly in this player's usage yet.",
+                    # Discovery vocabulary cleanup (2026-10-09): the former
+                    # angle ("the market may be seeing something that hasn't
+                    # shown up in his usage yet") hinted the price knew
+                    # better -- a valuation claim no row evidence supports.
+                    story_angle="The price sits above what his usage shows; describe both sides without saying which one is right.",
                     strength=strength, uncertainty=uncertainty,
                 )
             return _build(
                 "divergence",
                 primary_signal=f"the player's own signals ({internal_names}) read {_level_word(internal_avg)} ({internal_avg:.1f}/100 blended)",
-                counter_signal=f"{signal_phrase('market_value')} hasn't caught up to that yet ({mv:.1f}/100, {_level_word(mv)})",
-                editorial_claim="This player's own signals are stronger than the market currently gives him credit for.",
-                story_angle="If the market catches up to what the on-field signals already show, the price won't stay where it is.",
+                # Discovery vocabulary cleanup (2026-10-09): the former three
+                # strings said the market "hasn't caught up", "gives him
+                # [too little] credit", and that "the price won't stay where
+                # it is" -- a lagging-price claim and a price forecast, both
+                # of which the prompt's own MARKET CLAIMS rule forbids the
+                # writer to produce. Reworded as a plain two-sided
+                # comparison; the gap is still named, nothing is predicted.
+                counter_signal=f"{signal_phrase('market_value')} reads {_level_word(mv)} by comparison ({mv:.1f}/100)",
+                editorial_claim="This player's own on-field signals read higher than his current market price does.",
+                story_angle="The gap between his on-field signals and his price is the story; describe both sides and do not predict which one moves.",
                 strength=strength, uncertainty=uncertainty,
             )
 
@@ -551,7 +562,10 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
                     "change",
                     primary_signal=f"the season-long picture ({level_name}) reads {_level_word(level_val)} ({level_val:.1f}/100)",
                     counter_signal=f"{trend_name} reads {_level_word(trend_val)} instead ({trend_val:.1f}/100) -- a real recent move",
-                    editorial_claim="The season-long numbers haven't caught up to what's happened the last couple of weeks.",
+                    # Discovery vocabulary cleanup (2026-10-09): "haven't
+                    # caught up" dropped so the writer is never handed the
+                    # lagging-price wording, even in a non-price context.
+                    editorial_claim="The last couple of weeks look different from the season-long numbers.",
                     story_angle="The recent trend is the more current read here -- the season-long number is already stale.",
                     strength=strength, uncertainty=uncertainty,
                 )
@@ -568,7 +582,9 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
             primary_signal="role_momentum has not cleared enough games yet to read as a real signal",
             counter_signal=None,
             editorial_claim="This player hasn't played enough of a role yet this season to say whether it's trending up, down, or flat.",
-            story_angle="Still-forming evidence -- worth another look once there's a real trend to read, not a claim yet.",
+            # Discovery vocabulary cleanup (2026-10-09): "worth another look"
+            # removed; the angle now says what to write instead.
+            story_angle="Still-forming evidence: state the sample limit once, describe the one concrete thing the data shows, and make no claim about direction.",
             strength="thin",
             uncertainty=uncertainty or "The role read here is still forming -- not enough games yet to call it flat or trending.",
         )
@@ -581,7 +597,9 @@ def find_tension(candidate: dict, lens: dict | None = None, interrogation_result
             primary_signal="something in this player's profile is moving",
             counter_signal="the evidence backing it is still too thin to say confidently why",
             editorial_claim="There's a real signal here, but the evidence isn't strong enough yet to say what's driving it.",
-            story_angle="Worth watching, not yet worth a confident claim.",
+            # Discovery vocabulary cleanup (2026-10-09): "Worth watching"
+            # removed; the angle now says what to write instead.
+            story_angle="A real but weak movement: describe it as an observation, name what is unresolved once, and make no confident claim.",
             strength=strength, uncertainty=uncertainty,
         )
 

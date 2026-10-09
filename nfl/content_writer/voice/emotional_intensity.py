@@ -41,15 +41,19 @@ class IntensityProfile(NamedTuple):
 EMOTIONAL_INTENSITY = {
     "quiet_signal": IntensityProfile(
         assertiveness=(
-            "Observational, not declarative. Present the data as a real, honest signal worth "
-            "noting — never inflate a modest case into something it isn't, but also never "
-            "write it as an apology or a hedge-everything shrug. 'Here's something genuinely "
-            "worth a look' is the right register, not 'this probably won't work.'"
+            "Observational, not declarative. State the one specific thing the data shows and "
+            "let it stand — never inflate a modest case into something it isn't, but also never "
+            "write it as an apology or a hedge-everything shrug. A plain, specific observation is "
+            "the right register, not an endorsement and not 'this probably won't work.'"
         ),
         title_register="Measured. No superlatives, no exclamation-point energy.",
+        # Discovery vocabulary cleanup (2026-10-09): "Worth a second look:"
+        # removed. This tuple is not rendered into any prompt today
+        # (confirmed: no caller reads example_opening_frames), but it is
+        # the documented example set for this band and "worth a ... look"
+        # is exactly the filler the shelf-card writer kept reproducing.
         example_opening_frames=(
             "There's a quiet case for...",
-            "Worth a second look:",
             "Not the loudest signal on the slate, but...",
         ),
     ),
