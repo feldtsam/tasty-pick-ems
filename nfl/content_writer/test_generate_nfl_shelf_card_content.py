@@ -714,7 +714,11 @@ if __name__ == "__main__":
     ))
 
     # --- run_all_warnings vs run_all_validators: warnings live in their own list ---
-    long_stock_story = ("Something is building here. " + words(115)).strip()
+    # "That's the whole intrigue" rather than "Something is building here":
+    # since the 2026-10-09 lexicon extension "building" with no readable
+    # subject is itself a fail-closed trend claim on a masked row (see
+    # test_factual_validation), so it would no longer be warn-only here.
+    long_stock_story = ("That's the whole intrigue. " + words(115)).strip()
     warn_output = {"title": "The Market Won't Let Golden Drift", "story": long_stock_story, "why_reasons": VALID_WHY_REASONS}
     warnings = run_all_warnings(warn_output)
     r.append(check(
@@ -723,7 +727,7 @@ if __name__ == "__main__":
     ))
     r.append(check(
         "the stock_phrase warning names the field and the phrases found",
-        any(w["check"] == "stock_phrase" and w["field"] == "story" and w["phrases"] == ["something is building here"] for w in warnings),
+        any(w["check"] == "stock_phrase" and w["field"] == "story" and w["phrases"] == ["that's the whole intrigue"] for w in warnings),
     ))
     r.append(check(
         "run_all_validators ignores length and stock phrases entirely -- validation_passed is unaffected",

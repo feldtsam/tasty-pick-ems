@@ -72,10 +72,17 @@ from editorial_lenses import is_masked_fallback  # noqa: E402
 # --------------------------------------------------------------------
 _UP = (
     r"climb(?:s|ed|ing)?", r"keeps? climbing", r"ris(?:es|ing|en)", r"on the rise", r"grow(?:s|n|ing)",
-    r"surg(?:es|ed|ing)", r"expand(?:s|ed|ing)", r"outrun(?:s|ning)", r"outpac(?:es|ed|ing)",
+    r"surg(?:es|ed|ing)", r"expand(?:s|ed|ing)", r"outrun(?:s|ning)", r"outpac(?:e|es|ed|ing)",
     r"trending (?:up|upward|higher)", r"trend(?:s|ed) (?:up|upward|higher)", r"ramping(?: up)?",
-    r"heating up", r"ticking up", r"picking up", r"taking off", r"mounting", r"swelling", r"ballooning",
+    r"heating up", r"heated up", r"ticking up", r"picking up", r"taking off", r"mounting", r"swelling", r"ballooning",
     r"soaring", r"spiking", r"accelerating", r"escalating", r"climbing faster",
+    # Narrow extension (2026-10-09): the heat / direction words the vocab
+    # sample reached for once "climbing" was gated ("Goal-Line Work Reads
+    # Hot", "Chances Run Hot"). "hot", "heated", "building" and the whole
+    # outpace family are SUBJECT-GATED below (see _SUBJECT_GATED): they
+    # only count as a trend claim when the clause is about the player's
+    # own role / usage / touches / share / chances.
+    r"hot", r"heated", r"building", r"on fire",
 )
 _DOWN = (
     r"falling", r"fading", r"shrink(?:s|ing)", r"declin(?:es|ed|ing)", r"slipping", r"dropping", r"sinking",
@@ -145,6 +152,90 @@ _DECLINE_AFTER = re.compile(
 )
 _HEDGE = re.compile(r"\b(?:may|might|could|possibly|perhaps|maybe|seems?|appears?|looks? like|likely|if)\b", re.IGNORECASE)
 
+# --------------------------------------------------------------------
+# Subject gating (narrow lexicon extension, 2026-10-09). The nine words
+# the extension adds or re-examines -- hot, heating up, heated, outpace,
+# outpacing, ramping, building, surging, on fire -- can each describe
+# something other than a player's trend over time: a matchup or defense
+# ("a hot matchup", "a defense that's heating up"), a noun or unrelated
+# sense ("building a case", "a heated rivalry"), or a comparison of two
+# level facts ("outpaces the league average of 1.4 per game"). The rule
+# must reject unsupported TREND claims, not every occurrence of a word.
+#
+# Decision per hit, after the clause-level negation checks above:
+#   usage subject   -- the nearest listed noun before the hit (or the
+#                      noun the word modifies directly after it) is the
+#                      player's role / usage / touches / share / chances:
+#                      a trend claim, classified exactly as every other
+#                      lexicon word.
+#   other subject   -- that noun is a matchup, defense, price, rivalry,
+#                      case, ...: a different claim, never a trend claim
+#                      here (kind "not_trend", passes this rule).
+#   unknown subject -- no listed noun either side: FAIL CLOSED on a row
+#                      that cannot back a trend (kind "ambiguous_subject",
+#                      hard in title AND story), surfaced as its own kind
+#                      so the cost of failing closed stays visible.
+# The outpace family has one more pass: a clause that names a comparison
+# baseline AND states a figure is a level comparison, not a trend.
+# Everything outside _SUBJECT_GATED behaves exactly as before.
+# --------------------------------------------------------------------
+_SUBJECT_GATED = re.compile(
+    r"^(?:hot|heating up|heated up|heated|outpac(?:e|es|ed|ing)|ramping(?: up)?|building|surg(?:es|ed|ing)|on fire)$",
+    re.IGNORECASE,
+)
+_OUTPACE = re.compile(r"^outpac", re.IGNORECASE)
+_USAGE_NOUN = re.compile(
+    r"\b(?:role|usage|touch(?:es)?|share|chances?|looks?|work|reps?|targets?|carries|snaps?|opportunit(?:y|ies)|"
+    r"involvement|volume|workload|production|numbers|hand|streak|start|form|output|scoring|"
+    r"red[- ]zone|goal[- ]line|inside[- ](?:the[- ])?(?:10|ten|20|twenty))\b",
+    re.IGNORECASE,
+)
+_OTHER_NOUN = re.compile(
+    r"\b(?:matchups?|defenses?|secondary|front|unit|opponents?|team|offense|rivalry|case|block|debate|argument|"
+    r"exchange|battle|moment|market|price|line|odds|books?|weather|game|crowd|pace|slate|shelf|week|schedule)\b",
+    re.IGNORECASE,
+)
+# "building a case" / "building toward" / "the building": the verb-with-
+# object or noun sense, never a trend.
+_BUILDING_NON_TREND = re.compile(r"^\s*(?:a|an|the|toward|towards|on|out|up a|up the|block)\b", re.IGNORECASE)
+_COMPARISON_BASELINE = re.compile(r"\b(?:league|average|avg|baseline|median|peers?|the field|benchmark)\b", re.IGNORECASE)
+_SKIP_AFTER = re.compile(r"^\s*(?:a|an|the|his|her|their|its|this|that|up|very|really|still|now|right now)\b\s*", re.IGNORECASE)
+
+# Shelf names that contain a lexicon word. Blanked (same length, so hit
+# spans stay aligned) before scanning: "Red Zone Rising" is the display
+# name of the Red Zone Trends shelf and must never trip "rising".
+_SHELF_NAME_PHRASES = ("Red Zone Rising", "Red Zone Trends", "RB Trends", "WR Trends", "TE Trends", "Hot Hitters", "Heat Check")
+_SHELF_NAME_RE = re.compile("|".join(re.escape(p) for p in _SHELF_NAME_PHRASES), re.IGNORECASE)
+
+
+def _blank_shelf_names(text: str) -> str:
+    return _SHELF_NAME_RE.sub(lambda m: " " * len(m.group(0)), text)
+
+
+def _subject_of_hit(clause: str, hit_start: int, hit_end: int, phrase: str) -> str:
+    """'usage' | 'other' | 'unknown' | 'comparison' for a subject-gated hit."""
+    before, after = clause[:hit_start], clause[hit_end:]
+    if _OUTPACE.match(phrase) and _COMPARISON_BASELINE.search(after) and re.search(r"\d", clause):
+        return "comparison"
+    if phrase.lower() == "building":
+        if _BUILDING_NON_TREND.match(after) or re.search(r"\b(?:a|an|the)\s*$", before, re.IGNORECASE):
+            return "other"
+    # The noun the word modifies directly ("a hot matchup", "hot hand").
+    tail = _SKIP_AFTER.sub("", after, count=1)
+    head = re.match(r"\s*([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*)?)", tail)
+    if head:
+        if _OTHER_NOUN.match(head.group(1).split()[0]):
+            return "other"
+        if _USAGE_NOUN.search(head.group(1)):
+            return "usage"
+    # Otherwise the nearest listed noun before the hit (subject position).
+    nearest = None
+    for kind, rx in (("usage", _USAGE_NOUN), ("other", _OTHER_NOUN)):
+        for m in rx.finditer(before):
+            if nearest is None or m.start() > nearest[1]:
+                nearest = (kind, m.start())
+    return nearest[0] if nearest else "unknown"
+
 
 def _clauses(text: str) -> list:
     """[(start, end, clause_text)] -- clause spans of `text`."""
@@ -180,7 +271,7 @@ def find_trend_claims(text) -> list:
     if not isinstance(text, str) or not text:
         return []
     found = []
-    for c_start, c_end, clause in _clauses(text):
+    for c_start, c_end, clause in _clauses(_blank_shelf_names(text)):
         hits = []
         for m in _PATTERN.finditer(clause):
             phrase = m.group(0)
@@ -193,7 +284,18 @@ def find_trend_claims(text) -> list:
             hits.append({"phrase": phrase, "direction": direction, "_span": (m.start(), m.end())})
         for h in hits:
             kind = _classify_hit(clause, h["_span"][0], h["_span"][1], hits)
-            found.append({"phrase": h["phrase"], "direction": h["direction"], "kind": kind, "clause": clause.strip()})
+            subject = None
+            if _SUBJECT_GATED.match(h["phrase"]):
+                subject = _subject_of_hit(clause, h["_span"][0], h["_span"][1], h["phrase"])
+                if kind != "negated":
+                    if subject in ("other", "comparison"):
+                        kind = "not_trend"
+                    elif subject == "unknown":
+                        kind = "ambiguous_subject"
+            entry = {"phrase": h["phrase"], "direction": h["direction"], "kind": kind, "clause": clause.strip()}
+            if subject is not None:
+                entry["subject"] = subject
+            found.append(entry)
     return found
 
 
@@ -315,18 +417,25 @@ def _trend_findings(texts: dict, evidence: dict) -> tuple:
        negated -> pass; ambiguous unsupported -> warning only."""
     hard, warn = [], []
     for field, text in texts.items():
-        bad, ambiguous, reason, ok = [], [], None, []
+        bad, ambiguous, reason, ok, unknown_subject = [], [], None, [], []
         for c in find_trend_claims(text):
             why = _unsupported_reason(c, evidence)
-            if why is None or c["kind"] == "negated":
+            if why is None or c["kind"] in ("negated", "not_trend"):
                 ok.append(c["phrase"]); continue
             if c["kind"] == "ambiguous" and field != "title":
                 ambiguous.append(c["phrase"]); reason = reason or why; continue
+            if c["kind"] == "ambiguous_subject":
+                # Subject-gated word with no readable subject: fail closed
+                # in every field, and say so (see _subject_of_hit).
+                unknown_subject.append(c["phrase"])
             bad.append(c["phrase"]); reason = reason or why
         if bad:
-            hard.append({"check": "trend_claim", "category": "factual", "field": field, "phrases": bad,
-                         "kind": "affirmative" if field != "title" else "affirmative_or_ambiguous",
-                         "reason": reason, "evidence_status": evidence["status"]})
+            issue = {"check": "trend_claim", "category": "factual", "field": field, "phrases": bad,
+                     "kind": "affirmative" if field != "title" else "affirmative_or_ambiguous",
+                     "reason": reason, "evidence_status": evidence["status"]}
+            if unknown_subject:
+                issue["failed_closed_on_unknown_subject"] = unknown_subject
+            hard.append(issue)
         if ambiguous:
             warn.append({"check": "trend_claim_ambiguous", "category": "warning", "field": field, "phrases": ambiguous,
                          "reason": reason, "evidence_status": evidence["status"]})

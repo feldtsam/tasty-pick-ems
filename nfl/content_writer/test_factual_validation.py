@@ -317,6 +317,84 @@ if __name__ == "__main__":
     r.append(check("factual_validation_passed is local-only and stripped before a write",
                    "factual_validation_passed" not in gnscc.draft_for_write({"title": "t", "factual_validation_passed": False, "validation_issues": []})))
 
+    # ------------------------------------------------------------
+    # Narrow lexicon extension (2026-10-09): heat / direction words,
+    # subject-gated. The vocab-cleanup sample replaced "climbing" with
+    # "hot" on the same masked rows; these are the exact titles.
+    # ------------------------------------------------------------
+    masked_ev = trend_evidence_for_row(MASKED_ROW, "Red Zone Trends")
+    up_ev = trend_evidence_for_row(UP_ROW, "Red Zone Trends")
+    HOT_SAMPLE_TITLES = {
+        "Noah Fant": "Fant's Goal-Line Work Reads Hot, the Matchup Reads Flat",
+        "Darius Cooper": "Cooper's Goal-Line Share Reads Hot Into a Defense That Doesn't Allow Much",
+        "Chris Moore": "Moore's Scoring Chances Read Hot, the Matchup Reads Even",
+        "Jahdae Walker": "Walker's Red Zone Chances Run Hot, Chicago's Matchup Runs Cold",
+    }
+    for who, t in HOT_SAMPLE_TITLES.items():
+        issues = validate_trend_claims({"title": t}, masked_ev)
+        r.append(check(f"vocab-sample 'hot' title ({who}) FAILS on a masked row, usage subject, reason masked",
+                       len(issues) == 1 and issues[0]["reason"] == "masked" and issues[0]["phrases"] == ["Hot"]
+                       and all(c.get("subject") == "usage" for c in find_trend_claims(t))))
+        r.append(check(f"the same 'hot' title ({who}) PASSES on a row with a real positive delta",
+                       validate_trend_claims({"title": t}, up_ev) == []))
+    hibner = "Hibner's Scoring Chances Are Real, the Matchup Reads Ordinary"
+    r.append(check("Hibner's vocab-sample title carries no trend or heat word at all, so the trend rule (correctly) does not fire",
+                   find_trend_claims(hibner) == [] and validate_trend_claims({"title": hibner}, masked_ev) == []))
+    r.append(check("negated: 'Too early to call his goal-line work hot' and \"His usage isn't hot yet\" PASS on a masked row",
+                   validate_trend_claims({"title": "Too early to call his goal-line work hot"}, masked_ev) == []
+                   and validate_trend_claims({"title": "His usage isn't hot yet"}, masked_ev) == []
+                   and all(c["kind"] == "negated" for c in find_trend_claims("His usage isn't hot yet"))))
+    non_trend = {
+        "a hot matchup (matchup claim, not a player trend)": "A hot matchup for tight ends this week",
+        "a defense that's heating up (defense claim)": "A defense that's heating up in the red zone",
+        "building a case (verb with object)": "He is building a case for more goal-line work",
+        "a heated rivalry (noun sense)": "A heated rivalry game in a dome",
+        "outpaces the league average with a stated figure (level comparison)": "His red-zone rate outpaces the league average of 14% on 3 chances",
+        "a surging secondary (defense claim)": "The secondary is surging against tight ends",
+    }
+    for label, t in non_trend.items():
+        r.append(check(f"non-trend usage PASSES on a masked row: {label}",
+                       validate_trend_claims({"title": t, "story": t}, masked_ev) == []
+                       and all(c["kind"] == "not_trend" for c in find_trend_claims(t))))
+    r.append(check("'Red Zone Trends' and 'Red Zone Rising' in a title do not trigger (shelf names are blanked before scanning)",
+                   find_trend_claims("Red Zone Rising: the goal-line work is his") == []
+                   and find_trend_claims("Red Zone Trends: the goal-line work is his") == []
+                   and find_trend_claims("Hot Hitters is an MLB shelf") == []))
+    r.append(check("'rising' outside the shelf name is still an up-claim",
+                   [c["direction"] for c in find_trend_claims("His goal-line share is rising")] == ["up"]))
+    for word, t in (("hot", "His goal-line work is hot"), ("heating up", "His usage is heating up"), ("heated up", "His usage heated up"),
+                    ("outpace", "His chances outpace his role"), ("outpacing", "His touches are outpacing his role"),
+                    ("ramping", "The usage is ramping up"), ("building", "His role is building"),
+                    ("surging", "His target share is surging"), ("on fire", "His touches are on fire")):
+        r.append(check(f"usage-subject '{word}' is an affirmative up-claim that FAILS on a masked row",
+                       validate_trend_claims({"title": t}, masked_ev) != []
+                       and all(c["direction"] == "up" and c["kind"] == "affirmative" for c in find_trend_claims(t))))
+    unknown_title = validate_trend_claims({"title": "The hot seat is the story"}, masked_ev)
+    unknown_story = validate_trend_claims({"story": "Something is building here."}, masked_ev)
+    r.append(check("unknown subject FAILS CLOSED in a title on a masked row, and says so (failed_closed_on_unknown_subject)",
+                   len(unknown_title) == 1 and unknown_title[0]["failed_closed_on_unknown_subject"] == ["hot"]))
+    r.append(check("unknown subject FAILS CLOSED in a story too (not the hedged-ambiguous warn path)",
+                   len(unknown_story) == 1 and unknown_story[0]["failed_closed_on_unknown_subject"] == ["building"]
+                   and trend_claim_warnings({"story": "Something is building here."}, masked_ev) == []))
+    r.append(check("unknown subject PASSES on a row whose delta backs an up-claim (fail-closed applies only to unsupported rows)",
+                   validate_trend_claims({"title": "The hot seat is the story"}, up_ev) == []))
+    r.append(check("'Outpace a Middling Matchup' (usage subject, no baseline figure) is still a trend claim, as 'outpaces' always was",
+                   validate_trend_claims({"title": "Robinson's Scoring Chances Outpace a Middling Tennessee Matchup"}, masked_ev) != []))
+    r.append(check("every pre-existing lexicon case in this file still classifies the same way (climbing/outrunning/surging/growing/rising)",
+                   all(c["direction"] == "up" and c["kind"] == "affirmative"
+                       for c in find_trend_claims("His share is climbing, outrunning, surging, growing, rising"))))
+    # The 16 fixture cards: the extension must not newly reject any title
+    # the gate kept at 41e5a43. Same replay harness, same metrics.
+    import contextlib as _ctx, io as _io
+    with _ctx.redirect_stdout(_io.StringIO()):
+        import test_factual_gate_dry_run as _dry
+        _meta, _res = _dry.run_all()
+    kept = sorted(x["player"] for x in _res if not x["replaced_text"] and not x["withheld"])
+    r.append(check("fixture dry run: the seven cards the gate kept at 41e5a43 are still kept (no title newly rejected by the extension)",
+                   kept == ["Brock Wright", "Cole Kmet", "Darnell Mooney", "Jaylin Noel", "Mason Taylor", "Myles Price", "Zach Ertz"]))
+    r.append(check("fixture dry run: trend_claim hard failures unchanged at 7 (the seven known unsupported titles), replaced unchanged at 9",
+                   _dry.metrics(_res)["hard_failures_by_check"].get("trend_claim") == 7 and _dry.metrics(_res)["text_replaced"] == 9))
+
     print()
     p = sum(r)
     print(f"{p}/{len(r)} checks passed")
