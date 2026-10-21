@@ -116,7 +116,7 @@ WEEKLY_BRIEF_TOOL_SCHEMA = {
 }
 
 
-def build_candidate_pool(fixtures: list) -> dict:
+def build_candidate_pool(fixtures: list, issue_week: str | None = None) -> dict:
     """
     The week's candidate Story Objects, each carrying its real
     interrogation/eps content — matching real weekly conditions per the
@@ -133,7 +133,16 @@ def build_candidate_pool(fixtures: list) -> dict:
     live_picks is explicitly empty and named as such — Fixture V2 has
     no real TPE Picks data behind it, so an empty/near-empty Tasty
     Connection section is the correct, honest degraded-input outcome,
-    not a gap in the test.
+    not a gap in the test. The same is true of a real week today: no
+    caller wires live Picks in yet, so the note names the real reason
+    rather than claiming synthetic data.
+
+    issue_week names the week being drafted. It defaults to the Fixture
+    V2 label so every existing caller behaves exactly as before; the
+    production caller (run_weekly_brief.py) passes the real week, which
+    matters because this string is the first thing the model reads and
+    telling it a real week is synthetic fixture data is not a harmless
+    inaccuracy.
 
     Returned as a dict (not pre-serialized) so the SAME pool the model
     is handed is also what weekly_brief_shape.finalize_weekly_brief()
@@ -154,20 +163,25 @@ def build_candidate_pool(fixtures: list) -> dict:
             "interrogation": f["interrogation"],
             "eps": f["eps"],
         })
+    synthetic = issue_week is None
     return {
-        "issue_week": "Calibration Fixture V2 -- synthetic data, not a real week",
+        "issue_week": issue_week or "Calibration Fixture V2 -- synthetic data, not a real week",
         "candidate_story_objects": candidates,
         "live_picks": [],
-        "live_picks_note": "No real TPE Picks data exists for this synthetic fixture -- Tasty Connection should reflect that honestly (empty or near-empty), not invent picks to fill the section.",
+        "live_picks_note": (
+            "No real TPE Picks data exists for this synthetic fixture -- Tasty Connection should reflect that honestly (empty or near-empty), not invent picks to fill the section."
+            if synthetic else
+            "No live TPE Picks were supplied to this run -- Tasty Connection should reflect that honestly (empty or near-empty), not invent picks to fill the section."
+        ),
     }
 
 
-def build_candidate_pool_input(fixtures: list) -> str:
+def build_candidate_pool_input(fixtures: list, issue_week: str | None = None) -> str:
     """Serialized form of build_candidate_pool() -- the user prompt."""
-    return json.dumps(build_candidate_pool(fixtures), indent=2)
+    return json.dumps(build_candidate_pool(fixtures, issue_week), indent=2)
 
 
-def run_weekly_editor_agent(fixtures: list, api_key: str) -> dict:
+def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None = None) -> dict:
     """
     One real call, then STRUCTURAL CONTRACT ENFORCEMENT before anything
     sees the result -- see weekly_brief_shape.py's module docstring for
@@ -199,7 +213,7 @@ def run_weekly_editor_agent(fixtures: list, api_key: str) -> dict:
     # Re-read per call as before; the file's bytes are what the cache keys on,
     # and they only change when someone edits the prompt (which SHOULD miss).
     system_prompt = system_blocks(PROMPT_PATH.read_text())
-    pool = build_candidate_pool(fixtures)
+    pool = build_candidate_pool(fixtures, issue_week)
     user_prompt = json.dumps(pool, indent=2)
     candidates = pool["candidate_story_objects"]
     live_picks = pool["live_picks"]
