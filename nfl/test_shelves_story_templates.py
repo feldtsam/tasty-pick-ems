@@ -37,7 +37,10 @@ def check(label, condition):
 RED_ZONE_DEFAULTS = {
     "proven_heat": 20.0, "emerging_heat": 50.0,
     "touch_share_trend_pct": 50.0, "snap_share_trend_pct": 50.0,
-    "i10_touches_trail3": 0.0, "gl_touches_trail3": 0.0, "rz_tds_trail3": 0.0,
+    # Rolling per-red-zone-game means from add_rolling_windows -- the
+    # production inputs red_zone_story reads (2026-10). Zero = no
+    # qualifying production.
+    "i10_touches_last3": 0.0, "gl_touches_last3": 0.0, "rz_tds_last3": 0.0,
 }
 
 POSITION_DEFAULTS = {
@@ -106,14 +109,111 @@ if __name__ == "__main__":
         and story["why_this_hits"] == "Red-zone touch share trending 71th percentile, snap share trending 63th percentile",
     ))
 
-    # --- proven_heat branch (real production) is completely untouched by
-    # this fix -- it doesn't read either trend field at all.
+    # ============================================================
+    # Production inputs (2026-10): the production branch reads the
+    # rolling per-red-zone-game means (gl/i10/rz_tds _last3) the row
+    # already carries, not the _trail3 sums that are NaN on the live
+    # one-week stub frame. Level language only, no trend word.
+    # ============================================================
+    PRODUCTION_WHY = (
+        "Averaging 1 goal-line touch, 1.5 inside-the-10 touches, and 1.5 red-zone touchdowns "
+        "per red-zone game over his most recent red-zone games (up to three)"
+    )
+    # (1) populated production -> production branch, level-based headline
+    row = rz_row(proven_heat=95.7, emerging_heat=50.0, i10_touches_last3=1.5, gl_touches_last3=1.0, rz_tds_last3=1.5)
+    story = red_zone_story(row)
+    results.append(check(
+        "red_zone_story: populated rolling production -> level-based goal-line headline (the 2026 wk7 Foster Moreau shape)",
+        story["headline"] == "He's getting goal-line opportunities." and story["why_this_hits"] == PRODUCTION_WHY,
+    ))
+    row = rz_row(proven_heat=71.9, emerging_heat=50.0, i10_touches_last3=0.5, gl_touches_last3=0.0, rz_tds_last3=1.0)
+    story = red_zone_story(row)
+    results.append(check(
+        "red_zone_story: inside-10 touches but no goal-line touches -> inside-the-10 wording, never a goal-line claim",
+        story["headline"] == "He's getting opportunities inside the 10."
+        and story["why_this_hits"] == (
+            "Averaging 0 goal-line touches, 0.5 inside-the-10 touches, and 1 red-zone touchdown "
+            "per red-zone game over his most recent red-zone games (up to three)"
+        ),
+    ))
     row = rz_row(proven_heat=80.0, emerging_heat=20.0, i10_touches_trail3=2.0, gl_touches_trail3=1.0, rz_tds_trail3=1.0)
     story = red_zone_story(row)
     results.append(check(
-        "red_zone_story: the real-production (proven_heat) branch is unaffected by the masked-trend fix",
-        story["headline"] == "The goal-line work is becoming his."
-        and story["why_this_hits"] == "1 goal-line touches, 2 inside-the-10 touches, and 1 red-zone touchdowns over his last three games",
+        "red_zone_story: _trail3 sums alone (the NaN-on-live-path inputs) no longer open the production branch",
+        story["headline"] == "The early role hasn't shown enough yet to call a direction.",
+    ))
+    results.append(check(
+        "red_zone_story: the old growth headline is gone and no trend-lexicon word survives in any production headline",
+        all(w not in red_zone_story(rz_row(proven_heat=90.0, i10_touches_last3=v, gl_touches_last3=g, rz_tds_last3=1.0))["headline"]
+            for v, g in ((1.0, 1.0), (0.5, 0.0))
+            for w in ("becoming", "climbing", "rising", "building", "growing", "trending")),
+    ))
+
+    # (2) no qualifying production keeps the masked fallback
+    for label, overrides in (
+        ("all three means at zero", dict(proven_heat=90.0, i10_touches_last3=0.0, gl_touches_last3=0.0, rz_tds_last3=0.0)),
+        ("a red-zone TD from outside the 10 with no inside-10 touch", dict(proven_heat=90.0, i10_touches_last3=0.0, gl_touches_last3=0.0, rz_tds_last3=1.0)),
+        ("rolling means absent from the row (NaN)", dict(proven_heat=90.0, i10_touches_last3=float("nan"), gl_touches_last3=float("nan"), rz_tds_last3=float("nan"))),
+    ):
+        story = red_zone_story(rz_row(**overrides))
+        results.append(check(
+            f"red_zone_story: no qualifying production ({label}) + masked trends -> masked fallback stays",
+            story["headline"] == "The early role hasn't shown enough yet to call a direction.",
+        ))
+
+    # (3)+(4) the real validators: no trend claim under masked evidence;
+    # every number in the why-text is a value on the row; the window
+    # and denominator are named honestly.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "content_writer"))
+    from factual_validation import find_trend_claims, trend_evidence_for_row, validate_trend_claims  # noqa: E402
+    from card_writer_common import validate_numeric_grounding  # noqa: E402
+    from nfl_writer_common import nfl_tolerance_for_key  # noqa: E402
+    checked = 0
+    ok_trend = ok_numbers = ok_window = True
+    for i10, gl, tds in ((1.5, 1.0, 1.5), (0.5, 0.0, 1.0), (1.0, 0.6667, 0.6667), (1.0, 1.0, 1.0), (0.5, 0.5, 0.5)):
+        row = rz_row(proven_heat=90.0, emerging_heat=50.0, i10_touches_last3=i10, gl_touches_last3=gl, rz_tds_last3=tds)
+        story = red_zone_story(row)
+        evidence = trend_evidence_for_row(row, "Red Zone Trends")
+        ok_trend &= evidence["status"] == "masked" and find_trend_claims(story["headline"]) == [] and validate_trend_claims(
+            {"title": story["headline"], "story": story["why_this_hits"]}, evidence) == []
+        facts = {k: float(v) for k, v in row.items()}
+        ok_numbers &= validate_numeric_grounding(
+            [{"reason_text": story["why_this_hits"], "source_fact_keys": ["gl_touches_last3", "i10_touches_last3", "rz_tds_last3"]}],
+            facts, nfl_tolerance_for_key) == []
+        ok_window &= "per red-zone game" in story["why_this_hits"] and "up to three" in story["why_this_hits"] and "last three games" not in story["why_this_hits"]
+        checked += 1
+    results.append(check(f"red_zone_story: masked trend inputs never yield a trend claim in headline or why-text ({checked} production rows)", ok_trend))
+    results.append(check(f"red_zone_story: every number in the why-text is a row value within numeric-grounding tolerance ({checked} rows, incl. 2/3 means)", ok_numbers))
+    results.append(check("red_zone_story: why-text names the real window and denominator (per red-zone game, up to three), never 'last three games'", ok_window))
+
+    # (5) scoring / eligibility untouched: red_zone_story is a pure read
+    # of the row, and build_red_zone_trends' card membership and order on
+    # a fixed fixture is the same before and after this change (expected
+    # values computed on main before the edit).
+    from shelves import build_red_zone_trends  # noqa: E402
+    row = rz_row(proven_heat=95.7, emerging_heat=50.0, i10_touches_last3=1.5, gl_touches_last3=1.0, rz_tds_last3=1.5)
+    before = row.copy()
+    red_zone_story(row)
+    results.append(check("red_zone_story: does not mutate the row (no scoring field touched)", row.equals(before)))
+    # Same fixture helpers test_shelves.py already uses for this function.
+    from test_shelves import make_row, make_weekly  # noqa: E402
+    fixture = make_weekly([
+        make_row(pid, td_opportunity=td, proven_heat=ph, i10_touches_last3=i10, gl_touches_last3=gl, rz_tds_last3=tds)
+        for pid, td, ph, i10, gl, tds in (
+            ("P0", 96.4, 95.7, 1.5, 1.0, 1.5), ("P1", 81.9, 81.9, 1.0, 0.5, 1.0),
+            ("P2", 65.6, 65.6, 0.0, 0.0, 1.0), ("P3", 40.0, 30.0, 0.0, 0.0, 0.0),
+        )
+    ])
+    cards = build_red_zone_trends(fixture)["cards"]
+    results.append(check(
+        "build_red_zone_trends: card membership and rank order on a fixed fixture are exactly what main produced (P0..P3, ranks 1-4)",
+        [(c["player_id"], c.get("rank")) for c in cards] == [("P0", 1), ("P1", 2), ("P2", 3), ("P3", 4)],
+    ))
+    results.append(check(
+        "build_red_zone_trends: only the headline differs -- P2 (a red-zone TD but no inside-10 touch) now keeps the masked fallback instead of the old growth claim",
+        cards[0]["headline"] == "He's getting goal-line opportunities."
+        and cards[2]["headline"] == "The early role hasn't shown enough yet to call a direction."
+        and "becoming" not in " ".join(c["headline"] for c in cards),
     ))
 
     # ============================================================
