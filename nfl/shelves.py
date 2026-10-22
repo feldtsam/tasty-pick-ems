@@ -926,16 +926,42 @@ def red_zone_story(row: pd.Series) -> dict:
     (the confirmed pool), and why_this_hits is the same content the
     "evidence" field used to hold — renamed only, per instruction.
     """
-    i10_trail = row.get("i10_touches_trail3")
-    gl_trail = row.get("gl_touches_trail3")
-    rz_tds_trail = row.get("rz_tds_trail3")
-    has_real_production = sum(x for x in (i10_trail, gl_trail, rz_tds_trail) if pd.notna(x)) > 0
+    # PRODUCTION INPUTS (2026-10): read the shift(1)'d rolling means
+    # add_rolling_windows already puts on the row (backfill_redzone's
+    # metrics list includes gl_touches / i10_touches / rz_tds) -- the
+    # per-red-zone-game average over the player's most recent red-zone
+    # games, up to three. NOT the _trail3 sums add_red_zone_trend_windows
+    # computes: on the live curation path that helper runs on the one-
+    # week stub frame, whose per-game counts are NaN by construction
+    # (build_stub_week.py), so the sums were NaN and this branch could
+    # never fire in production. Confirmed on the 2026 Week 7 board: all
+    # 20 Red Zone Rising cards fell through to the masked fallback while
+    # the same rows carried real inside-10 / goal-line means. Qualifying
+    # production = at least one inside-the-10 touch in the window (goal
+    # line is a subset of inside the 10); a red-zone touchdown from
+    # outside the 10 alone does not qualify.
+    gl_recent = row.get("gl_touches_last3")
+    i10_recent = row.get("i10_touches_last3")
+    rz_tds_recent = row.get("rz_tds_last3")
+    has_real_production = (
+        all(pd.notna(x) for x in (gl_recent, i10_recent, rz_tds_recent)) and float(i10_recent) > 0
+    )
 
     if row["proven_heat"] >= row["emerging_heat"] and has_real_production:
-        headline = "The goal-line work is becoming his."
+        # Level language only. These means say what he IS getting, not
+        # that it is growing -- the old "becoming his" headline implied a
+        # role expanding over time, which rolling production alone cannot
+        # establish, and that claim would be checked against trend
+        # evidence this row usually can't supply.
+        if float(gl_recent) > 0:
+            headline = "He's getting goal-line opportunities."
+        else:
+            headline = "He's getting opportunities inside the 10."
         why_this_hits = (
-            f"{int(gl_trail)} goal-line touches, {int(i10_trail)} inside-the-10 touches, and "
-            f"{int(rz_tds_trail)} red-zone touchdowns over his last three games"
+            f"Averaging {_recent_count(gl_recent)} goal-line {_noun(gl_recent, 'touch', 'touches')}, "
+            f"{_recent_count(i10_recent)} inside-the-10 {_noun(i10_recent, 'touch', 'touches')}, and "
+            f"{_recent_count(rz_tds_recent)} red-zone {_noun(rz_tds_recent, 'touchdown', 'touchdowns')} "
+            f"per red-zone game over his most recent red-zone games (up to three)"
         )
     elif is_masked_fallback(row, "touch_share_trend_pct") or is_masked_fallback(row, "snap_share_trend_pct"):
         # MASKED-HEAT TEMPLATE FIX (2026-10-01): touch_share_trend_pct/
@@ -976,6 +1002,19 @@ def red_zone_story(row: pd.Series) -> dict:
             f"snap share trending {row['snap_share_trend_pct']:.0f}th percentile"
         )
     return {"headline": headline, "why_this_hits": why_this_hits, "role_signals": red_zone_trends_role_signals(row)}
+
+
+def _recent_count(x) -> str:
+    """A rolling mean as prose: 1.0 -> "1", 1.5 -> "1.5", 2/3 -> "0.67".
+    Two decimals at most, so the printed number always sits within the
+    numeric-grounding EXACT_TOLERANCE (0.01) of the row's own value."""
+    s = f"{float(x):.2f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
+def _noun(x, singular: str, plural: str) -> str:
+    """Singular only for exactly one; "1.5 touches", "0 touches"."""
+    return singular if float(x) == 1.0 else plural
 
 
 def _red_zone_delta_is_up(row) -> bool:
