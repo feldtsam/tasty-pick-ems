@@ -985,3 +985,196 @@ def add_rolling_windows(weekly: pd.DataFrame, metrics: list[str] = None, group_c
         weekly[f"{m}_season_avg"] = g.transform(lambda s: s.expanding().mean().shift(1))
 
     return weekly
+
+
+# Team abbreviations that differ between snap_counts' own `team` column and
+# play-by-play's home_team/away_team. Same relocation/style aliases the rest
+# of nflverse carries; listed here because the participation frame is the one
+# place that has to join those two sources on team identity.
+_SNAP_TEAM_ALIASES = {"LAR": "LA", "OAK": "LV", "SD": "LAC", "STL": "LA", "WSH": "WAS", "JAC": "JAX"}
+
+PARTICIPATION_POSITIONS = ("RB", "WR", "TE", "FB")
+
+
+def build_participation_frame(
+    pbp: pd.DataFrame,
+    snap_counts: pd.DataFrame,
+    id_crosswalk: pd.DataFrame,
+    seasonal_rosters: pd.DataFrame,
+    curation_week: tuple[int, int] = None,
+) -> pd.DataFrame:
+    """
+    One row per RB/WR/TE/FB player-game in which the player took at
+    least one offensive snap, with the same rolling windows
+    add_rolling_windows produces, plus `games_played` -- the count of
+    PRIOR games actually played in that (player_id, season), 0-indexed
+    exactly like the cumcount scoring._trend_delta has always used, so
+    the `games_played > window` masking rule is unchanged by this frame.
+
+    WHY THIS EXISTS. aggregate_redzone_game emits a row only for a game
+    in which the player recorded a red-zone touch, so the weekly table's
+    own per-player row count is "games with a red-zone touch", not games
+    played. Every window and every games-played mask computed off those
+    rows therefore treats a game the player played but was not thrown to
+    inside the 20 as if it had not happened: last3 silently reaches back
+    across weeks of real football, and the mask reads a six-game starter
+    with two red-zone games as a two-game sample. Confirmed scale on the
+    real Week 7 2026 board: roughly 68 of 73 approved players carried
+    masked role-trend inputs for this reason.
+
+    THE ZERO RULE, inherited from aggregate_redzone_game rather than
+    invented here. A game with offensive snaps and no red-zone touch is
+    a real game with rz_touches = 0 and rz_touch_share = 0.0 -- but ONLY
+    when the player's team actually had red-zone touches in that game.
+    When the team never reached the red zone there is no denominator and
+    no opportunity to have missed, so rz_touch_share is NaN, the same
+    value aggregate_redzone_game's own rz_touches / team_rz_touches
+    produces when the denominator is absent. A zero there would assert
+    the player was passed over for work that did not exist.
+
+    A WEEK WITH NO SNAPS HAS NO ROW. A bye, an inactive, an injury
+    absence: these add no row at all, so they count neither as a game
+    played nor as a zero, and "last 3" means the last three games the
+    player actually played rather than the last three weeks on the
+    calendar. This is the same discipline add_rolling_windows already
+    applies to the weekly table; the difference is only which games are
+    on it.
+
+    curation_week ((season, week)): adds one pseudo-row per player at
+    that key so add_rolling_windows' shift(1) lands a real trailing
+    window ON the upcoming week's row, the same mechanism
+    run_pipeline's extra_offense_rows already uses for the weekly
+    table's stub rows. Each pseudo-row inherits the player's most recent
+    posteam that season. Without it the curation week has no row in this
+    frame to merge against and every upcoming-week player would fall
+    back to the weekly table's own masked windows.
+
+    Players who never resolve through id_crosswalk (a PFR id with no
+    gsis match) simply do not gain participation-only rows; their
+    red-zone rows are still present, exactly as before, so a crosswalk
+    gap degrades to today's behaviour for that player rather than
+    dropping him.
+    """
+    rz = aggregate_redzone_game(pbp, seasonal_rosters)
+
+    snaps = snap_counts[
+        (snap_counts["offense_snaps"] > 0)
+        & (snap_counts["position"].isin(PARTICIPATION_POSITIONS))
+    ].copy()
+    crosswalk = (
+        id_crosswalk[["pfr_id", "gsis_id"]]
+        .drop_duplicates()
+        .rename(columns={"gsis_id": "player_id"})
+    )
+    snaps = snaps.merge(crosswalk, left_on="pfr_player_id", right_on="pfr_id", how="inner")
+
+    games = pbp[["game_id", "season", "week", "home_team", "away_team"]].drop_duplicates()
+    snaps = snaps.merge(games, on=["game_id", "season", "week"], how="inner")
+
+    # snap_counts' `team` is the player's own team; posteam has to match one
+    # side of the real game or the (game_id, posteam) team-total join below
+    # silently finds nothing.
+    resolved = [
+        _SNAP_TEAM_ALIASES.get(t, t) if _SNAP_TEAM_ALIASES.get(t, t) in (h, a) else None
+        for t, h, a in zip(snaps["team"], snaps["home_team"], snaps["away_team"])
+    ]
+    snaps["posteam"] = resolved
+    snaps = snaps[snaps["posteam"].notna()]
+
+    # Only games NOT already represented by a real red-zone row.
+    have = set(zip(rz["game_id"], rz["player_id"]))
+    keep = [(g, p) not in have for g, p in zip(snaps["game_id"], snaps["player_id"])]
+    snaps = snaps[keep].drop_duplicates(subset=["game_id", "player_id"])
+
+    extra = pd.DataFrame({
+        "game_id": snaps["game_id"].values,
+        "season": snaps["season"].values,
+        "week": snaps["week"].values,
+        "posteam": snaps["posteam"].values,
+        "player_id": snaps["player_id"].values,
+    })
+    for c in rz.columns:
+        if c.endswith(("_touches", "_tds")) and c != "team_rz_touches":
+            extra[c] = 0
+    extra = extra.merge(
+        rz[["game_id", "posteam", "team_rz_touches"]].drop_duplicates(),
+        on=["game_id", "posteam"], how="left",
+    )
+    extra["rz_touch_share"] = np.where(extra["team_rz_touches"] > 0, 0.0, np.nan)
+
+    frame = pd.concat([rz, extra[rz.columns.intersection(extra.columns)]], ignore_index=True)
+
+    if curation_week is not None:
+        season, week = curation_week
+        prior = frame[frame["season"] == season].sort_values("week")
+        last_seen = prior.drop_duplicates("player_id", keep="last")[["player_id", "posteam"]]
+        pseudo = pd.DataFrame({
+            "player_id": last_seen["player_id"].values,
+            "posteam": last_seen["posteam"].values,
+        })
+        pseudo["game_id"] = f"{season}_{week:02d}_PARTICIPATION_STUB"
+        pseudo["season"] = season
+        pseudo["week"] = week
+        frame = pd.concat([frame, pseudo], ignore_index=True)
+
+    frame = frame.drop_duplicates(subset=["player_id", "season", "week"], keep="first")
+    frame = add_snap_shares(frame, snap_counts, id_crosswalk)
+    frame = add_rolling_windows(frame)
+    frame["games_played"] = frame.groupby(["player_id", "season"]).cumcount()
+    return frame
+
+
+PARTICIPATION_WINDOW_METRICS = ("snap_share", "rz_touch_share", "rz_touches")
+PARTICIPATION_WINDOW_SUFFIXES = ("_last3", "_last5", "_season_avg")
+
+
+def merge_participation_windows(weekly: pd.DataFrame, participation: pd.DataFrame) -> pd.DataFrame:
+    """
+    Overwrite `weekly`'s trend-window columns, ON THE ROWS, with the
+    participation frame's own, and attach its `games_played`.
+
+    ON THE ROWS is the whole point. It would be enough to feed
+    scoring._trend_delta alone if the scores were the only consumer, but
+    they are not: shelves._red_zone_delta_is_up, shelves._trend_candidate,
+    shelves.position_story and factual_validation.trend_evidence_for_row
+    all read `{metric}_last3` / `{metric}_season_avg` straight off the row
+    to decide whether a trend is real and which direction it points. Left
+    un-overwritten, those readers would still see the red-zone-only
+    windows while the pillar scores saw the participation ones, and the
+    card would narrate "holding steady" with a zero delta next to a score
+    that had just moved. That mismatch is exactly what the first
+    simulation pass produced.
+
+    Only _last3, _last5 and _season_avg are replaced, for the three
+    metrics the trend pillars actually read. _last1 is deliberately left
+    alone: it is a plain shift(1) of the previous row's value, nothing
+    reads it through a trend delta, and rewriting it would change
+    unrelated columns for no stated benefit.
+
+    A row with no participation match keeps its existing values rather
+    than being blanked -- a crosswalk gap should degrade to today's
+    behaviour for that player, not erase his windows. `games_played`
+    falls back to the same cumcount scoring._trend_delta computes today,
+    so every row has a defined, 0-indexed prior-games count whichever
+    side it came from.
+    """
+    cols = [f"{m}{s}" for m in PARTICIPATION_WINDOW_METRICS for s in PARTICIPATION_WINDOW_SUFFIXES]
+    present = [c for c in cols if c in participation.columns]
+
+    keys = ["player_id", "season", "week"]
+    source = (
+        participation[keys + present + ["games_played"]]
+        .drop_duplicates(subset=keys, keep="first")
+        .set_index(keys)
+    )
+
+    out = weekly.copy()
+    joined = out[keys].merge(source, left_on=keys, right_index=True, how="left")
+    joined.index = out.index
+
+    for c in present:
+        out[c] = joined[c].where(joined[c].notna(), out[c] if c in out.columns else np.nan)
+
+    fallback = out.groupby(["player_id", "season"]).cumcount()
+    out["games_played"] = joined["games_played"].where(joined["games_played"].notna(), fallback).astype("int64")
+    return out

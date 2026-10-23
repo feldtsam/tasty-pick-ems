@@ -45,7 +45,10 @@ from redzone import (
     aggregate_whole_game_carries,
     aggregate_whole_game_targets,
     build_id_crosswalk,
+    build_participation_frame,
+    merge_participation_windows,
 )
+from trend_frame import resolve as resolve_participation_frame
 from scoring import (
     score_evidence_quality,
     score_role_momentum,
@@ -213,6 +216,7 @@ def run_pipeline(
     weekly_stats: pd.DataFrame,
     extra_offense_rows: pd.DataFrame = None,
     extra_defense_rows: pd.DataFrame = None,
+    participation_frame: bool = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     The exact join/rolling-window/scoring sequence __main__ below runs,
@@ -258,7 +262,20 @@ def run_pipeline(
     anything not found (a stub row's game_id has no snap_counts entry
     yet, etc.) — the same missing-data philosophy this file already
     relies on for real historical gaps, not a new mechanism.
+
+    participation_frame: Option 2a. None (the default) resolves the
+    TREND_PARTICIPATION_FRAME environment variable through trend_frame,
+    the one place it is read; pass a boolean to force either mode. When
+    on, the three role-trend metrics' _last3/_last5/_season_avg columns
+    and a `games_played` column are recomputed from
+    build_participation_frame -- games the player actually played --
+    and overwritten onto `weekly` before any scoring runs, so the
+    pillar scores and every raw-delta reader downstream see the same
+    numbers. When off, nothing below changes at all and the output is
+    byte-identical to the pre-flag pipeline.
     """
+    use_participation = resolve_participation_frame(participation_frame)
+
     weekly = aggregate_redzone_game(pbp, seasonal_rosters)
     if extra_offense_rows is not None:
         stub_keys = extra_offense_rows[["season", "week"]].drop_duplicates()
@@ -335,8 +352,22 @@ def run_pipeline(
         weekly, metrics=["rz_touches", "rz_touch_share", "rz_tds", "snap_share", "gl_touches", "i10_touches"],
     )
 
-    weekly = score_td_opportunity(weekly)
-    weekly = score_role_momentum(weekly)
+    # Option 2a. AFTER add_rolling_windows, not before: this overwrites
+    # the very columns that call produces, so running it first would be
+    # undone one line later. Before every score_* call, so the pillars
+    # and the raw-delta readers downstream read one set of numbers.
+    if use_participation:
+        curation_week = None
+        if extra_offense_rows is not None and len(extra_offense_rows):
+            stub = extra_offense_rows[["season", "week"]].drop_duplicates()
+            curation_week = (int(stub["season"].iloc[0]), int(stub["week"].iloc[0]))
+        participation = build_participation_frame(
+            pbp, snap_counts, id_crosswalk, seasonal_rosters, curation_week=curation_week,
+        )
+        weekly = merge_participation_windows(weekly, participation)
+
+    weekly = score_td_opportunity(weekly, participation_frame=use_participation)
+    weekly = score_role_momentum(weekly, participation_frame=use_participation)
     weekly = score_situation(weekly, allowed_weekly)
     # Must run after the three pillars above — a pure meta-layer over
     # their own outputs (completeness columns + final scores), nothing
