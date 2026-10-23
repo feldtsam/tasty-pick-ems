@@ -409,7 +409,7 @@ def _percentile_fn(weekly: pd.DataFrame, config: dict, track_fallback: list = No
     return pct
 
 
-def _trend_delta(weekly: pd.DataFrame, col: str, window: int) -> pd.Series:
+def _trend_delta(weekly: pd.DataFrame, col: str, window: int, participation_frame: bool = False) -> pd.Series:
     """
     Recent-window mean minus season-to-date average, e.g.
     rz_touch_share_last3 - rz_touch_share_season_avg for window=3. Positive
@@ -448,8 +448,24 @@ def _trend_delta(weekly: pd.DataFrame, col: str, window: int) -> pd.Series:
     zero apart from a real one once enough history exists, and would
     incorrectly flatten a genuine stable multi-game trend that happens
     to land on exactly 0.0.
+
+    OPTION 2a (participation_frame=True). The cumcount above counts rows
+    on this frame, and a row exists only for a game in which the player
+    recorded a red-zone touch -- so it counts games with a red-zone
+    touch, not games played, and masks real multi-game samples as thin.
+    With the flag on, and only when run_pipeline has already merged a
+    `games_played` column from redzone.build_participation_frame, that
+    column is used instead: the same 0-indexed count of PRIOR games,
+    taken over games the player actually took an offensive snap in. The
+    masking RULE is untouched -- it is still games_played > window; only
+    which games are counted changes. A frame without the merged column
+    (any caller that did not run the merge) falls back to the cumcount,
+    so this is never a silent half-application.
     """
-    games_played = weekly.groupby(["player_id", "season"]).cumcount()
+    if participation_frame and "games_played" in weekly.columns:
+        games_played = weekly["games_played"]
+    else:
+        games_played = weekly.groupby(["player_id", "season"]).cumcount()
     delta = weekly[f"{col}_last{window}"] - weekly[f"{col}_season_avg"]
     return delta.where(games_played > window)
 
@@ -475,7 +491,7 @@ def _season_cumulative(weekly: pd.DataFrame, col: str) -> pd.Series:
     return g.transform(lambda s: s.cumsum().shift(1)).fillna(0)
 
 
-def score_td_opportunity(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+def score_td_opportunity(weekly: pd.DataFrame, config: dict = CONFIG, participation_frame: bool = False) -> pd.DataFrame:
     """
     Score every row of the red-zone weekly table (post add_snap_shares +
     add_rolling_windows) for TD Opportunity. Returns `weekly` with
@@ -535,9 +551,9 @@ def score_td_opportunity(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Data
     )
 
     # --- Emerging Heat: touch-share / snap-share / touch-volume trend ---
-    touch_share_trend_pct = pct(_trend_delta(weekly, "rz_touch_share", 3))
-    snap_share_trend_pct = pct(_trend_delta(weekly, "snap_share", 3))
-    touch_volume_trend_pct = pct(_trend_delta(weekly, "rz_touches", 3))
+    touch_share_trend_pct = pct(_trend_delta(weekly, "rz_touch_share", 3, participation_frame))
+    snap_share_trend_pct = pct(_trend_delta(weekly, "snap_share", 3, participation_frame))
+    touch_volume_trend_pct = pct(_trend_delta(weekly, "rz_touches", 3, participation_frame))
 
     emerging_heat = (
         eh_cfg["touch_share_trend_weight"] * touch_share_trend_pct
@@ -567,7 +583,7 @@ def score_td_opportunity(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.Data
     return weekly
 
 
-def score_role_momentum(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataFrame:
+def score_role_momentum(weekly: pd.DataFrame, config: dict = CONFIG, participation_frame: bool = False) -> pd.DataFrame:
     """
     Score every row for Role & Momentum (20% weight in the Universal TPE
     Score). Requires weekly to already have depth_rank
@@ -603,11 +619,13 @@ def score_role_momentum(weekly: pd.DataFrame, config: dict = CONFIG) -> pd.DataF
     # Reuses _trend_delta -- the exact same helper TD Opportunity's
     # Emerging Heat uses -- rather than recomputing the rolling deltas.
     touch_share_trend_pct = pd.concat(
-        [pct(_trend_delta(weekly, "rz_touch_share", 3)), pct(_trend_delta(weekly, "rz_touch_share", 5))],
+        [pct(_trend_delta(weekly, "rz_touch_share", 3, participation_frame)),
+         pct(_trend_delta(weekly, "rz_touch_share", 5, participation_frame))],
         axis=1,
     ).mean(axis=1)
     snap_share_trend_pct = pd.concat(
-        [pct(_trend_delta(weekly, "snap_share", 3)), pct(_trend_delta(weekly, "snap_share", 5))],
+        [pct(_trend_delta(weekly, "snap_share", 3, participation_frame)),
+         pct(_trend_delta(weekly, "snap_share", 5, participation_frame))],
         axis=1,
     ).mean(axis=1)
 
