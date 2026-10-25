@@ -369,9 +369,24 @@ if __name__ == "__main__":
         all(st["evidence_classification"] in ("strong", "moderate", "limited") for st in all_v2_stories),
     ))
     results.append(check(
-        "the real formula (confidence+completeness)/2 against real thresholds (>=80 strong, >=60 moderate) is applied correctly, checked against every real story's own confidence/completeness",
+        "the real formula (confidence+completeness)/2 against real thresholds (>=80 strong, >=60 moderate), "
+        "PLUS the thin-maturity ceiling (step 1b: a one-game trend window can reach 'moderate' but never "
+        "'strong'), is applied correctly against every real story's own confidence/completeness/maturity",
         all(
             st["evidence_classification"] == (
+                ("moderate" if st["methodology_maturity"] == "thin" else "strong")
+                if (st["confidence"] + st["completeness"]) / 2 >= 80.0
+                else "moderate" if (st["confidence"] + st["completeness"]) / 2 >= 60.0
+                else "limited"
+            )
+            for st in all_v2_stories
+        ),
+    ))
+    results.append(check(
+        "the ceiling only ever lowers: no real story is rated HIGHER than the bare formula would rate it",
+        all(
+            ("strong", "moderate", "limited").index(st["evidence_classification"])
+            >= ("strong", "moderate", "limited").index(
                 "strong" if (st["confidence"] + st["completeness"]) / 2 >= 80.0
                 else "moderate" if (st["confidence"] + st["completeness"]) / 2 >= 60.0
                 else "limited"
@@ -381,14 +396,17 @@ if __name__ == "__main__":
     ))
     real_classification_dist = {c: sum(1 for st in all_v2_stories if st["evidence_classification"] == c) for c in ("strong", "moderate", "limited")}
     results.append(check(
-        f"REAL FINDING, not a bug: since confidence and completeness are the SAME real value for this family "
+        f"REAL FINDING, updated by step 1b: confidence and completeness are the SAME real value for this family "
         f"(both set from defensive_matchup_completeness, confirmed always exactly 100.0 among every real story "
-        f"that clears the trend gate), evidence_classification is currently a real constant for Defensive Trends "
-        f"-- every one of the 176 real stories lands on 'strong' (got {real_classification_dist}). Not driven by "
-        f"a varying confidence signal so much as there being no real variation in either input at all for this "
-        f"family today -- worth knowing before this same formula is applied to a family where completeness/"
-        f"confidence genuinely differ or vary.",
-        real_classification_dist["strong"] == len(all_v2_stories) and real_classification_dist["moderate"] == 0 and real_classification_dist["limited"] == 0,
+        f"that clears the trend gate), so the bare formula rated every real story 'strong'. The thin-maturity "
+        f"ceiling is now the ONLY thing producing variation here, and it is real variation: the 'moderate' "
+        f"stories are exactly the thin, one-game-window reads (got {real_classification_dist}). The input signals "
+        f"themselves still do not vary -- worth knowing before this same formula is applied to a family where "
+        f"completeness/confidence genuinely differ.",
+        real_classification_dist["limited"] == 0
+        and real_classification_dist["moderate"] == sum(1 for st in all_v2_stories if st["methodology_maturity"] == "thin")
+        and real_classification_dist["strong"] == sum(1 for st in all_v2_stories if st["methodology_maturity"] != "thin")
+        and real_classification_dist["strong"] + real_classification_dist["moderate"] == len(all_v2_stories),
     ))
 
     wk18_stories, _ = build_defensive_trends_stories(weekly, 2025, 18)
