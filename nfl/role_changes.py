@@ -155,6 +155,7 @@ import numpy as np
 import pandas as pd
 
 from intelligence_schema import build_story, parse_list_field
+from trend_frame import resolve as resolve_participation_frame
 
 CONFIG = {
     # Minimum role_momentum to generate a story at all — see module
@@ -193,14 +194,38 @@ CONFIG = {
 }
 
 
-def _games_played(weekly: pd.DataFrame) -> pd.Series:
+def _games_played(weekly: pd.DataFrame, participation_frame: bool = False) -> pd.Series:
     """
     Real prior-games-this-season count, 1-indexed for human-readable
     display (first game of the season = 1) — the exact same cumcount
     scoring._trend_delta uses to mask forced-zero deltas, recomputed
     identically here (0-indexed there, +1 here only for display), not a
     different definition invented for this module.
+
+    OPTION 2a (participation_frame=True). Reads the `games_played`
+    column run_pipeline merged from redzone.build_participation_frame
+    when it is present on the frame, +1 for the same 1-indexed display
+    convention. That column is not a typed column of
+    nfl_player_redzone_weekly, so it rides in the row's `extra` jsonb
+    and comes back unpacked by reconcile_week.role_defensive_weekly_
+    snapshot — no new column, table or migration, and nothing to keep
+    in sync by hand.
+
+    WHY THIS MATTERS HERE and not only in scoring: this count drives
+    CONFIG["thin_games_played"] and the story's own sample_size. Left on
+    the red-zone-row cumcount while the Picks pillars moved to
+    participation counting, the same player could read "Rising" on a
+    card and be called a thin two-game sample by Role Changes in the
+    same week, off two different definitions of the same word.
+
+    A snapshot written before the flag was on carries no `games_played`
+    in `extra`; that falls back to the cumcount, so an old season's rows
+    degrade to today's behaviour instead of raising.
     """
+    if participation_frame and "games_played" in weekly.columns:
+        return pd.to_numeric(weekly["games_played"], errors="coerce").fillna(
+            weekly.groupby(["player_id", "season"]).cumcount()
+        ).astype("int64") + 1
     return weekly.groupby(["player_id", "season"]).cumcount() + 1
 
 
@@ -561,7 +586,8 @@ def _evidence_classification_for_row(completeness: float, confidence: float, con
     return "limited"
 
 
-def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG) -> list:
+def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, config: dict = CONFIG,
+                               participation_frame: bool = None) -> list:
     """
     weekly: the full multi-week player_redzone_weekly table (scoring.
     score_role_momentum's own output, any number of seasons/weeks) —
@@ -569,9 +595,14 @@ def build_role_changes_stories(weekly: pd.DataFrame, season: int, week: int, con
     compute games_played and depth_rank_prev the same way scoring.py's
     own trend-delta masking does. season/week: the target week to
     generate stories for. One story per qualifying RB/WR/TE row.
+
+    participation_frame: Option 2a. None resolves TREND_PARTICIPATION_
+    FRAME through trend_frame, the one place it is read; pass a boolean
+    to force either mode. See _games_played for what changes.
     """
+    use_participation = resolve_participation_frame(participation_frame)
     weekly = weekly.sort_values(["player_id", "season", "week"]).copy()
-    weekly["_games_played"] = _games_played(weekly)
+    weekly["_games_played"] = _games_played(weekly, use_participation)
     weekly["_depth_rank_prev"] = _depth_rank_prev(weekly)
     weekly["ahead_injury_statuses"] = weekly["ahead_injury_statuses"].apply(parse_list_field)
     weekly["_injured_teammates_parsed"] = weekly["ahead_injured_teammates"].apply(parse_list_field)

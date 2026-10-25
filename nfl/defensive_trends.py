@@ -387,6 +387,22 @@ def _headline_and_story(row: pd.Series, direction: str, thin_completeness: bool)
     """
     team, pos = row["defteam"], row["position_group"]
     last3, season_avg = row["allowed_rz_tds_last3"], row["allowed_rz_tds_season_avg"]
+    # The REAL window this row's trend was computed over (1 for a thin
+    # read, 3 otherwise) -- see _methodology_for_games_played. Every
+    # phrase below that describes the MODEL'S trend read uses this
+    # rather than a hardcoded "three". The red-zone-TD figures cited in
+    # the td_agrees branches are a genuine 3-game average and keep their
+    # own "last three" wording: that number does not change with the
+    # window, and relabelling it would make the sentence false.
+    window = row.get("_trend_window")
+    window_phrase = _games_phrase(window) if pd.notna(window) else "recent games"
+    # "Three weeks running" is a claim about the TREND, not about the
+    # TD average, so it cannot be said off a single-game window.
+    run_note = (
+        "Three weeks running, not one loud Sunday."
+        if pd.notna(window) and int(window) >= 3
+        else "That is a single game so far, not yet a pattern."
+    )
 
     # Compared at DISPLAY precision (1 decimal), not raw float precision:
     # two values that round to the same display text (e.g. 0.667 vs 0.733,
@@ -407,12 +423,12 @@ def _headline_and_story(row: pd.Series, direction: str, thin_completeness: bool)
         if td_agrees:
             story = (
                 f"Opponents have put up {last3:.1f} red-zone TDs per game on {team}'s {pos} defense over the last "
-                f"three, against a {season_avg:.1f} season average. Three weeks running, not one loud Sunday."
+                f"three, against a {season_avg:.1f} season average. {run_note}"
             )
         else:
             story = (
                 f"No single red-zone-TD number carries this one, but {team}'s {pos} defense has trended clearly "
-                f"more vulnerable over its last 3 games on the model's combined red-zone/inside-10/goal-line and "
+                f"more vulnerable over its last {window_phrase} on the model's combined red-zone/inside-10/goal-line and "
                 f"conversion-rate read — a real shift in the profile, just a diffuse one."
             )
     else:
@@ -425,10 +441,10 @@ def _headline_and_story(row: pd.Series, direction: str, thin_completeness: bool)
         else:
             story = (
                 f"No single red-zone-TD number carries this one, but {team}'s {pos} defense has trended clearly "
-                f"more resistant over its last 3 games on the model's combined red-zone/inside-10/goal-line and "
+                f"more resistant over its last {window_phrase} on the model's combined red-zone/inside-10/goal-line and "
                 f"conversion-rate read — a real shift in the profile, just a diffuse one."
             )
-    if thin_completeness:
+    if _is_developing_read(row, thin_completeness):
         story += " Based on a still-developing sample this season — worth confirming as more games are played."
 
     return headline, story, td_agrees
@@ -533,9 +549,41 @@ def _what_changed_for_row(row: pd.Series, direction: str, td_agrees: bool, thin_
         })
     items.append({
         "label": "Sample size",
-        "observation": f"Based on {int(row['_games_played'])} real games this season" + (" — still a developing read." if thin_completeness else ", an established, well-populated read."),
+        "observation": f"Based on {int(row['_games_played'])} real games this season"
+        + (" — still a developing read." if _is_developing_read(row, thin_completeness)
+           else ", an established, well-populated read."),
     })
     return items[:3]
+
+
+def _is_developing_read(row: pd.Series, thin_completeness: bool) -> bool:
+    """
+    Whether this row's read is still developing, for the customer-facing
+    "established, well-populated read" wording and for the evidence
+    classification ceiling.
+
+    TWO independent reasons a read is not established, and the text used
+    to know about only the first:
+
+      1. thin_completeness -- defensive_matchup_completeness below
+         config["thin_completeness"] (60). How complete the inputs are.
+      2. methodology_maturity == "thin" -- games_played 2-3, which
+         _methodology_for_games_played also drops to a ONE-game trend
+         window. How much season there is to read.
+
+    These come apart in real data, which is the whole reason this
+    exists: the live 2026 Week 5 Defensive rows carry completeness 100
+    and confidence 100 on games_played 3, so reason 1 never fired and
+    the card called a three-game, one-game-window read "an established,
+    well-populated read".
+
+    A row with no maturity at all (no trend applies) is not treated as
+    thin here -- absence of a maturity is not evidence of a thin one,
+    and those rows do not reach story generation anyway.
+    """
+    if thin_completeness:
+        return True
+    return row.get("_methodology_maturity") == "thin"
 
 
 def _games_phrase(n) -> str:
@@ -547,17 +595,36 @@ def _games_phrase(n) -> str:
     return f"{n} game" if n == 1 else f"{n} games"
 
 
-def _evidence_classification_for_row(completeness: float, confidence: float, config: dict) -> str:
+def _evidence_classification_for_row(
+    completeness: float, confidence: float, config: dict, maturity: str = None,
+) -> str:
     """
     The REAL formula, confirmed directly from Lovable's own
     trustIndicator() (not a placeholder — see CONFIG's own comment).
     sample_size deliberately plays no role here, confirmed: it's a
     real, separate signal that only ever reaches the frontend's own
     display detail string, never this classification.
+
+    THIN-MATURITY CEILING. The formula above reads only completeness and
+    confidence, both of which describe how complete THIS WEEK's inputs
+    are — neither knows how much season the trend was measured over. The
+    live 2026 Week 5 Defensive rows are the case that forced this: three
+    games played, a one-game trend window, methodology_maturity "thin",
+    and completeness/confidence both 100, so (100+100)/2 = 100 rated
+    them STRONG. "Strong" on a one-game window is not a judgement this
+    data supports.
+
+    The fix is a CEILING, not a new formula: a thin-maturity row can
+    reach "moderate" but never "strong". Everything else is untouched —
+    the thresholds, the arithmetic, and the result for every
+    developing/confirmed row, which is what `maturity=None` (the
+    default, for any caller that has no maturity to pass) also
+    preserves exactly. A thin row scoring below the moderate threshold
+    still returns "limited"; the ceiling only ever lowers, never raises.
     """
     score = (confidence + completeness) / 2
     if score >= config["evidence_strong_threshold"]:
-        return "strong"
+        return "moderate" if maturity == "thin" else "strong"
     if score >= config["evidence_moderate_threshold"]:
         return "moderate"
     return "limited"
@@ -614,7 +681,7 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
             f"defensive_matchup_vulnerability {row['defensive_matchup_vulnerability']:.0f}/100, "
             f"moved {row['_delta']:+.1f} points over the last {_games_phrase(row['_trend_window'])} vs. season-to-date",
             f"{int(row['_games_played'])} game(s) of data this season "
-            f"({'a thin, still-developing sample' if thin_completeness else 'an established, well-populated read'})",
+            f"({'a thin, still-developing sample' if _is_developing_read(row, thin_completeness) else 'an established, well-populated read'})",
         ]
         # Guarded the same way td_agrees already is below -- _defense_
         # weekly() now honestly degrades these two to NaN rather than
@@ -654,7 +721,9 @@ def build_defensive_trends_stories(weekly: pd.DataFrame, season: int, week: int,
         story["hero_metric"] = _hero_metric_for_row(row, direction, td_agrees, config)
         story["signal_direction"] = _signal_direction_for_row(direction)
         story["what_changed"] = _what_changed_for_row(row, direction, td_agrees, thin_completeness, config)
-        story["evidence_classification"] = _evidence_classification_for_row(story["completeness"], story["confidence"], config)
+        story["evidence_classification"] = _evidence_classification_for_row(
+            story["completeness"], story["confidence"], config, row["_methodology_maturity"],
+        )
         # Story Interrogation V1 (spec, 2026-09) -- schema slot only, same
         # "attached after build_story(), not part of its own hard
         # STORY_FIELDS contract" pattern as the v2 fields above.

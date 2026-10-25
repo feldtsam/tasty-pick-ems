@@ -129,6 +129,7 @@ from shelves import (
     add_whole_game_target_share_trend, build_around_the_league, eligible_pool, odds_band_eligible,
     odds_band_story, position_story, red_zone_story, section_title_for_shelf, td_opportunity_trend_for_row,
 )
+from stickiness_scale import resolve as resolve_percentile_stickiness
 from story_archetype import resolve_archetype
 from story_interrogation import interrogate_story
 
@@ -411,10 +412,10 @@ def _shelf_qualifying_pools(weekly: pd.DataFrame, shelves_config: dict = SHELVES
     return pools
 
 
-def _trend_percentiles(shelf_pools: dict) -> dict:
+def _trend_percentiles(shelf_pools: dict, shelves: tuple = None) -> dict:
     """
     {shelf_name: {player_id: percentile}} for the FOUR TREND shelves
-    only — the fix for the trend-vs-trend tiebreak (see assign_home_
+    by default — the fix for the trend-vs-trend tiebreak (see assign_home_
     shelves). td_opportunity and role_momentum are both nominally 0-100
     but are NOT calibrated to the same underlying distribution — real
     validation on this module's own real-data build confirmed this
@@ -433,9 +434,16 @@ def _trend_percentiles(shelf_pools: dict) -> dict:
     percentile here answers "how strong is this reading relative to
     everyone else who genuinely qualifies for THIS shelf," the
     apples-to-apples comparison the raw score never was.
+
+    `shelves`: which shelves to build a percentile map for. Defaults to
+    TREND_SHELVES, exactly as before. STICKINESS_PERCENTILE_SCALE passes
+    the full SHELF_ORDER so the stickiness comparison can put an odds
+    band and a trend shelf on one scale; the fresh trend-vs-trend
+    tiebreak above still asks only for TREND_SHELVES, so its reference
+    populations and its output are unchanged either way.
     """
     percentiles = {}
-    for shelf_name in TREND_SHELVES:
+    for shelf_name in (shelves if shelves is not None else TREND_SHELVES):
         pool = shelf_pools[shelf_name]
         col = PRIMARY_SIGNAL_COL[shelf_name]
         scale = build_reference_scale(pool[col])
@@ -452,6 +460,8 @@ def _compute_sticky_assignment(
     current_home_shelf: str, current_signal,
     prior_pending_shelf, prior_pending_run_count: int,
     margin: float = STICKINESS_MARGIN,
+    candidate_percentile: float = None, current_percentile: float = None,
+    percentile_scale: bool = False,
 ) -> dict:
     """
     Pure state-transition function for Proposal 2's approved stickiness
@@ -496,6 +506,26 @@ def _compute_sticky_assignment(
     a real interpretive extension of the approved design, not something
     explicitly signed off, flagged as such rather than silently assumed.
 
+    STICKINESS_PERCENTILE_SCALE (percentile_scale=True). The paragraph
+    above describes the raw-value comparison and flags its cross-scale
+    problem. With the flag on, the margin is applied to each shelf's own
+    PERCENTILE instead -- the same reference-population scale the fresh
+    trend-vs-trend tiebreak in assign_home_shelves already uses -- so
+    "20 points better" means the same thing whichever two shelves are
+    being compared. Measured on real 2026 Week 7 rows, zero of 97 trend
+    qualifiers could clear a 20-point raw margin over an odds-band or
+    Red Zone prior, because role_momentum runs at roughly the same raw
+    level as tpe_score rather than 20 above it; a cross-shelf move was
+    therefore unreachable in practice, not merely hard.
+
+    NOTHING ELSE CHANGES. The two-consecutive-runs rule, the
+    reset-on-miss rule, the candidate==current short circuit and the
+    current_signal-is-None immediate move are all identical on both
+    paths. Only the two numbers being subtracted change. When the flag
+    is on but either percentile is missing (a shelf with no percentile
+    map, which should not happen for a shelf the player qualifies for),
+    the comparison falls back to the raw values rather than guessing.
+
     Returns {"home_shelf": str, "pending_shelf": str|None,
     "pending_run_count": int} — the real new state to both use for this
     week's output AND persist to nfl_shelf_signal_history for next week.
@@ -508,7 +538,12 @@ def _compute_sticky_assignment(
         # shelf — nothing being challenged, nothing pending.
         return {"home_shelf": current_home_shelf, "pending_shelf": None, "pending_run_count": 0}
 
-    if candidate_signal - current_signal >= margin:
+    use_percentile = (
+        percentile_scale and candidate_percentile is not None and current_percentile is not None
+    )
+    lhs = candidate_percentile if use_percentile else candidate_signal
+    rhs = current_percentile if use_percentile else current_signal
+    if lhs - rhs >= margin:
         new_count = (prior_pending_run_count + 1) if candidate_shelf == prior_pending_shelf else 1
         if new_count >= 2:
             # Reassignment fires — nothing pending against the NEW home
@@ -524,7 +559,7 @@ def _compute_sticky_assignment(
 
 def assign_home_shelves(
     weekly: pd.DataFrame, config: dict = CONFIG, shelves_config: dict = SHELVES_CONFIG,
-    prior_assignments: dict = None,
+    prior_assignments: dict = None, percentile_stickiness: bool = None,
 ) -> pd.DataFrame:
     """
     One row per ATTD-eligible player (odds >= config["attd_odds_floor"])
@@ -550,6 +585,13 @@ def assign_home_shelves(
     when prior_assignments itself is non-None for OTHER players) is
     ALSO treated as first-appearance individually — the same "no prior
     row -> no comparison" rule the approved design already specifies.
+
+    percentile_stickiness: None (the default) resolves STICKINESS_
+    PERCENTILE_SCALE through stickiness_scale, the one place it is read;
+    pass a boolean to force either mode. When on, the stickiness margin
+    is compared on each shelf's own percentile rather than its raw
+    signal — see _compute_sticky_assignment. The fresh candidate pick
+    below is untouched in both modes.
     """
     overall_pool = weekly[_attd_eligible_overall(weekly, config["attd_odds_floor"])].drop_duplicates(subset=["player_id"]).copy()
     columns = [
@@ -561,8 +603,15 @@ def assign_home_shelves(
     if len(overall_pool) == 0:
         return pd.DataFrame(columns=columns)
 
+    use_percentile_stickiness = resolve_percentile_stickiness(percentile_stickiness)
     shelf_pools = _shelf_qualifying_pools(weekly, shelves_config)
     trend_percentiles = _trend_percentiles(shelf_pools)
+    # Built only when the flag is on: with it off nothing reads this and
+    # the extra percentile pass over the odds bands is not paid for.
+    sticky_percentiles = (
+        _trend_percentiles(shelf_pools, shelves=tuple(SHELF_ORDER))
+        if use_percentile_stickiness else {}
+    )
 
     # player_id -> {shelf_name: signal_value}, only for shelves they
     # actually qualify for. RAW values — still used for home_shelf_
@@ -616,6 +665,9 @@ def assign_home_shelves(
                 candidate_shelf, player_shelves[candidate_shelf],
                 current_home_shelf, current_signal,
                 prior.get("pending_shelf"), prior.get("pending_run_count") or 0,
+                candidate_percentile=sticky_percentiles.get(candidate_shelf, {}).get(pid),
+                current_percentile=sticky_percentiles.get(current_home_shelf, {}).get(pid),
+                percentile_scale=use_percentile_stickiness,
             )
             home_shelf = sticky["home_shelf"]
             pending_shelf, pending_run_count = sticky["pending_shelf"], sticky["pending_run_count"]
