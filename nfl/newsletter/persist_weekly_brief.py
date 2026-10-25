@@ -92,7 +92,8 @@ def freeze_eps_scores(story: dict) -> dict:
     }
 
 
-def shape_newsletter_rows(editor_output: dict, stories_by_id: dict, season: int, week: int) -> dict:
+def shape_newsletter_rows(editor_output: dict, stories_by_id: dict, season: int, week: int,
+                          existing_issue_id: str | None = None) -> dict:
     """
     PURE function — no I/O, no side effects. Takes one Weekly Editor
     Agent run's raw output (run_weekly_editor_agent()'s own return
@@ -107,6 +108,24 @@ def shape_newsletter_rows(editor_output: dict, stories_by_id: dict, season: int,
     stories, each already referencing the real issue id, in a single
     round trip) and a flat list of newsletter_story rows, one per
     section's per-story entry.
+
+    REUSING AN EXISTING ISSUE'S ID (existing_issue_id). A new id is
+    minted only when there is no issue for this (season, week) yet. When
+    one already exists, its own id MUST be passed in and reused, because
+    newsletter-write.ts upserts newsletter_issue on its real UNIQUE
+    (season, week) with the whole payload — `id` included — so a freshly
+    minted id becomes `ON CONFLICT (season, week) DO UPDATE SET id = ...`
+    and tries to change the primary key of a row that newsletter_story
+    rows already reference. That FK (newsletter_story.newsletter_issue_id
+    REFERENCES newsletter_issue(id) ON DELETE CASCADE) carries no
+    ON UPDATE clause, so it defaults to NO ACTION and the update is
+    refused: the second persist of a week fails at the issue upsert,
+    before the route gets as far as replacing the story set. Passing the
+    existing id makes the conflicting UPDATE a no-op on the key and the
+    re-persist behaves the way the route's own comment always said it
+    would ("a second real run for the same week updates the existing
+    draft"). The caller is responsible for reading the current issue
+    first — run_weekly_brief.py already does, for its persist guard.
 
     Gate-freezing (the whole point of this module): a story entry
     resolves to a single source Story Object when it cites exactly one
@@ -140,7 +159,7 @@ def shape_newsletter_rows(editor_output: dict, stories_by_id: dict, season: int,
     cross_references[] entry), so a caller can see a broken reference
     without this function crashing on it.
     """
-    issue_id = str(uuid.uuid4())
+    issue_id = existing_issue_id or str(uuid.uuid4())
     issue_row = {"id": issue_id, "season": season, "week": week}
 
     story_rows: list[dict] = []
@@ -198,6 +217,7 @@ def persist_weekly_brief(
     week: int,
     secret: str,
     write_url: str | None = None,
+    existing_issue_id: str | None = None,
 ) -> dict:
     """
     Shapes the rows (shape_newsletter_rows(), pure), then makes the one
@@ -205,12 +225,16 @@ def persist_weekly_brief(
     "stories": [...]} to newsletter-write.ts, matching intelligence_
     write.py's own combined-payload convention for stories+history.
 
+    Pass existing_issue_id when an issue for this (season, week) already
+    exists -- see shape_newsletter_rows() for why re-persisting without
+    it fails on the issue's foreign key.
+
     Returns {"shaped": <shape_newsletter_rows() return>, "write_result":
     <forward_to_lovable() return>} -- both the shaping result (useful
     even if the write fails, for diagnosis) and the raw HTTP result.
     """
     url = write_url or DEFAULT_WRITE_URL
-    shaped = shape_newsletter_rows(editor_output, stories_by_id, season, week)
+    shaped = shape_newsletter_rows(editor_output, stories_by_id, season, week, existing_issue_id)
     write_result = forward_to_lovable(
         {"issue": shaped["issue"], "stories": shaped["stories"]}, secret, url
     )
@@ -224,6 +248,7 @@ def run_and_persist(
     api_key: str,
     webhook_secret: str,
     write_url: str | None = None,
+    existing_issue_id: str | None = None,
 ) -> dict:
     """
     The full boundary, start to finish: qualified Story Objects (real
@@ -243,5 +268,6 @@ def run_and_persist(
     """
     stories_by_id = {f["intelligence_story_id"]: f for f in fixtures}
     editor_output = run_weekly_editor_agent(fixtures, api_key)
-    persisted = persist_weekly_brief(editor_output, stories_by_id, season, week, webhook_secret, write_url)
+    persisted = persist_weekly_brief(editor_output, stories_by_id, season, week, webhook_secret, write_url,
+                                     existing_issue_id)
     return {"editor_output": editor_output, **persisted}
