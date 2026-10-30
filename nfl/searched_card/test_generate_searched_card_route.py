@@ -253,10 +253,14 @@ def test_oversized_body_rejected_with_413_before_signature_work(monkeypatch):
     """No valid signature is even constructed for this request -- the
     size check must fire first, so an attacker can't force expensive HMAC
     work (or a database-sized payload) through just by signing it
-    correctly first."""
+    correctly first. Body is sized relative to the REAL current
+    SEARCHED_CARD_MAX_BODY_BYTES (512 KB as of this revision, was 256 KB)
+    rather than a fixed row count, so this test stays a genuine over-the-
+    cap case if that constant is ever changed again."""
     _with_secret(monkeypatch)
     client = index.app.test_client()
-    oversized_body = {"row": {"player_id": "p1"}, "pool": [{"pad": "x" * 1000} for _ in range(400)]}
+    rows_needed = index.SEARCHED_CARD_MAX_BODY_BYTES // 1000 + 100  # comfortable margin over the cap
+    oversized_body = {"row": {"player_id": "p1"}, "pool": [{"pad": "x" * 1000} for _ in range(rows_needed)]}
     raw = _raw(oversized_body)
     assert len(raw.encode("utf-8")) > index.SEARCHED_CARD_MAX_BODY_BYTES
 

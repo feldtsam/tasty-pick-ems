@@ -2705,7 +2705,7 @@ def write_newsletter_health_check():
 SEARCHED_CARD_SIGNATURE_HEADER = "X-Signature"
 SEARCHED_CARD_TIMESTAMP_HEADER = "X-Timestamp"
 SEARCHED_CARD_MAX_TIMESTAMP_SKEW_SECONDS = 60
-SEARCHED_CARD_MAX_BODY_BYTES = 256 * 1024
+SEARCHED_CARD_MAX_BODY_BYTES = 512 * 1024
 
 
 def _validate_searched_card_request_shape(data):
@@ -2788,6 +2788,18 @@ def generate_searched_card_endpoint():
     get_json() is ever called, so an invalid signature/timestamp is
     rejected before this route has parsed anything about what the body
     actually claims to contain.
+
+    SEARCHED_CARD_MAX_BODY_BYTES (512 KB as of this revision, was 256 KB)
+    was measured, not guessed, against the real week-7 2026 local export:
+    a 734-row pool trimmed to only the fields the classifier/pillar-
+    context code actually reads (see nfl/searched_card/searched_card_
+    pool_fields.SEARCHED_CARD_POOL_FIELDS) serializes to ~153 KB, comfortably
+    under either cap; the SAME pool with every column in that real export
+    (identity fields, tpe_score, market_value_score, consensus_implied_
+    probability included) serializes to ~261 KB — just OVER the original
+    256 KB cap. 512 KB keeps real headroom under both the intended
+    (POOL_FIELDS-only) shape and a caller that sends more than it strictly
+    needs to.
 
     ORDER, deliberate: (1) body-size check against the raw bytes — 413 if
     over SEARCHED_CARD_MAX_BODY_BYTES, before any signature work at all;
@@ -2878,9 +2890,12 @@ def generate_searched_card_health_check():
     return jsonify({
         "status": "ok",
         "usage": "POST {\"row\": {...}, \"pool\": [...], \"shelf_context\": str (optional), "
-                 "\"confidence_band\": str (optional)}, body capped at "
-                 f"{SEARCHED_CARD_MAX_BODY_BYTES} bytes (413 above that, checked before any signature "
-                 "work). Requires X-Timestamp: <unix seconds> (integer, within "
+                 "\"confidence_band\": str (optional)}. Pool rows should be trimmed to "
+                 "nfl/searched_card/searched_card_pool_fields.SEARCHED_CARD_POOL_FIELDS -- the exact "
+                 "fields the writer's classifier/pillar-context code reads, plus player_id. Body capped "
+                 f"at {SEARCHED_CARD_MAX_BODY_BYTES} bytes ({SEARCHED_CARD_MAX_BODY_BYTES // 1024} KB; "
+                 "413 above that, checked before any signature work). Requires X-Timestamp: <unix "
+                 "seconds> (integer, within "
                  f"{SEARCHED_CARD_MAX_TIMESTAMP_SKEW_SECONDS} seconds of server time in either direction -- "
                  "401 if missing, non-integer, or out of window -- this also rejects a replayed old, "
                  "otherwise-valid signed request) and X-Signature: sha256=<hex digest>, HMAC-SHA256 under "
