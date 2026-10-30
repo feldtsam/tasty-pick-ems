@@ -24,8 +24,7 @@ note after each card.
 
 **Story**: Recent red-zone touchdown production and conversion ranks
 below the median of this week's comparison group, and the matchup and
-environment read the same way. The week-over-week change in his role
-hasn't picked up either.
+environment read the same way.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 2 stars* — "His recent red-zone touchdown
@@ -97,8 +96,8 @@ count trend field is populated in this export to back a more specific
 
 **Story**: Recent red-zone touchdown production ranks above the median
 of this week's comparison group, and the week-over-week change in role
-does too, though that role trend is still an early read. The matchup and
-data-quality readings are both right around the comparison group's
+does too, though that role trend is still an early read. The matchup, and how solid the numbers
+behind this read are, both sit right around the comparison group's
 usual range. The football evidence here sits ahead of where the price
 sits this week — not a claim about whether the price itself is right,
 just about which side of the ledger is making the stronger case right
@@ -185,7 +184,7 @@ support a read on his role is effectively missing, not just modest.
    fact this label does NOT withhold, since arithmetic-only pricing is
    always available regardless of the evidence-gate outcome**
 
-**Resolved product decision this card surfaced**: the real schema calls
+**Proposed decision, awaiting Sam's approval**: the real schema calls
 for 2-3 `why_reasons` per card, but for a fully gated
 `insufficient_evidence` row, `pillar_context` is withheld down to just
 the `limits` list and the gate's own `reason`
