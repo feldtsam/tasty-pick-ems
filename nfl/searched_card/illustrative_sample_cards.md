@@ -98,10 +98,10 @@ count trend field is populated in this export to back a more specific
 week-over-week change in role, both rank above the median among this
 week's running backs, receivers and tight ends, though the role reading
 is still an early one. The matchup is right around the usual range for
-that group. The football
-evidence here sits ahead of where the price sits this week — not a
-claim about whether the price itself is right, just about which side of
-the ledger is making the stronger case right now.
+that group. The football evidence here sits ahead of where the price
+sits this week — not a claim about whether the price itself is right,
+just about which side of the ledger is making the stronger case right
+now.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 4 stars* — "Recent red-zone touchdown
@@ -118,25 +118,19 @@ the ledger is making the stronger case right now.
 3. *Pillar: market_price, 3 stars* — "The price implies a bit over one
    in five." — **field: `implied_probability_pct` (21.4)**
 
-**Note on the HARD RULES this card respects, and the one it currently
-fails by design**: the story's first sentence states the comparison
-basis once — "among this week's running backs, receivers and tight
-ends" — rather than repeating "comparison group" in every sentence that
-says "median"/"ranks," per the loosened wording Sam asked for. Under
-the CURRENT validator (`validate_comparison_basis_cited`, unmodified —
-this task is markdown-only), that sentence still FAILS: the check only
-recognizes the literal phrase "comparison group" in the same sentence,
-and "among this week's running backs, receivers and tight ends" isn't
-on that list. This is expected and accepted, pending the proposed
-validator change below (an approved-phrase list, checked once per
-story rather than once per sentence) — the story is written for the
-RULE the product wants, not for the CHECK as it exists today. Separately,
-and still true regardless of that pending change: nowhere does the text
-say this makes the price wrong, cheap, a bargain, or an opportunity —
-the evidence-vs-price sentence states the relative-ranking fact
-(`evidence_vs_price` = `evidence_ranks_higher`) without turning it into
-a verdict, and drops "ranks" entirely so it doesn't need to restate the
-basis a second time.
+**Note on the HARD RULES this card respects**: the story states its
+comparison basis once — "among this week's running backs, receivers and
+tight ends," in its first sentence — rather than repeating "comparison
+group" in every sentence that says "median"/"ranks." That one mention
+covers the whole story under the current `validate_comparison_basis_
+cited` check (an approved basis phrase is required only in, or before,
+the first sentence that trips a trigger word), so this story passes the
+comparison-basis check as written. It also makes no price verdict:
+nowhere does the text say this makes the price wrong, cheap, a bargain,
+or an opportunity — the evidence-vs-price sentence states the
+relative-ranking fact (`evidence_vs_price` = `evidence_ranks_higher`)
+without turning it into one, and drops "ranks" entirely in that
+sentence so it doesn't need to restate the basis a second time.
 
 ---
 
