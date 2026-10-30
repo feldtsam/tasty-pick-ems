@@ -38,13 +38,13 @@ STAGE 2 ADDITION: POST /api/generate-searched-card (bottom of this file)
 is a deliberately DIFFERENT shape from every route above — synchronous,
 triggered indirectly by an authenticated end user via the app (not
 Make.com), HMAC-signed with its own dedicated secret rather than check_
-pipeline_secret()'s bare shared-secret check, and reads NO database at
-all (row/pool are supplied directly in the request body by the caller).
-Still gated: SEARCHED_CARD_WRITER_ENABLED (nfl/searched_card/
-searched_card_flags.py) is False as of this commit, and this route
-returns 503 while it is, before ever calling generate_searched_card_
-draft with a live API key. See that route's own docstring for the full
-reasoning.
+pipeline_secret()'s bare shared-secret check, body-size capped and
+timestamp-windowed against replay (see that route's own docstring), and
+reads NO database at all (row/pool are supplied directly in the request
+body by the caller). Still gated: SEARCHED_CARD_WRITER_ENABLED (nfl/
+searched_card/searched_card_flags.py) is False as of this commit, and
+this route returns 503 while it is, before ever calling generate_
+searched_card_draft with a live API key.
 
 THIN/ZERO BOOK COVERAGE IS THE NORMAL CASE, not a failure — an event this
 far from kickoff with only 1 book posted, or even 0 books posted for this
@@ -2703,6 +2703,9 @@ def write_newsletter_health_check():
 # ---------------------------------------------------------------------------
 
 SEARCHED_CARD_SIGNATURE_HEADER = "X-Signature"
+SEARCHED_CARD_TIMESTAMP_HEADER = "X-Timestamp"
+SEARCHED_CARD_MAX_TIMESTAMP_SKEW_SECONDS = 60
+SEARCHED_CARD_MAX_BODY_BYTES = 256 * 1024
 
 
 def _validate_searched_card_request_shape(data):
@@ -2764,25 +2767,76 @@ def generate_searched_card_endpoint():
     SECRET, never PIPELINE_INCOMING_SECRET or NFL_PIPELINE_WEBHOOK_SECRET
     — a leak or rotation of one must never affect the others), compared
     with hmac.compare_digest (same constant-time discipline check_
-    pipeline_secret already uses), and verified against the EXACT raw
-    request body bytes — read via request.get_data() BEFORE request.
-    get_json() is ever called, so an invalid signature is rejected before
-    this route has parsed anything about what the body actually claims to
-    contain.
+    pipeline_secret already uses).
 
-    ORDER, deliberate: (1) signature check against the raw body — 401 on
-    missing/invalid, before any JSON parsing; (2) the flag check — 503 if
-    SEARCHED_CARD_WRITER_ENABLED is False, before spending any effort
-    validating a body this route couldn't use anyway; (3) parse + shape-
-    validate the body — 400 if malformed; (4) run the writer.
+    REPLAY PROTECTION (new this revision): the signed material is now
+    f"{timestamp}.{raw_body}", not the raw body alone, where `timestamp`
+    is the EXACT X-Timestamp header string the caller sent (not a
+    reparsed/reserialized int — a client that zero-padded or otherwise
+    formatted its own integer differently than Python's str(int(...))
+    would, would have a legitimate signature rejected if this re-
+    serialized it before re-hashing). The header must be present, must
+    parse as an integer, and must be within SEARCHED_CARD_MAX_TIMESTAMP_
+    SKEW_SECONDS (60) of this server's own clock, in EITHER direction —
+    a captured, validly-signed request replayed more than 60 seconds
+    after it was created is rejected on the timestamp check alone, before
+    the signature is even computed, regardless of how perfectly intact
+    its signature still is.
+
+    Both the signature and the timestamp are verified against the EXACT
+    raw request body bytes — read via request.get_data() BEFORE request.
+    get_json() is ever called, so an invalid signature/timestamp is
+    rejected before this route has parsed anything about what the body
+    actually claims to contain.
+
+    ORDER, deliberate: (1) body-size check against the raw bytes — 413 if
+    over SEARCHED_CARD_MAX_BODY_BYTES, before any signature work at all;
+    (2) timestamp check — 401 on a missing, non-integer, or out-of-window
+    X-Timestamp; (3) signature check against {timestamp}.{raw_body} — 401
+    on missing/invalid, before any JSON parsing; (4) the flag check — 503
+    if SEARCHED_CARD_WRITER_ENABLED is False, before spending any effort
+    validating a body this route couldn't use anyway; (5) parse + shape-
+    validate the body — 400 if malformed; (6) run the writer.
     """
+    raw_body = request.get_data()
+    if len(raw_body) > SEARCHED_CARD_MAX_BODY_BYTES:
+        print(
+            f"[generate-searched-card] status=413 reason=body_too_large raw_body_len={len(raw_body)}",
+            flush=True,
+        )
+        return jsonify({"error": f"request body exceeds {SEARCHED_CARD_MAX_BODY_BYTES} bytes"}), 413
+
     secret = os.environ.get("SEARCHED_CARD_PIPELINE_SECRET")
     if not secret:
         return jsonify({"error": "SEARCHED_CARD_PIPELINE_SECRET is not configured"}), 500
 
-    raw_body = request.get_data()
+    timestamp_header = request.headers.get(SEARCHED_CARD_TIMESTAMP_HEADER)
+    try:
+        timestamp_value = int(timestamp_header)
+    except (TypeError, ValueError):
+        print(
+            f"[generate-searched-card] status=401 reason=bad_timestamp "
+            f"timestamp_header={timestamp_header!r}",
+            flush=True,
+        )
+        return jsonify({"error": f"Missing or invalid {SEARCHED_CARD_TIMESTAMP_HEADER} header"}), 401
+
+    now = int(time.time())
+    skew = now - timestamp_value
+    if abs(skew) > SEARCHED_CARD_MAX_TIMESTAMP_SKEW_SECONDS:
+        print(
+            f"[generate-searched-card] status=401 reason=timestamp_out_of_window "
+            f"timestamp={timestamp_value} now={now} skew_seconds={skew}",
+            flush=True,
+        )
+        return jsonify({
+            "error": f"{SEARCHED_CARD_TIMESTAMP_HEADER} is outside the allowed "
+                     f"{SEARCHED_CARD_MAX_TIMESTAMP_SKEW_SECONDS}-second window",
+        }), 401
+
     provided_signature = request.headers.get(SEARCHED_CARD_SIGNATURE_HEADER)
-    expected_signature = compute_signature(secret, raw_body.decode("utf-8"))
+    signed_material = f"{timestamp_header}.{raw_body.decode('utf-8')}"
+    expected_signature = compute_signature(secret, signed_material)
     if not provided_signature or not hmac.compare_digest(provided_signature, expected_signature):
         print(
             f"[generate-searched-card] status=401 reason=bad_signature raw_body_len={len(raw_body)}",
@@ -2824,12 +2878,19 @@ def generate_searched_card_health_check():
     return jsonify({
         "status": "ok",
         "usage": "POST {\"row\": {...}, \"pool\": [...], \"shelf_context\": str (optional), "
-                 "\"confidence_band\": str (optional)}, signed with HMAC-SHA256 under "
-                 "SEARCHED_CARD_PIPELINE_SECRET (X-Signature: sha256=<hex digest> over the exact raw "
-                 "body bytes, same convention as lovable_forward.compute_signature). Returns 401 on a "
-                 "missing/invalid signature, 503 while SEARCHED_CARD_WRITER_ENABLED is False, 400 on a "
-                 "malformed body, 200 with a {\"status\": \"ready\"|\"validator_rejected\"|"
-                 "\"transport_failure\", ...} JSON body otherwise. No database access in this route.",
+                 "\"confidence_band\": str (optional)}, body capped at "
+                 f"{SEARCHED_CARD_MAX_BODY_BYTES} bytes (413 above that, checked before any signature "
+                 "work). Requires X-Timestamp: <unix seconds> (integer, within "
+                 f"{SEARCHED_CARD_MAX_TIMESTAMP_SKEW_SECONDS} seconds of server time in either direction -- "
+                 "401 if missing, non-integer, or out of window -- this also rejects a replayed old, "
+                 "otherwise-valid signed request) and X-Signature: sha256=<hex digest>, HMAC-SHA256 under "
+                 "SEARCHED_CARD_PIPELINE_SECRET over the exact string f'{timestamp}.{raw_body}' (the literal "
+                 "X-Timestamp header value, a '.', then the exact raw request body bytes -- same "
+                 "compute_signature convention as lovable_forward.py, now applied to that combined string "
+                 "rather than the body alone). Returns 401 on a missing/invalid timestamp or signature, 503 "
+                 "while SEARCHED_CARD_WRITER_ENABLED is False, 400 on a malformed body, 200 with a "
+                 "{\"status\": \"ready\"|\"validator_rejected\"|\"transport_failure\", ...} JSON body "
+                 "otherwise. No database access in this route.",
         "flag_enabled": SEARCHED_CARD_WRITER_ENABLED,
         "deployed_via": "github-auto-deploy",
     })
