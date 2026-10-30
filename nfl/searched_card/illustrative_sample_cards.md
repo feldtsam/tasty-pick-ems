@@ -24,7 +24,7 @@ note after each card.
 
 **Story**: Recent red-zone touchdown production and conversion, along
 with the matchup and environment reading, both rank below the median
-among this week's players.
+among this week's running backs, receivers and tight ends.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 2 stars* — "His recent red-zone touchdown
@@ -57,7 +57,8 @@ claim is made.
 
 **Story**: Recent red-zone touchdown production and conversion, along
 with the matchup and environment reading, both rank above the median
-among this week's players. There isn't much tension to chase this week —
+among this week's running backs, receivers and tight ends. There isn't
+much tension to chase this week —
 the on-field picture and the price are telling the same story, not
 competing ones.
 
@@ -96,8 +97,9 @@ count trend field is populated in this export to back a more specific
 
 **Story**: Recent red-zone touchdown production, along with the
 week-over-week change in role, both rank above the median among this
-week's players, though the role reading is still an early one. The
-matchup is right around the usual range for that group. The football
+week's running backs, receivers and tight ends, though the role reading
+is still an early one. The matchup is right around the usual range for
+that group. The football
 evidence here sits ahead of where the price sits this week — not a
 claim about whether the price itself is right, just about which side of
 the ledger is making the stronger case right now.
@@ -117,19 +119,25 @@ the ledger is making the stronger case right now.
 3. *Pillar: market_price, 3 stars* — "The price implies a bit over one
    in five." — **field: `implied_probability_pct` (21.4)**
 
-**Note on the HARD RULES this card respects**: the two median claims
-above each name their comparison group explicitly in the same sentence
-("...of this week's comparison group"), satisfying the comparison-basis
-rule. The sentence comparing the evidence to the price was corrected in
-this revision — it originally read "the profile ranks ahead of where
-the price sits," which uses "ranks" without naming a comparison group
-in that same sentence and would have failed the comparison-basis check;
-it's rephrased above to "the football evidence here sits ahead of where
-the price sits," which drops "ranks" entirely rather than restating the
-basis a second time. Separately, and still true: nowhere does the text
+**Note on the HARD RULES this card respects, and the one it currently
+fails by design**: the story's first sentence states the comparison
+basis once — "among this week's running backs, receivers and tight
+ends" — rather than repeating "comparison group" in every sentence that
+says "median"/"ranks," per the loosened wording Sam asked for. Under
+the CURRENT validator (`validate_comparison_basis_cited`, unmodified —
+this task is markdown-only), that sentence still FAILS: the check only
+recognizes the literal phrase "comparison group" in the same sentence,
+and "among this week's running backs, receivers and tight ends" isn't
+on that list. This is expected and accepted, pending the proposed
+validator change below (an approved-phrase list, checked once per
+story rather than once per sentence) — the story is written for the
+RULE the product wants, not for the CHECK as it exists today. Separately,
+and still true regardless of that pending change: nowhere does the text
 say this makes the price wrong, cheap, a bargain, or an opportunity —
-it states the relative-ranking fact (`evidence_vs_price` =
-`evidence_ranks_higher`) without turning it into a verdict.
+the evidence-vs-price sentence states the relative-ranking fact
+(`evidence_vs_price` = `evidence_ranks_higher`) without turning it into
+a verdict, and drops "ranks" entirely so it doesn't need to restate the
+basis a second time.
 
 ---
 
@@ -141,9 +149,10 @@ it states the relative-ranking fact (`evidence_vs_price` =
 
 **Story**: Recent red-zone touchdown production, along with the
 week-over-week change in role, both rank above the median among this
-week's players, though both readings here rest on less recent data than
-most players have this week. The matchup is right around the usual
-range for that group. This is a real signal, just an early one.
+week's running backs, receivers and tight ends, though both readings
+here rest on less recent data than most players have this week. The
+matchup is right around the usual range for that group. This is a real
+signal, just an early one.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 3 stars* — "Recent red-zone touchdown
