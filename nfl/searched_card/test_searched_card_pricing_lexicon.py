@@ -540,3 +540,48 @@ def test_known_limitation_explicitly_negated_basis_phrase_still_counts():
     the rule anyway. Documented limitation, not fixed here."""
     story = "Among this week's players is not the point. His production is below the median."
     assert validate_comparison_basis_cited(story) == []
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION, this revision -- "ranked"/"ranking" were added to
+# _COMPARISON_WORD_RE in a prior revision and caused real false positives:
+# ordinary, non-comparison football-role sentences use "ranked"/"ranking"
+# constantly ("he was ranked a starter," "ranking third in snaps," "ranked
+# as the RB2") without making any comparison claim this check should care
+# about. "ranked"/"ranking" are removed from the trigger regex; "rank"/
+# "ranks" (via ranks?) are kept, since those are the forms the comparison-
+# basis rule's own real examples ("his production ranks below the median")
+# actually use. These five tests pin down the fix: three ordinary role
+# sentences using "ranked"/"ranking" must now pass cleanly (no trigger at
+# all), and the regex must still do its real job on "rank"/"ranks" --
+# flagging a missing basis and accepting a stated one.
+# ---------------------------------------------------------------------------
+
+def test_ranked_in_an_ordinary_role_sentence_is_not_a_trigger():
+    story = "He was ranked a starter in the preseason depth chart."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_ranking_in_an_ordinary_role_sentence_is_not_a_trigger():
+    story = "He is ranking third among the team's backs in snaps."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_ranked_as_the_rb2_in_an_ordinary_role_sentence_is_not_a_trigger():
+    story = "He ranked as the RB2 last week."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_rank_word_without_basis_is_still_flagged():
+    story = "His carries rank above the median."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert violations[0]["sentence"] == story
+
+
+def test_rank_word_with_basis_in_the_same_sentence_passes():
+    story = (
+        "His carries rank above the median among this week's running backs, "
+        "receivers and tight ends."
+    )
+    assert validate_comparison_basis_cited(story) == []
