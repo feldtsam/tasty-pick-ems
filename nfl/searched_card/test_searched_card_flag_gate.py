@@ -21,5 +21,9 @@ def test_flag_defaults_to_false():
 
 
 def test_entry_point_refuses_to_run_while_flag_is_false():
+    """Stage 2: generate_searched_card_draft's real signature is now
+    (row, pool, anthropic_api_key, **kwargs) -- pool is a required
+    positional, not optional, since the real implementation needs it to
+    classify the row. Still raises before touching either argument."""
     with pytest.raises(RuntimeError, match="SEARCHED_CARD_WRITER_ENABLED is False"):
-        generate_searched_card_draft({"player_id": "test"}, anthropic_api_key="not-a-real-key")
+        generate_searched_card_draft({"player_id": "test"}, [], "not-a-real-key")

@@ -34,6 +34,18 @@ unmodified (parse_attd_event / match_attd_players / snapshot_scoring_
 inputs / new_price_history_rows) — this file is plumbing around them, not
 new scoring or parsing logic.
 
+STAGE 2 ADDITION: POST /api/generate-searched-card (bottom of this file)
+is a deliberately DIFFERENT shape from every route above — synchronous,
+triggered indirectly by an authenticated end user via the app (not
+Make.com), HMAC-signed with its own dedicated secret rather than check_
+pipeline_secret()'s bare shared-secret check, and reads NO database at
+all (row/pool are supplied directly in the request body by the caller).
+Still gated: SEARCHED_CARD_WRITER_ENABLED (nfl/searched_card/
+searched_card_flags.py) is False as of this commit, and this route
+returns 503 while it is, before ever calling generate_searched_card_
+draft with a live API key. See that route's own docstring for the full
+reasoning.
+
 THIN/ZERO BOOK COVERAGE IS THE NORMAL CASE, not a failure — an event this
 far from kickoff with only 1 book posted, or even 0 books posted for this
 specific market, produces fewer (or zero) price-history rows for that
@@ -82,6 +94,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
 # endpoint above never needed this (market_value.py lives in nfl/ itself),
 # but reconcile_week.py lives in scripts/ alongside backfill_redzone.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+# nfl/searched_card/, so `from searched_card_writer_entry import ...` and
+# `from searched_card_flags import ...` resolve (Stage 2's new /api/
+# generate-searched-card route below) — same bare-top-level-module import
+# convention every file inside that package already uses for its own
+# siblings, kept consistent here rather than importing it as a dotted
+# nfl.searched_card.* package from this side.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "searched_card"))
 
 from flask import Flask, jsonify, request
 import nfl_data_py as nfl
@@ -102,7 +121,9 @@ from curate_home_shelves import (
 )
 from intelligence_generate import FAMILIES, generate_and_write_intelligence
 from intelligence_write import process_family, write_intelligence_rows
-from lovable_forward import forward_to_lovable, resolve_url_env, truncate_for_log
+from lovable_forward import compute_signature, forward_to_lovable, resolve_url_env, truncate_for_log
+from searched_card_flags import SEARCHED_CARD_WRITER_ENABLED
+from searched_card_writer_entry import generate_searched_card_draft
 from market_value import (
     CURATION_MARKET_VALUE_COLUMNS,
     PRICE_HISTORY_COLUMNS,
@@ -2671,5 +2692,144 @@ def write_newsletter_health_check():
                  "then writes newsletter_issue/newsletter_story via one real signed call to newsletter-write.ts "
                  "-- the one step that requires running inside this deployment (NFL_PIPELINE_WEBHOOK_SECRET is "
                  "a Vercel Sensitive var, unavailable to local execution).",
+        "deployed_via": "github-auto-deploy",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — POST /api/generate-searched-card. See this file's own module
+# docstring for why this route is a deliberately different shape from
+# every route above.
+# ---------------------------------------------------------------------------
+
+SEARCHED_CARD_SIGNATURE_HEADER = "X-Signature"
+
+
+def _validate_searched_card_request_shape(data):
+    """
+    SHAPE ONLY. Returns an error string if `data` isn't a valid body for
+    this route, or None if it's shaped well enough to hand to generate_
+    searched_card_draft. Does not re-check evidence_price_classifier.
+    REQUIRED_ROW_FIELDS -- classify_evidence_vs_price already raises
+    ValueError itself if `row` is missing one of those, and duplicating
+    that list here would risk the two silently drifting apart on what
+    "required" means.
+    """
+    if not isinstance(data, dict):
+        return "request body must be a JSON object"
+    row = data.get("row")
+    if not isinstance(row, dict) or not row:
+        return "'row' must be a non-empty object"
+    pool = data.get("pool")
+    if not isinstance(pool, list) or not pool:
+        return "'pool' must be a non-empty array"
+    if not all(isinstance(r, dict) for r in pool):
+        return "every item in 'pool' must be an object"
+    return None
+
+
+@app.route("/api/generate-searched-card", methods=["POST"])
+def generate_searched_card_endpoint():
+    """
+    Runs the gated Searched Card writer (nfl/searched_card/
+    searched_card_writer_entry.generate_searched_card_draft) against a
+    row/pool supplied directly in the request body, and returns its
+    result as JSON. Always 200 for a request that was authenticated,
+    enabled, and well-shaped enough to actually run -- the real outcome
+    (ready / validator_rejected / transport_failure) lives in the JSON
+    body's own "status" field, not in the HTTP status code; see
+    generate_searched_card_draft's own docstring for what each status
+    means. 401/503/400/500 below are genuine request-level rejections —
+    this route never ran the writer at all in any of those cases.
+
+    NO DATABASE ACCESS IN THIS ROUTE. row/pool are supplied directly by
+    the caller — this deployment has never had a live DB connection of
+    its own (every other route in this file either reads from the
+    request body it's given or writes outbound via forward_to_lovable;
+    none of them query a database directly either), and this route keeps
+    that same boundary rather than acquiring a new one just for this
+    feature.
+
+    AUTH: a dedicated HMAC-signed-body scheme, not check_pipeline_
+    secret()'s bare shared-secret header check every route above this
+    one uses. That function's own docstring justifies its weaker check on
+    "a small, fixed, Make.com-only trigger with no attacker-shaped body
+    worth signing" — the opposite of this route, which is reachable
+    (indirectly, via the app) by an authenticated end user whose request
+    body (player_id/event_id-shaped row/pool data) directly parameterizes
+    a real, cost-incurring LLM call. Modeled on this deployment's own
+    OUTBOUND signing scheme (lovable_forward.compute_signature), now used
+    INBOUND for this one route: the body is signed with HMAC-SHA256 under
+    a secret dedicated to this route alone (SEARCHED_CARD_PIPELINE_
+    SECRET, never PIPELINE_INCOMING_SECRET or NFL_PIPELINE_WEBHOOK_SECRET
+    — a leak or rotation of one must never affect the others), compared
+    with hmac.compare_digest (same constant-time discipline check_
+    pipeline_secret already uses), and verified against the EXACT raw
+    request body bytes — read via request.get_data() BEFORE request.
+    get_json() is ever called, so an invalid signature is rejected before
+    this route has parsed anything about what the body actually claims to
+    contain.
+
+    ORDER, deliberate: (1) signature check against the raw body — 401 on
+    missing/invalid, before any JSON parsing; (2) the flag check — 503 if
+    SEARCHED_CARD_WRITER_ENABLED is False, before spending any effort
+    validating a body this route couldn't use anyway; (3) parse + shape-
+    validate the body — 400 if malformed; (4) run the writer.
+    """
+    secret = os.environ.get("SEARCHED_CARD_PIPELINE_SECRET")
+    if not secret:
+        return jsonify({"error": "SEARCHED_CARD_PIPELINE_SECRET is not configured"}), 500
+
+    raw_body = request.get_data()
+    provided_signature = request.headers.get(SEARCHED_CARD_SIGNATURE_HEADER)
+    expected_signature = compute_signature(secret, raw_body.decode("utf-8"))
+    if not provided_signature or not hmac.compare_digest(provided_signature, expected_signature):
+        print(
+            f"[generate-searched-card] status=401 reason=bad_signature raw_body_len={len(raw_body)}",
+            flush=True,
+        )
+        return jsonify({"error": f"Missing or invalid {SEARCHED_CARD_SIGNATURE_HEADER} header"}), 401
+
+    if not SEARCHED_CARD_WRITER_ENABLED:
+        print("[generate-searched-card] status=503 reason=flag_disabled", flush=True)
+        return jsonify({"error": "SEARCHED_CARD_WRITER_ENABLED is False"}), 503
+
+    data = request.get_json(force=True, silent=True)
+    shape_error = _validate_searched_card_request_shape(data)
+    if shape_error:
+        print(f"[generate-searched-card] status=400 reason={shape_error!r}", flush=True)
+        return jsonify({"error": shape_error}), 400
+
+    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not anthropic_api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY is not configured"}), 500
+
+    result = generate_searched_card_draft(
+        data["row"],
+        data["pool"],
+        anthropic_api_key,
+        shelf_context=data.get("shelf_context"),
+        confidence_band=data.get("confidence_band"),
+    )
+    print(
+        f"[generate-searched-card] status=200 writer_status={result.get('status')} "
+        f"player_id={data['row'].get('player_id')!r}",
+        flush=True,
+    )
+    return jsonify(result), 200
+
+
+@app.route("/api/generate-searched-card", methods=["GET"])
+def generate_searched_card_health_check():
+    return jsonify({
+        "status": "ok",
+        "usage": "POST {\"row\": {...}, \"pool\": [...], \"shelf_context\": str (optional), "
+                 "\"confidence_band\": str (optional)}, signed with HMAC-SHA256 under "
+                 "SEARCHED_CARD_PIPELINE_SECRET (X-Signature: sha256=<hex digest> over the exact raw "
+                 "body bytes, same convention as lovable_forward.compute_signature). Returns 401 on a "
+                 "missing/invalid signature, 503 while SEARCHED_CARD_WRITER_ENABLED is False, 400 on a "
+                 "malformed body, 200 with a {\"status\": \"ready\"|\"validator_rejected\"|"
+                 "\"transport_failure\", ...} JSON body otherwise. No database access in this route.",
+        "flag_enabled": SEARCHED_CARD_WRITER_ENABLED,
         "deployed_via": "github-auto-deploy",
     })

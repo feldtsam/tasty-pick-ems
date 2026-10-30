@@ -112,13 +112,27 @@ SEARCHED_CARD_TOOL_SCHEMA = {
 }
 
 
-def validate_searched_card_schema_shape(output: dict) -> list:
+def validate_searched_card_schema_shape(output: dict, label: str = None) -> list:
     """
     Defense-in-depth structural check, same discipline as nfl_shelf_
     card_writer_schema.validate_schema_shape — re-checks the pillar enum
     against SEARCHED_CARD_PILLAR_NAMES rather than trusting the shared
     WHY_REASONS_ARRAY_SCHEMA's own (MLB-pillar-enum-free, but still
     generic) item shape alone.
+
+    STAGE 2 ADDITION: `label` (optional, defaults to None — every caller
+    from before this stage keeps its old behavior, always requiring 2-3
+    items) implements illustrative_sample_cards.md's Card E proposal, now
+    approved rather than merely proposed: when `label ==
+    "insufficient_evidence"`, exactly 1 why_reason is required instead of
+    the usual 2-3. A fully-gated card's pillar_context is withheld down to
+    just its `limits` list (see pillar_context.writer_facing_pillar_
+    context) — there is no second real pillar claim available to write
+    honestly, so forcing 2-3 would either invent one or pad with something
+    uncited. See searched_card_tool_schema_for_label below for the
+    matching change to the tool schema actually sent to the model, so this
+    isn't only a post-hoc check on a model that was never told the real
+    rule.
     """
     errors = []
     if not isinstance(output.get("title"), str) or not output["title"].strip():
@@ -135,7 +149,10 @@ def validate_searched_card_schema_shape(output: dict) -> list:
         errors.append("why_reasons must be a list")
         return errors
 
-    if not (2 <= len(reasons) <= 3):
+    if label == "insufficient_evidence":
+        if len(reasons) != 1:
+            errors.append(f"why_reasons must have exactly 1 item for an insufficient_evidence card, got {len(reasons)}")
+    elif not (2 <= len(reasons) <= 3):
         errors.append(f"why_reasons must have 2-3 items, got {len(reasons)}")
 
     for i, r in enumerate(reasons):
@@ -154,6 +171,29 @@ def validate_searched_card_schema_shape(output: dict) -> list:
             errors.append(f"why_reasons[{i}].source_fact_keys must be a non-empty list")
 
     return errors
+
+
+def searched_card_tool_schema_for_label(label: str) -> dict:
+    """
+    STAGE 2 ADDITION. Returns SEARCHED_CARD_TOOL_SCHEMA unmodified for
+    every label except "insufficient_evidence", where why_reasons'
+    minItems/maxItems are both overridden to 1 — the real tool schema
+    forced on the model should ask for exactly what the product rule
+    allows (see validate_searched_card_schema_shape's own matching
+    exception above), not rely on a post-hoc count check alone to catch a
+    model that followed the generic "2-3" description instead.
+    """
+    if label != "insufficient_evidence":
+        return SEARCHED_CARD_TOOL_SCHEMA
+    import copy
+    schema = copy.deepcopy(SEARCHED_CARD_TOOL_SCHEMA)
+    schema["input_schema"]["properties"]["why_reasons"]["minItems"] = 1
+    schema["input_schema"]["properties"]["why_reasons"]["maxItems"] = 1
+    schema["input_schema"]["properties"]["why_reasons"]["description"] = (
+        "Exactly 1 reason -- this card is gated to insufficient_evidence, so only the price "
+        "arithmetic (market_price / implied_probability_pct) is available to cite honestly."
+    )
+    return schema
 
 
 def build_searched_card(
