@@ -60,7 +60,7 @@ SEARCHED_CARD_PILLAR_NAMES = ("td_opportunity", "role_momentum", "situation", "m
 MIN_STORY_LENGTH = 60
 MAX_STORY_LENGTH = 900
 
-EVIDENCE_VS_PRICE_LABELS = ("supports_expectation", "raises_questions", "insufficient_evidence")
+EVIDENCE_VS_PRICE_LABELS = ("supports_expectation", "diverges_from_expectation", "insufficient_evidence")
 
 REVIEW_STATUSES = ("pending_review", "flagged")  # NEVER "approved" — see build_searched_card()
 

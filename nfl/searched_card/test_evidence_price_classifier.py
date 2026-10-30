@@ -30,7 +30,7 @@ from evidence_price_classifier import (  # noqa: E402
     EVIDENCE_RANKS_LOWER,
     INSUFFICIENT_EVIDENCE,
     MIN_POOL_SIZE,
-    RAISES_QUESTIONS,
+    DIVERGES_FROM_EXPECTATION,
     SUPPORTS_EXPECTATION,
     TD_OPPORTUNITY_COMPLETENESS_FLOOR,
     classify_evidence_vs_price,
@@ -77,11 +77,11 @@ def test_close_rank_match_yields_supports_expectation():
     assert abs(result["gap"]) <= 30.0
 
 
-def test_large_rank_gap_yields_raises_questions():
+def test_large_rank_gap_yields_diverges_from_expectation():
     pool = _load_real_pool()
     row = next(r for r in pool if r["player_name"] == "Tutu Atwell")
     result = classify_evidence_vs_price(row, pool)
-    assert result["label"] == RAISES_QUESTIONS
+    assert result["label"] == DIVERGES_FROM_EXPECTATION
     assert abs(result["gap"]) > 30.0
 
 
@@ -101,10 +101,10 @@ def test_label_distribution_on_the_real_fixture_is_non_degenerate():
     """Sanity check on GAP_THRESHOLD=30: none of the three labels should
     swallow the entire population (a threshold of 0 or 100 would)."""
     pool = _load_real_pool()
-    counts = {SUPPORTS_EXPECTATION: 0, RAISES_QUESTIONS: 0, INSUFFICIENT_EVIDENCE: 0}
+    counts = {SUPPORTS_EXPECTATION: 0, DIVERGES_FROM_EXPECTATION: 0, INSUFFICIENT_EVIDENCE: 0}
     for row in pool:
         counts[classify_evidence_vs_price(row, pool)["label"]] += 1
-    assert counts == {"supports_expectation": 379, "raises_questions": 331, "insufficient_evidence": 35}
+    assert counts == {"supports_expectation": 379, "diverges_from_expectation": 331, "insufficient_evidence": 35}
 
 
 def test_classify_real_fixture_rows_and_print_rubric_table():
@@ -158,7 +158,7 @@ def test_synthetic_short_odds_rows_for_the_band_the_real_fixture_lacks():
          "td_opportunity": 88.0, "role_momentum": 75.0, "situation": 70.0, "evidence_quality": 80.0,
          "consensus_price_american": -250.0},
         # A short price (-180) on a player whose own football evidence is
-        # actually mediocre -- expect raises_questions (price ranks far
+        # actually mediocre -- expect diverges_from_expectation (price ranks far
         # above the evidence).
         {"player_name": "SYNTHETIC: short price, mediocre evidence, -180",
          "td_opportunity": 40.0, "role_momentum": 38.0, "situation": 45.0, "evidence_quality": 70.0,
@@ -175,7 +175,7 @@ def test_synthetic_short_odds_rows_for_the_band_the_real_fixture_lacks():
         res = classify_evidence_vs_price(row, pool + [row])
         results.append(res["label"])
         print(f"{row['player_name']:<48}{row['consensus_price_american']:>7.0f}  {res['label']}  (gap={res['gap']}, ev_quality={row['evidence_quality']})")
-    assert results == [SUPPORTS_EXPECTATION, RAISES_QUESTIONS, INSUFFICIENT_EVIDENCE]
+    assert results == [SUPPORTS_EXPECTATION, DIVERGES_FROM_EXPECTATION, INSUFFICIENT_EVIDENCE]
 
 
 # ---------------------------------------------------------------------------
@@ -274,16 +274,16 @@ def test_evidence_vs_price_is_evidence_ranks_higher_when_evidence_beats_price():
     result = classify_evidence_vs_price(target_row, pool, min_pool_size=50)
     assert result["gap"] == 80.0
     assert result["evidence_vs_price"] == EVIDENCE_RANKS_HIGHER
-    assert result["label"] == RAISES_QUESTIONS  # sanity: same gap, label's direction-blind twin
+    assert result["label"] == DIVERGES_FROM_EXPECTATION  # sanity: same gap, label's direction-blind twin
 
 
 def test_evidence_vs_price_is_evidence_ranks_lower_when_price_beats_evidence():
-    # gap = 10 - 90 = -80 -- price outranks evidence, the OTHER raises_questions direction.
+    # gap = 10 - 90 = -80 -- price outranks evidence, the OTHER diverges_from_expectation direction.
     target_row, pool = _controlled_pool(target_evidence_rank=10, target_price_rank=90)
     result = classify_evidence_vs_price(target_row, pool, min_pool_size=50)
     assert result["gap"] == -80.0
     assert result["evidence_vs_price"] == EVIDENCE_RANKS_LOWER
-    assert result["label"] == RAISES_QUESTIONS  # same label as the case above -- label is direction-blind, evidence_vs_price is not
+    assert result["label"] == DIVERGES_FROM_EXPECTATION  # same label as the case above -- label is direction-blind, evidence_vs_price is not
 
 
 def test_evidence_vs_price_boundary_exactly_at_threshold_is_aligned():
@@ -304,7 +304,7 @@ def test_evidence_vs_price_boundary_just_past_threshold_is_not_aligned():
     result = classify_evidence_vs_price(target_row, pool, gap_threshold=10.0, min_pool_size=50)
     assert result["gap"] == 11.0
     assert result["evidence_vs_price"] == EVIDENCE_RANKS_HIGHER
-    assert result["label"] == RAISES_QUESTIONS
+    assert result["label"] == DIVERGES_FROM_EXPECTATION
 
 
 def test_evidence_vs_price_boundary_just_past_threshold_negative_direction():
@@ -312,7 +312,7 @@ def test_evidence_vs_price_boundary_just_past_threshold_negative_direction():
     result = classify_evidence_vs_price(target_row, pool, gap_threshold=10.0, min_pool_size=50)
     assert result["gap"] == -11.0
     assert result["evidence_vs_price"] == EVIDENCE_RANKS_LOWER
-    assert result["label"] == RAISES_QUESTIONS
+    assert result["label"] == DIVERGES_FROM_EXPECTATION
 
 
 def test_evidence_vs_price_is_none_under_insufficient_evidence_from_the_quality_floor():

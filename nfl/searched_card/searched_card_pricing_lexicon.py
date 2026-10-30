@@ -155,27 +155,160 @@ def validate_price_citation_framing(why_reasons: list, source_facts: dict) -> li
     return violations
 
 
+# ---------------------------------------------------------------------------
+# STAGE 1h, Task 3 -- a below-median (or above-median) PILLAR reading is a
+# descriptive fact only, per the approved product decision: it must never
+# become a value/pricing verdict about the PLAYER. This is a separate list
+# from BLOCKED_PRICING_PHRASES, not a merge into it: BLOCKED_PRICING_PHRASES
+# bans claims about what the price REALLY IS (true probability, fair odds);
+# this list bans claims about whether the price is a GOOD DEAL, which is a
+# related but distinct failure mode a pillar-standing claim specifically
+# invites now that pillar_context.py exists to supply "above/below median"
+# facts the writer could otherwise be tempted to editorialize past.
+#
+# DELIBERATELY NARROW, same reasoning _ALLOWED_FRAMING_RE's own comment
+# already gives for erring permissive-text/narrow-blocklist: bare "value"
+# and bare "opportunity" are NOT banned (per the original product rule --
+# "do NOT globally ban ordinary editorial words such as 'overlooked' or
+# 'value'" -- and because "opportunity" is an ordinary, necessary football
+# word this very pipeline's own td_opportunity pillar is named for: "a
+# scoring opportunity," "a red-zone opportunity," and plain "an opportunity
+# to see more work" are all legitimate, common football phrasing that must
+# keep working). Only the specific multi-word phrases below -- compounds
+# that couple "value"/"opportunity" to an explicit price/betting judgment,
+# or that name a price-direction verdict directly -- are blocked.
+BLOCKED_VALUE_VERDICT_PHRASES = (
+    "poor value",
+    "bad value",
+    "good value",
+    "great value",
+    "a bargain",
+    "a steal",
+    "the price is too high",
+    "the price is too low",
+    "priced too high",
+    "priced too low",
+    "odds are too high",
+    "odds are too low",
+    "a betting opportunity",
+    "a value opportunity",
+    "an opportunity at this price",
+    "makes this a good price",
+    "makes this a bad price",
+)
+
+_VALUE_VERDICT_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(p) for p in BLOCKED_VALUE_VERDICT_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def find_value_verdict_violations(text) -> list:
+    """
+    Same shape/contract as find_pricing_claim_violations -- returns every
+    BLOCKED_VALUE_VERDICT_PHRASES entry found in `text`, [] if clean or
+    non-string. Kept as its own function (not folded into find_pricing_
+    claim_violations) so a caller/test can address "is this a mispricing
+    claim" and "is this a value-verdict-from-a-pillar claim" as the two
+    separate questions they actually are.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    found = []
+    for phrase in BLOCKED_VALUE_VERDICT_PHRASES:
+        if re.search(rf"\b{re.escape(phrase)}\b", text, re.IGNORECASE) and phrase not in found:
+            found.append(phrase)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# STAGE 1h, Task 3 -- the comparison-basis citation check. Per the approved
+# hard rule: "diverges"/pillar-standing claims describe football evidence
+# relative to an EXPLICITLY STATED comparison basis. "His production ranks
+# below the median" with no stated basis is not a real citation -- it reads
+# as "below average," full stop, inviting exactly the unsupported-verdict
+# reading this task exists to prevent. "...ranks below the median OF THIS
+# WEEK'S COMPARISON GROUP" is the real, complete claim.
+#
+# KEPT DELIBERATELY SIMPLE, per the task's own instruction: any sentence in
+# `story` containing "median" or "ranks" must also contain the literal
+# phrase "comparison group" somewhere in that SAME sentence, or it's flagged
+# for review. This is a blunt, lexical check, not a semantic one -- a
+# sentence using "ranks" in some unrelated sense (e.g. "he ranks among the
+# most dependable options") would also get flagged, with no real comparison
+# claim to fix. That's an accepted, deliberate false-positive, same
+# "narrower allowlist is the safer failure direction" philosophy
+# _ALLOWED_FRAMING_RE's own comment already uses above -- a legitimate
+# sentence getting flagged for human review is recoverable; a real
+# unsupported comparison slipping through because the check tried to be
+# clever about intent is not.
+# ---------------------------------------------------------------------------
+_COMPARISON_WORD_RE = re.compile(r"\b(?:median|ranks?)\b", re.IGNORECASE)
+_COMPARISON_BASIS_MARKER_RE = re.compile(r"comparison group", re.IGNORECASE)
+
+
+def _split_into_sentences(text: str) -> list:
+    """Simple, good-enough sentence splitter for this one check -- splits
+    on ./!/? followed by whitespace. Not a general-purpose NLP tool; this
+    module has no third-party dependency and doesn't need one for a
+    lexical, not grammatical, check."""
+    pieces = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p for p in pieces if p]
+
+
+def validate_comparison_basis_cited(story) -> list:
+    """
+    Scoped to `story` specifically, per the task's own wording. Returns a
+    list of violation dicts (empty = clean): one per sentence that
+    mentions "median"/"ranks" without also naming "comparison group" in
+    that same sentence. [] for a non-string or empty story.
+    """
+    if not isinstance(story, str) or not story:
+        return []
+    violations = []
+    for sentence in _split_into_sentences(story):
+        if _COMPARISON_WORD_RE.search(sentence) and not _COMPARISON_BASIS_MARKER_RE.search(sentence):
+            violations.append({
+                "sentence": sentence,
+                "issue": (
+                    "this sentence cites 'median'/'ranks' without also naming the comparison group in the "
+                    "same sentence -- a comparison claim must state its basis (e.g. '...of this week's "
+                    "comparison group'), not just assert 'below/above median' on its own"
+                ),
+            })
+    return violations
+
+
 def validate_searched_card_pricing_claims(output: dict) -> list:
     """
     The run_all_validators-style aggregate for this gate: find_pricing_
-    claim_violations run over title/story/every reason_text (mirroring
-    generate_nfl_shelf_card_content.run_all_validators' own banned_
-    language loop exactly), plus validate_price_citation_framing over
-    why_reasons. Returns a flat list of {"check": "pricing_claim" |
-    "price_citation_framing", ...} issue dicts, [] if clean.
+    claim_violations AND find_value_verdict_violations, both run over
+    title/story/every reason_text (mirroring generate_nfl_shelf_card_
+    content.run_all_validators' own banned_language loop exactly), plus
+    validate_price_citation_framing over why_reasons, plus validate_
+    comparison_basis_cited over story. Returns a flat list of {"check":
+    "pricing_claim" | "value_verdict" | "price_citation_framing" |
+    "comparison_basis", ...} issue dicts, [] if clean.
     """
     issues = []
     why_reasons = output.get("why_reasons") or []
     source_facts = output.get("_source_facts") or {}
+    story = output.get("story")
 
-    targets = [("title", output.get("title")), ("story", output.get("story"))]
+    targets = [("title", output.get("title")), ("story", story)]
     targets += [(f"why_reasons[{i}].reason_text", r.get("reason_text")) for i, r in enumerate(why_reasons) if isinstance(r, dict)]
     for field, text in targets:
         found = find_pricing_claim_violations(text)
         if found:
             issues.append({"check": "pricing_claim", "field": field, "phrases": found})
+        found_verdict = find_value_verdict_violations(text)
+        if found_verdict:
+            issues.append({"check": "value_verdict", "field": field, "phrases": found_verdict})
 
     for v in validate_price_citation_framing(why_reasons, source_facts):
         issues.append({"check": "price_citation_framing", **v})
+
+    for v in validate_comparison_basis_cited(story):
+        issues.append({"check": "comparison_basis", **v})
 
     return issues

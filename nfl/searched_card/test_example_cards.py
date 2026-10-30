@@ -174,9 +174,9 @@ def test_card_1_every_claim_is_groundable():
     result = classify_evidence_vs_price(row, pool + [row])
     _print_card(CARD_1, result)
     # Weak-on-all-three evidence at a short price -- price ranks far above
-    # the football evidence -> raises_questions, same real outcome as
+    # the football evidence -> diverges_from_expectation, same real outcome as
     # Stage 1 (stats/price unchanged).
-    assert result["label"] == "raises_questions"
+    assert result["label"] == "diverges_from_expectation"
     ungroundable = [c for c, f in CARD_1["claims"] if not _is_groundable(f)]
     assert ungroundable == [], f"Card 1 has ungroundable claims: {ungroundable}"
     assert len(CARD_1["claims"]) == 3
@@ -187,7 +187,7 @@ def test_card_2_every_claim_is_groundable():
     row = dict(CARD_2["stats"], consensus_price_american=CARD_2["price"])
     result = classify_evidence_vs_price(row, pool + [row])
     _print_card(CARD_2, result)
-    assert result["label"] in ("supports_expectation", "raises_questions")
+    assert result["label"] in ("supports_expectation", "diverges_from_expectation")
     ungroundable = [c for c, f in CARD_2["claims"] if not _is_groundable(f)]
     assert ungroundable == [], f"Card 2 has ungroundable claims: {ungroundable}"
     assert len(CARD_2["claims"]) == 3
@@ -198,7 +198,7 @@ def test_card_3_every_claim_is_groundable():
     row = dict(CARD_3["stats"], consensus_price_american=CARD_3["price"])
     result = classify_evidence_vs_price(row, pool + [row])
     _print_card(CARD_3, result)
-    assert result["label"] in ("supports_expectation", "raises_questions", "insufficient_evidence")
+    assert result["label"] in ("supports_expectation", "diverges_from_expectation", "insufficient_evidence")
     ungroundable = [c for c, f in CARD_3["claims"] if not _is_groundable(f)]
     assert ungroundable == [], f"Card 3 has ungroundable claims: {ungroundable}"
     assert len(CARD_3["claims"]) == 3

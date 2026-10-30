@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from searched_card_pricing_lexicon import (  # noqa: E402
     find_pricing_claim_violations,
+    find_value_verdict_violations,
+    validate_comparison_basis_cited,
     validate_price_citation_framing,
     validate_searched_card_pricing_claims,
 )
@@ -261,3 +263,147 @@ def test_aggregate_catches_unframed_price_citation():
     }
     issues = validate_searched_card_pricing_claims(output)
     assert any(i["check"] == "price_citation_framing" for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# STAGE 1h, Task 3 -- find_value_verdict_violations. A below/above-median
+# pillar reading must never become a value/pricing verdict. Near-miss
+# cases run BOTH ways: the honest pillar-standing phrasing must pass, and
+# ordinary non-price uses of "value"/"opportunity"/"too low"/"too high"
+# must also pass -- only the specific compound verdict phrasings fail.
+# ---------------------------------------------------------------------------
+
+def test_honest_pillar_standing_statement_passes_the_value_verdict_check():
+    """The exact example phrasing the task itself gives as what must stay
+    allowed."""
+    text = "His recent red-zone touchdown production ranks below the median of this week's comparison group."
+    assert find_value_verdict_violations(text) == []
+
+
+def test_poor_value_blocked():
+    assert "poor value" in find_value_verdict_violations("That makes him poor value at this price.")
+
+
+def test_bad_value_blocked():
+    assert "bad value" in find_value_verdict_violations("A bad value play this week.")
+
+
+def test_good_value_blocked():
+    """Banned in BOTH directions -- a below-median reading must not
+    become 'poor value' and an above-median reading must not become
+    'good value' either; the hard rule bans turning the comparison into
+    a verdict at all, not just the negative direction."""
+    assert "good value" in find_value_verdict_violations("That makes him good value at this price.")
+
+
+def test_a_bargain_blocked():
+    assert "a bargain" in find_value_verdict_violations("He is a bargain at these odds.")
+
+
+def test_the_price_is_too_high_blocked():
+    assert "the price is too high" in find_value_verdict_violations("The price is too high given his recent production.")
+
+
+def test_the_price_is_too_low_blocked():
+    assert "the price is too low" in find_value_verdict_violations("The price is too low for what the role shows.")
+
+
+def test_a_betting_opportunity_blocked():
+    assert "a betting opportunity" in find_value_verdict_violations("This looks like a betting opportunity this week.")
+
+
+# --- near-miss, the OTHER direction: ordinary football language, not a
+# value verdict, must NOT be flagged ---
+
+def test_non_price_too_low_passes():
+    """'too low' on its own, with no price/odds word nearby, is ordinary
+    football language (a role claim), not a value verdict."""
+    text = "His touch share has been too low to count on week to week."
+    assert find_value_verdict_violations(text) == []
+
+
+def test_bare_opportunity_in_football_sense_passes():
+    """Bare 'opportunity' -- including the exact phrasing a human would
+    use about td_opportunity itself -- must stay legal; only the specific
+    betting/value-compound phrasings are banned (see module docstring)."""
+    text = "This is a real opportunity for him to see more red-zone work down the stretch."
+    assert find_value_verdict_violations(text) == []
+
+
+def test_red_zone_opportunity_phrase_passes():
+    text = "His red-zone opportunity has been building for three weeks."
+    assert find_value_verdict_violations(text) == []
+
+
+def test_bare_value_word_in_non_pricing_sense_passes():
+    """Per the original product rule, bare 'value' stays legal -- only
+    the specific compound verdict phrases (poor/bad/good/great value) are
+    blocked."""
+    text = "This is a value pick for a completely different reason -- his role, not his price."
+    assert find_value_verdict_violations(text) == []
+
+
+# ---------------------------------------------------------------------------
+# STAGE 1h, Task 3 -- validate_comparison_basis_cited. Scoped to `story`.
+# ---------------------------------------------------------------------------
+
+def test_comparison_basis_cited_passes_when_the_group_is_named():
+    story = "His recent red-zone touchdown production ranks below the median of this week's comparison group. The matchup is a real question mark too."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_comparison_basis_missing_is_flagged():
+    story = "His recent red-zone touchdown production ranks below the median. The matchup is a real question mark too."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert "ranks below the median" in violations[0]["sentence"]
+
+
+def test_median_word_without_comparison_group_also_flagged():
+    story = "He sits right at the median, for what that is worth."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+
+
+def test_only_the_offending_sentence_is_named_not_the_whole_story():
+    """A story with ONE clean, basis-stated sentence and ONE bare one --
+    only the bare one should be flagged, proving this is scoped per
+    sentence, not per story."""
+    story = (
+        "His recent production ranks below the median of this week's comparison group. "
+        "His role also ranks near the bottom of the group this week."
+    )
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert "His role also ranks near the bottom" in violations[0]["sentence"]
+
+
+def test_story_with_neither_median_nor_ranks_is_clean():
+    story = "He has been quiet in the red zone for three straight weeks, and the matchup does not help."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_aggregate_catches_a_value_verdict_phrase():
+    output = {
+        "title": "The Role Explains the Attention",
+        "story": "That makes him poor value at this price, even with a tough matchup.",
+        "why_reasons": [
+            {"pillar": "situation", "stars": 2, "reason_text": "The matchup is difficult this week.", "source_fact_keys": ["situation"]},
+        ],
+        "_source_facts": {"situation": 20.0},
+    }
+    issues = validate_searched_card_pricing_claims(output)
+    assert any(i["check"] == "value_verdict" and "poor value" in i["phrases"] for i in issues)
+
+
+def test_aggregate_catches_a_missing_comparison_basis():
+    output = {
+        "title": "The Role Explains the Attention",
+        "story": "His recent production ranks below the median this week, but the role is real.",
+        "why_reasons": [
+            {"pillar": "td_opportunity", "stars": 2, "reason_text": "Recent production has been thin.", "source_fact_keys": ["td_opportunity"]},
+        ],
+        "_source_facts": {"td_opportunity": 30.0},
+    }
+    issues = validate_searched_card_pricing_claims(output)
+    assert any(i["check"] == "comparison_basis" for i in issues)

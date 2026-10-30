@@ -144,7 +144,7 @@ classifier.classify_evidence_vs_price`'s new `min_pool_size` parameter).
 This is a different, narrower thing than the UI hide/show toggle
 described above (that toggle is about whether a reader ever sees a
 market-confidence percentile at all; the classifier gate is about
-whether this package's own `supports_expectation`/`raises_questions`/
+whether this package's own `supports_expectation`/`diverges_from_expectation`/
 `insufficient_evidence` label should be trusted) — both reuse the exact
 same proposed number for the exact same reason, but neither implements
 the other. The UI toggle itself remains unimplemented, as stated above.

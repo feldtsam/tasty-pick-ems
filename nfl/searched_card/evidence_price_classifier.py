@@ -15,7 +15,7 @@ is true by construction, not just by convention):
   "supports_expectation"   — the player's football-evidence rank and the
                               price's own rank (both computed fresh, within
                               this week's pool) are close together.
-  "raises_questions"       — they are far apart, either direction (the
+  "diverges_from_expectation"       — they are far apart, either direction (the
                               evidence outranks the price, or the price
                               outranks the evidence).
   "insufficient_evidence"  — the comparison can't be trusted at all; this
@@ -49,7 +49,7 @@ THE STARTING HYPOTHESIS THIS WAS BUILT TO TEST (not assumed as true):
 compare the player's rank on the three football-evidence pillars within
 the week's pool against the rank of the price (implied probability) in
 that SAME pool. A large gap suggests the price and the on-field evidence
-are telling different stories ("raises_questions"); a close match
+are telling different stories ("diverges_from_expectation"); a close match
 suggests they agree ("supports_expectation"). See classification_rubric.md
 in this directory for the real numbers (a real NFL week, 745 players)
 this was tested against, where the hypothesis held up reasonably and
@@ -74,7 +74,7 @@ not invented precision:
   (2025, week 10; n=745; see classification_rubric.md) — the median
   absolute gap in that population is ~28.3 points, and a 30-point cutoff
   classifies roughly half the real population into each of
-  supports_expectation/raises_questions before the evidence_quality gate
+  supports_expectation/diverges_from_expectation before the evidence_quality gate
   is even applied (52.5% / 47.5% in that week). That is a property of
   THIS fixture's own distribution, not a validated signal — see this
   module's own "WHERE THIS IS ARBITRARY" note below and classification_
@@ -106,7 +106,7 @@ the fuller discussion):
     fraction of any population as "far apart," which proves nothing about
     whether that fraction is the right one to flag editorially.
   - Equal-ish treatment of "evidence ranks higher than price" and "price
-    ranks higher than evidence" as the same "raises_questions" direction
+    ranks higher than evidence" as the same "diverges_from_expectation" direction
     is a simplifying choice — the two could plausibly deserve different
     handling (a player the market likes MORE than the football evidence
     does is a different kind of question than one the market likes LESS),
@@ -119,14 +119,14 @@ STAGE 1b ADDITIONS (this revision) — two separate changes, each its own
 reasoning, neither touching the three labels above in meaning:
 
   `evidence_vs_price` (NEW FIELD, not a new label): the direction that
-  `label`'s own "raises_questions" was collapsing on purpose (see
+  `label`'s own "diverges_from_expectation" was collapsing on purpose (see
   "Direction-blindness is a real simplification" above). Three values:
   "evidence_ranks_higher" / "evidence_ranks_lower" / "aligned". THIS FIELD
   DESCRIBES A RANK POSITION, NOTHING ELSE — never fair value, never
   mispricing, never a verdict on whether the price is correct. It reuses
   GAP_THRESHOLD as its own aligned/not-aligned boundary, not a new
   constant, for a specific reason stated plainly: `label`'s own
-  supports_expectation/raises_questions split already uses this exact gap
+  supports_expectation/diverges_from_expectation split already uses this exact gap
   comparison, and giving the direction field a DIFFERENT threshold would
   let a card describe the same underlying gap as "supports_expectation"
   (via label) and "evidence_ranks_higher" (via evidence_vs_price, if its
@@ -400,7 +400,7 @@ TD_OPPORTUNITY_COMPLETENESS_FLOOR = 50.0
 ROLE_MOMENTUM_COMPLETENESS_ZERO = 0.0
 
 SUPPORTS_EXPECTATION = "supports_expectation"
-RAISES_QUESTIONS = "raises_questions"
+DIVERGES_FROM_EXPECTATION = "diverges_from_expectation"
 INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 # The new field (Stage 1b) -- a relative-ranking fact ONLY. See module
@@ -532,7 +532,7 @@ def classify_evidence_vs_price(
 
     Returns:
       {
-        "label": "supports_expectation" | "raises_questions" | "insufficient_evidence",
+        "label": "supports_expectation" | "diverges_from_expectation" | "insufficient_evidence",
         "evidence_vs_price": "evidence_ranks_higher" | "evidence_ranks_lower" | "aligned" | None,
                                   # A RELATIVE-RANKING FACT ONLY — never a
                                   # fair-value or mispricing claim. None
@@ -639,7 +639,7 @@ def classify_evidence_vs_price(
             "telling a similar story this week."
         )
     else:
-        label = RAISES_QUESTIONS
+        label = DIVERGES_FROM_EXPECTATION
         direction = "the evidence ranks well above the price" if gap > 0 else "the price ranks well above the evidence"
         reason = (
             f"football-evidence rank ({evidence_rank_pct}) and price rank ({price_rank_pct}) differ by "

@@ -145,7 +145,7 @@ def test_pool_runs_through_the_real_classifier_without_error(tmp_path):
     assert len(pool) == 12
     for row in pool:
         result = classify_evidence_vs_price(row, pool)
-        assert result["label"] in ("supports_expectation", "raises_questions", "insufficient_evidence")
+        assert result["label"] in ("supports_expectation", "diverges_from_expectation", "insufficient_evidence")
         assert "evidence_vs_price" in result
         assert "gap" in result
         assert "implied_probability_pct" in result
@@ -215,7 +215,7 @@ def test_slim_csv_with_only_the_12_exported_columns_loads_and_classifies(tmp_pat
 
     for row in pool:
         result = classify_evidence_vs_price(row, pool)
-        assert result["label"] in ("supports_expectation", "raises_questions", "insufficient_evidence")
+        assert result["label"] in ("supports_expectation", "diverges_from_expectation", "insufficient_evidence")
         assert "evidence_vs_price" in result
 
     # tpe_score/market_value_score still load correctly as floats even in

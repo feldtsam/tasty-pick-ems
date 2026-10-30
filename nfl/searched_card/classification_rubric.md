@@ -14,7 +14,7 @@ Compare a player's rank on the three football-evidence pillars
 against the rank of the price (implied probability) in that **same**
 pool. A large gap between the two ranks suggests the on-field evidence
 and the price are telling different stories this week
-(`raises_questions`); a close match suggests they agree
+(`diverges_from_expectation`); a close match suggests they agree
 (`supports_expectation`). `evidence_quality` below a floor gates
 `insufficient_evidence` regardless of the rank comparison — a thin or
 self-contradictory evidence base can't license any claim about agreement
@@ -30,10 +30,10 @@ meaning:
 
 1. **`evidence_vs_price`** — a new field on the classifier's return
    dict, not a fourth label. The three labels above (especially
-   `raises_questions`) were, on purpose, direction-blind (see "Where
+   `diverges_from_expectation`) were, on purpose, direction-blind (see "Where
    this rubric feels arbitrary" below, kept from Stage 1): a player the
    market likes *more* than the football evidence does, and a player
-   the market likes *less*, both fire `raises_questions` identically.
+   the market likes *less*, both fire `diverges_from_expectation` identically.
    `evidence_vs_price` exposes that direction, as its own, separate,
    ONLY-a-ranking-fact value:
    - `"evidence_ranks_higher"` — the football-evidence rank sits above
@@ -43,7 +43,7 @@ meaning:
      other.
 
    **Why this reuses `GAP_THRESHOLD` rather than its own threshold**:
-   `label`'s own supports_expectation/raises_questions split already
+   `label`'s own supports_expectation/diverges_from_expectation split already
    uses this exact gap comparison. Giving `evidence_vs_price` a
    different, narrower boundary would let the two fields describe the
    same real gap in contradictory ways on the same card (e.g. `label`
@@ -160,15 +160,33 @@ rather than left implicit.
 
 - **`supports_expectation`** — football-evidence rank and price rank are
   within `GAP_THRESHOLD` (30 percentile points) of each other.
-- **`raises_questions`** — they differ by more than that, in either
+- **`diverges_from_expectation`** — they differ by more than that, in either
   direction. This does **not** say the price is wrong, or that the
   evidence is wrong — only that they disagree enough to be worth a
   reader's attention. See product rule 4: this label must never be
   worded as a fair-value or mispricing claim.
-- **`insufficient_evidence`** — `evidence_quality` is below the floor
-  (50.0). Checked **before** the rank comparison; a row can have a
-  tiny rank gap and still be `insufficient_evidence` if the underlying
-  evidence can't be trusted (see the Laquon Treadwell example below).
+- **`insufficient_evidence`** — one of the four gates fired (pool size,
+  completeness, or `evidence_quality` below the floor, 50.0). Checked
+  **before** the rank comparison; a row can have a tiny rank gap and
+  still be `insufficient_evidence` if the underlying evidence can't be
+  trusted (see the Laquon Treadwell example below).
+
+**STAGE 1h RENAME**: this label was named `raises_questions` through
+Stage 1g. Renamed to `diverges_from_expectation`, everywhere (code,
+constants, prompt text, schema, tests, docs) — not just here — per an
+approved product decision. Why: the gap this label fires on is
+direction-blind by design (see `EVIDENCE_RANKS_HIGHER`/
+`EVIDENCE_RANKS_LOWER` above, the separate field that DOES carry
+direction) — it fires identically whether the football evidence ranks
+well ABOVE the price or well BELOW it. "Raises questions" reads neutral
+enough in the price-ranks-higher case (a short price on thin evidence —
+a real, cautionary question) but it reads WRONG in the evidence-ranks-
+higher case (strong recent production and role signal, at a price the
+market hasn't caught up to yet) — there, "raises questions" sounds like
+a warning about the PLAYER, when the real story is the opposite: the
+evidence is the stronger signal, not the suspect one. `diverges_from_
+expectation` describes the same gap without implying which side, if
+either, is the one worth doubting.
 
 ## Every numeric threshold, stated plainly
 
@@ -204,7 +222,7 @@ Resulting label distribution on this real week, at the chosen thresholds:
 
 ```
 supports_expectation:    379  (50.9%)
-raises_questions:        331  (44.4%)
+diverges_from_expectation:        331  (44.4%)
 insufficient_evidence:    35  ( 4.7%)
 ```
 
@@ -222,16 +240,16 @@ seams" below):
 
 | player | pos | price | implied% | td_opp | role_mom | situation | ev_quality | ev_rank | px_rank | gap | **label** |
 |---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|---|
-| Tutu Atwell | WR | +250 | 28.6 | 37.9 | 43.9 | 61.6 | 87.3 | 16.5 | 99.7 | -83.2 | **raises_questions** |
+| Tutu Atwell | WR | +250 | 28.6 | 37.9 | 43.9 | 61.6 | 87.3 | 16.5 | 99.7 | -83.2 | **diverges_from_expectation** |
 | Jaylen Wright | RB | +317 | 24.0 | 57.2 | 56.0 | 60.4 | 64.4 | 68.6 | 93.3 | -24.7 | **supports_expectation** |
-| Braelon Allen | RB | +396 | 20.2 | 43.2 | 44.5 | 28.2 | 91.5 | 5.5 | 86.6 | -81.1 | **raises_questions** |
-| Nico Collins | WR | +459 | 17.9 | 37.0 | 31.8 | 72.7 | 74.3 | 15.6 | 80.1 | -64.5 | **raises_questions** |
-| Juwan Johnson | TE | +555 | 15.3 | 48.9 | 31.9 | 43.1 | 88.0 | 9.4 | 73.4 | -64.0 | **raises_questions** |
-| Devin Singletary | RB | +636 | 13.6 | 36.2 | 36.4 | 42.1 | 93.7 | 4.0 | 67.0 | -63.0 | **raises_questions** |
+| Braelon Allen | RB | +396 | 20.2 | 43.2 | 44.5 | 28.2 | 91.5 | 5.5 | 86.6 | -81.1 | **diverges_from_expectation** |
+| Nico Collins | WR | +459 | 17.9 | 37.0 | 31.8 | 72.7 | 74.3 | 15.6 | 80.1 | -64.5 | **diverges_from_expectation** |
+| Juwan Johnson | TE | +555 | 15.3 | 48.9 | 31.9 | 43.1 | 88.0 | 9.4 | 73.4 | -64.0 | **diverges_from_expectation** |
+| Devin Singletary | RB | +636 | 13.6 | 36.2 | 36.4 | 42.1 | 93.7 | 4.0 | 67.0 | -63.0 | **diverges_from_expectation** |
 | Jake Bobo | WR | +714 | 12.3 | 57.2 | 74.5 | 62.6 | 59.9 | 88.7 | 60.4 | 28.3 | **supports_expectation** |
 | John FitzPatrick | TE | +988 | 9.2 | 80.7 | 32.6 | 29.4 | 69.8 | 38.3 | 40.7 | -2.4 | **supports_expectation** |
 | Justin Shorter | WR | +1228 | 7.5 | 57.2 | 50.0 | 23.6 | 53.6 | 13.8 | 20.9 | -7.1 | **supports_expectation** |
-| Grant Calcaterra | TE | +1390 | 6.7 | 57.2 | 50.0 | 53.8 | 63.4 | 48.3 | 7.8 | 40.5 | **raises_questions** |
+| Grant Calcaterra | TE | +1390 | 6.7 | 57.2 | 50.0 | 53.8 | 63.4 | 48.3 | 7.8 | 40.5 | **diverges_from_expectation** |
 | Marcedes Lewis | TE | +417 | 19.3 | 57.2 | 100.0 | 45.1 | **44.2** | 91.3 | 84.2 | 7.1 | **insufficient_evidence** |
 | Laquon Treadwell | WR | +422 | — | — | — | — | **49.8** | — | — | 13.9 | **insufficient_evidence** |
 
@@ -247,7 +265,7 @@ synthetic, run against the real 745-player pool):
 | player (synthetic) | price | evidence_quality | gap | **label** |
 |---|--:|--:|--:|---|
 | strong goal-line back | −250 | 80.0 | −0.7 | **supports_expectation** |
-| short price, mediocre evidence | −180 | 70.0 | −92.5 | **raises_questions** |
+| short price, mediocre evidence | −180 | 70.0 | −92.5 | **diverges_from_expectation** |
 | short price, thin sample | −120 | 42.0 | −43.1 | **insufficient_evidence** |
 
 ## Why the short-odds band is (mostly) synthetic, stated plainly
@@ -273,17 +291,17 @@ final report, not just asserted here): this row's `evidence_quality`
 (34.9) sits below `EVIDENCE_QUALITY_FLOOR` (50.0), so it classifies
 `insufficient_evidence` regardless of its rank gap — a real negative-
 odds row, but one that (by coincidence, not by selection) doesn't
-exercise the `supports_expectation`/`raises_questions` split on the
+exercise the `supports_expectation`/`diverges_from_expectation` split on the
 short-price band either. So the corrected, honest statement is: a real
 negative-odds row with a full real evidence record **does** exist
 locally (contrary to the original claim), but it does not, by itself,
 give this rubric a real demonstration of the short-price band hitting
-`supports_expectation` or `raises_questions` — only `2025_wk10.csv`
+`supports_expectation` or `diverges_from_expectation` — only `2025_wk10.csv`
 (745/745 populated, minimum price +250, confirmed with no negative rows
 in THAT specific fixture) gives a full week's worth of real short-to-
 long coverage, and it has no favorites in it. The three synthetic rows
 below remain the only local demonstration of the −300/−110 band
-actually reaching `supports_expectation`/`raises_questions`, and should
+actually reaching `supports_expectation`/`diverges_from_expectation`, and should
 still not be read as evidence the rubric behaves well on real
 short-odds data — only that the function doesn't error or do anything
 obviously broken on that input shape.
@@ -300,7 +318,7 @@ obviously broken on that input shape.
   swallowing everything), but it is not evidence the threshold is
   *correct* in the sense of separating "worth a reader's attention" from
   "not."
-- **Direction-blindness is a real simplification.** `raises_questions`
+- **Direction-blindness is a real simplification.** `diverges_from_expectation`
   fires identically whether the evidence outranks the price or the price
   outranks the evidence. Those are plausibly different editorial
   situations (a player the market likes *more* than the on-field
@@ -315,7 +333,7 @@ obviously broken on that input shape.
   opportunity, not for this rank-vs-price comparison specifically.
 - **What real outcome data would be needed before trusting this**:
   real anytime-TD results joined to the week's classification, checked
-  for whether `raises_questions` rows (the evidence/price disagreement
+  for whether `diverges_from_expectation` rows (the evidence/price disagreement
   case) actually scored at a different rate than `supports_expectation`
   rows of similar `tpe_score` — and separately, whether the *direction*
   of disagreement (evidence > price vs. price > evidence) predicted

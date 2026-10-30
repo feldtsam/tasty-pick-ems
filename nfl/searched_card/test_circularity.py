@@ -34,7 +34,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import evidence_price_classifier  # noqa: E402
+import pillar_context  # noqa: E402
 from evidence_price_classifier import INSUFFICIENT_EVIDENCE, classify_evidence_vs_price  # noqa: E402
+from pillar_context import build_pillar_context  # noqa: E402
 
 FIXTURE_PATH = Path(__file__).resolve().parent.parent / "data" / "stub_weeks" / "2025_wk10.csv"
 
@@ -158,7 +160,7 @@ def test_classifier_still_works_when_the_two_fields_are_entirely_absent_from_eve
     ]
     row = next(r for r in stripped_pool if r["player_name"] == "Jake Bobo")
     result = classify_evidence_vs_price(row, stripped_pool)
-    assert result["label"] in ("supports_expectation", "raises_questions", "insufficient_evidence")
+    assert result["label"] in ("supports_expectation", "diverges_from_expectation", "insufficient_evidence")
 
 
 # ---------------------------------------------------------------------------
@@ -430,3 +432,83 @@ def test_shared_ranking_population_size_unaffected_by_market_value_score_and_tpe
 
     result = classify_evidence_vs_price(poisoned_row, poisoned_pool)
     assert result["eligible_population_size"] == baseline["eligible_population_size"] == len(pool) - 1  # every row but the one completeness-failing row
+
+
+# ---------------------------------------------------------------------------
+# STAGE 1h, Task 4 — the SAME circularity proof, extended to pillar_
+# context.build_pillar_context. Two independent methods, same as every
+# proof above: static (the real functions' own source never mentions
+# either field) and behavioral (deleting/corrupting them on every row
+# changes nothing about the computed context).
+# ---------------------------------------------------------------------------
+
+_PILLAR_CONTEXT_FUNCTION_NAMES = ("_median", "_comparison_population", "build_pillar_context", "writer_facing_pillar_context")
+
+
+def test_pillar_context_static_source_never_references_market_value_score_or_tpe_score():
+    for name in _PILLAR_CONTEXT_FUNCTION_NAMES:
+        fn_source = inspect.getsource(getattr(pillar_context, name))
+        assert "market_value_score" not in fn_source, f"{name}() source mentions market_value_score"
+        assert "tpe_score" not in fn_source, f"{name}() source mentions tpe_score"
+
+
+def test_pillar_context_identical_when_market_value_score_and_tpe_score_are_deleted():
+    pool = _load_pool()
+    row = next(r for r in pool if r["player_name"] == "Jaylen Wright")
+
+    baseline = build_pillar_context(dict(row), [dict(r) for r in pool])
+
+    corrupted_pool = []
+    for r in pool:
+        r2 = dict(r)
+        del r2["market_value_score"]
+        del r2["tpe_score"]
+        corrupted_pool.append(r2)
+    corrupted_row = dict(row)
+    del corrupted_row["market_value_score"]
+    del corrupted_row["tpe_score"]
+
+    result = build_pillar_context(corrupted_row, corrupted_pool)
+    assert result == baseline
+
+
+def test_pillar_context_identical_when_market_value_score_and_tpe_score_are_corrupted():
+    pool = _load_pool()
+    row = next(r for r in pool if r["player_name"] == "Tutu Atwell")
+
+    baseline = build_pillar_context(dict(row), [dict(r) for r in pool])
+
+    poisoned_pool = []
+    for r in pool:
+        r2 = dict(r)
+        r2["market_value_score"] = 999999.0
+        r2["tpe_score"] = -999999.0
+        poisoned_pool.append(r2)
+    poisoned_row = dict(row)
+    poisoned_row["market_value_score"] = 999999.0
+    poisoned_row["tpe_score"] = -999999.0
+
+    result = build_pillar_context(poisoned_row, poisoned_pool)
+    assert result == baseline
+
+
+def test_pillar_context_identical_across_every_real_row_when_fields_are_poisoned():
+    """The broadest form, for pillar_context specifically: every real row
+    in the fixture, market_value_score/tpe_score poisoned on both sides
+    of the comparison."""
+    pool = _load_pool()
+    poisoned_pool = []
+    for r in pool:
+        r2 = dict(r)
+        r2["market_value_score"] = 12345.0
+        r2["tpe_score"] = -12345.0
+        poisoned_pool.append(r2)
+
+    mismatches = []
+    for row, poisoned_row in zip(pool, poisoned_pool):
+        baseline = build_pillar_context(dict(row), [dict(r) for r in pool])
+        result = build_pillar_context(dict(poisoned_row), [dict(r) for r in poisoned_pool])
+        if result != baseline:
+            mismatches.append(row["player_name"])
+
+    assert mismatches == [], f"pillar_context changed for: {mismatches}"

@@ -51,7 +51,7 @@ second GIVEN, translated the same disciplined way as `label` already is
 is explicit that this is a relative pool-ranking fact, not a second
 opinion on the price: the whole reason this field exists as a value
 separate from `label` is to let the model say WHICH direction a
-raises_questions-shaped gap runs, without smuggling in the one framing
+diverges_from_expectation-shaped gap runs, without smuggling in the one framing
 (fair value / mispricing) product rule 4 already bans for `label` and
 every other price-adjacent fact on this card.
 
@@ -80,17 +80,61 @@ HARD RULES -- apply at every price, favorite or long shot, with no exception for
 - Every claim in why_reasons MUST be traceable to a real key in the source facts you are given below. Cite the exact key(s) in source_fact_keys. Never invent a stat, trend, or fact not present in the source data. If a fact isn't present below, it isn't available for this card -- don't reach for a number you'd expect a player like this to have.
 - Write 2-3 why_reasons. Each one's `pillar` field must be EXACTLY one of these four literal strings: "td_opportunity", "role_momentum", "situation", "market_price". Tag each reason with whichever of those its own real evidence actually comes from, and give it a star rating (1-5) that genuinely reflects that pillar's real score where one exists -- not an independent creative choice.
 - ARITHMETIC-ONLY PRICING, THE ONE HARD RULE THIS CARD TYPE EXISTS TO ENFORCE: the price may be translated into a probability and nothing more. Say "the price implies roughly X%" (or equivalent plain phrasing built from implied_probability_pct) and stop there. Never say or imply "true probability," "real probability," "actual odds," "fair odds," "fair price," "fair value," that the price is "wrong," that the market is "inefficient," or that the player is "mispriced," "undervalued," or "overvalued." These are not synonyms for the arithmetic translation -- they assert a judgment about whether the price is CORRECT, which nothing in this pipeline is positioned to claim, at any price, in either direction. A why_reason tagged "market_price" must cite implied_probability_pct and ONLY state what it arithmetically implies.
-- evidence_vs_price_label, when you are given one below, describes the relationship between the real football evidence (td_opportunity/role_momentum/situation) and the price -- it is NOT itself a fair-value verdict, and you must not write it as one. "supports_expectation" means the on-field evidence and the price broadly agree this week; it does not mean the price is "right." "raises_questions" means they diverge; it does not mean the price is "wrong" -- the on-field evidence could be the one that's off, the price could be, or both could be reading something real that the other doesn't capture. Translate the label into what it actually says (the evidence and the price agree, or they don't) and never into "makes this a good price" or "makes this a bad price." "insufficient_evidence" means say so plainly and keep the card modest -- do not paper over thin data with confident language.
+- evidence_vs_price_label, when you are given one below, describes the relationship between the real football evidence (td_opportunity/role_momentum/situation) and the price -- it is NOT itself a fair-value verdict, and you must not write it as one. "supports_expectation" means the on-field evidence and the price broadly agree this week; it does not mean the price is "right." "diverges_from_expectation" means they diverge; it does not mean the price is "wrong" -- the on-field evidence could be the one that's off, the price could be, or both could be reading something real that the other doesn't capture. Translate the label into what it actually says (the evidence and the price agree, or they don't) and never into "makes this a good price" or "makes this a bad price." "insufficient_evidence" means say so plainly and keep the card modest -- do not paper over thin data with confident language.
 - The evidence-vs-price rank position (evidence_ranks_higher / evidence_ranks_lower / aligned), when you are given one below, is a RELATIVE POOL-RANKING FACT ONLY -- where this player's football-evidence rank sits compared to the price's own rank, within this week's pool. It is not a second opinion on the price, and it is not a synonym for "good price" or "bad price." If the label is "insufficient_evidence," the evidence-vs-price rank position does not rescue that -- keep the card modest regardless of which direction the ranks happen to point; a thin or gated evidence base does not become trustworthy just because the rank comparison looks clean.
 - why_reasons is the EVIDENCE layer -- the lowest-personality text on the card. Receipts, not verdicts: each reason states a number, a comparison, a window, or a source, in plain language. State the fact first, plainly. Never soften, hedge, or joke around a thin sample size or a low pillar score -- report it straight.
 - `story` should sound like a sportswriter who already read the analysis, not like the analysis talking. HARD RULE: story must NEVER contain a sentence that could be produced by reading a score field aloud in prose -- e.g. never "Role momentum scored 61.4." Do not put ANY raw number, percentage, or score in `story` -- not even a rounded one. Numbers are evidence; they belong in why_reasons, never here.
-- STORY STRUCTURE: `story` is at most 2 short paragraphs, under 100 words. Open with the RECEIPT: the one concrete thing this player's own facts show, in plain football language. Then the INTERPRETATION: one sentence on why that matters. Then, if the evidence_vs_price_label is "raises_questions" or "insufficient_evidence," name that plainly in one clause -- never invent a tidier resolution than the evidence actually supports.
+- STORY STRUCTURE: `story` is at most 2 short paragraphs, under 100 words. Open with the RECEIPT: the one concrete thing this player's own facts show, in plain football language. Then the INTERPRETATION: one sentence on why that matters. Then, if the evidence_vs_price_label is "diverges_from_expectation" or "insufficient_evidence," name that plainly in one clause -- never invent a tidier resolution than the evidence actually supports.
 - PLAIN LANGUAGE: never use scoring or column names in `story` -- not td_opportunity, role_momentum, situation, evidence_quality, completeness, percentile, pillar, or any snake_case field name. Say what they measure in football terms.
 - Do not state how many games a player has played, or a number of games in any form, anywhere on this card. Describe the sample as limited, early, or still forming instead -- the trend fields you are given are only ever trustworthy past a real minimum sample, and stating a specific count invites exactly the false precision this rule exists to avoid.
-- This is football, not baseball -- do not use baseball terminology, imagery, or comparisons anywhere in the card."""
+- This is football, not baseball -- do not use baseball terminology, imagery, or comparisons anywhere in the card.
+- PILLAR CONTEXT, when you are given it below: use it to find the single most interesting TENSION in this player's profile -- for example a growing role paired with a difficult matchup, or a declining role paired with declining recent production. Finding and naming that tension plainly is the job; do not just list all four pillars in sequence.
+- STATE THE COMPARISON BASIS whenever you cite a comparison. If you say a pillar sits above or below a typical reading, say what it's being compared to in plain terms (this week's full group of comparable players) -- a bare "below average" with no stated basis is not a real citation.
+- A BELOW-MEDIAN PILLAR IS A DESCRIPTIVE FACT ONLY, NEVER A VALUE VERDICT: never say or imply that a below-median reading makes this player poor value, a bad price, an opportunity, or a bargain, and never say or imply that an above-median reading makes the price too high or too low. Pillar standing and price correctness are two different claims; this card only ever makes the first one.
+- NEVER SAY role_momentum SHOWS A SMALL OR LARGE ROLE. It measures CHANGE in role, not role size -- a long-stable, high-volume role reads LOW on this pillar by design, and saying otherwise misstates what the number means."""
 
 
-def build_searched_card_dynamic_prompt(classification: dict) -> str:
+def _render_pillar_context_block(pillar_context_for_writer: dict) -> str:
+    """
+    STAGE 1h, Task 2. Renders the (already writer-facing, already gated
+    per pillar_context.writer_facing_pillar_context) pillar context as a
+    clearly labeled block of facts, with the comparison basis stated
+    inline for every pillar so the model has no excuse to cite one
+    without naming it (see the HARD RULES' "STATE THE COMPARISON BASIS"
+    line above). If `pillar_context_for_writer` only has a "limits" key
+    (the insufficient_evidence case -- see pillar_context.py's own
+    gating function), only the limits are rendered; no pillar values,
+    medians, or positions appear at all.
+    """
+    if "pillars" not in pillar_context_for_writer:
+        limits = pillar_context_for_writer.get("limits") or []
+        if not limits:
+            return ""
+        limits_text = "\n".join(f"  - {line}" for line in limits)
+        return f"""
+PILLAR DATA LIMITS FOR THIS CANDIDATE (this is ALL the pillar detail you are given -- the evidence base is gated too unreliable for anything more specific):
+{limits_text}"""
+
+    lines = []
+    for name, p in pillar_context_for_writer["pillars"].items():
+        completeness_note = f", completeness {p['completeness']:.0f}" if p["completeness"] is not None else ""
+        lines.append(
+            f"  {name}: value {p['value']}, this week's comparison-group median {p['median']} "
+            f"(n={p['comparison_population_size']} comparable players{completeness_note}) -- "
+            f"reads {p['position']} that median. Measures: {p['what_it_measures']}."
+        )
+    limits = pillar_context_for_writer.get("limits") or []
+    limits_block = ""
+    if limits:
+        limits_text = "\n".join(f"  - {line}" for line in limits)
+        limits_block = f"\n  Data limits to keep in mind:\n{limits_text}"
+
+    return f"""
+PILLAR CONTEXT (computed before you were given this candidate, never from tpe_score or market_value_score, which you were not given and must not reference). Use this to find the single most interesting TENSION in this profile -- never to list all four pillars in sequence, and never to turn a below-median reading into a price verdict:
+{chr(10).join(lines)}{limits_block}"""
+
+
+def build_searched_card_dynamic_prompt(classification: dict, pillar_context_for_writer: dict = None) -> str:
     """
     The per-candidate half -- the real evidence_vs_price_label/reason
     from evidence_price_classifier.classify_evidence_vs_price(), handed
@@ -109,6 +153,13 @@ def build_searched_card_dynamic_prompt(classification: dict) -> str:
     entire "Evidence-vs-price rank position" block is omitted from the
     returned prompt -- the model is never shown that field's name or any
     value for it on a gated candidate, not even the word "None".
+
+    STAGE 1h, Task 2: `pillar_context_for_writer` (optional; pass the
+    output of pillar_context.writer_facing_pillar_context(...), already
+    gated for this candidate's label) is rendered as its own clearly
+    labeled block. None/omitted renders nothing at all -- a caller that
+    hasn't adopted pillar_context yet (or an older test) gets the exact
+    same prompt text as before this task, not a broken block.
     """
     evidence_vs_price_block = ""
     if classification["evidence_vs_price"] is not None:
@@ -130,15 +181,17 @@ def build_searched_card_dynamic_prompt(classification: dict) -> str:
         "invent one, and keep the card modest accordingly."
     )
 
+    pillar_block = _render_pillar_context_block(pillar_context_for_writer) if pillar_context_for_writer is not None else ""
+
     return f"""
 THIS CARD'S EVIDENCE-VS-PRICE READ (computed before you were given this candidate, from the real football-evidence pillars and the real price -- never from tpe_score or market_value_score, which you were not given and must not reference):
   Label: {classification['label']}
   Why: {classification['reason']}{evidence_vs_price_block}
-{translate_instruction}"""
+{translate_instruction}{pillar_block}"""
 
 
-def build_searched_card_system_prompt(classification: dict) -> str:
-    return SEARCHED_CARD_STATIC_SYSTEM_PROMPT + build_searched_card_dynamic_prompt(classification)
+def build_searched_card_system_prompt(classification: dict, pillar_context_for_writer: dict = None) -> str:
+    return SEARCHED_CARD_STATIC_SYSTEM_PROMPT + build_searched_card_dynamic_prompt(classification, pillar_context_for_writer)
 
 
 def build_searched_card_user_prompt(source_facts: dict) -> str:
