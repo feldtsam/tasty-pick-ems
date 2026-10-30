@@ -22,9 +22,9 @@ note after each card.
 
 **Title**: Two Different Readings This Week
 
-**Story**: Recent red-zone touchdown production and conversion ranks
-below the median of this week's comparison group, and the matchup and
-environment read the same way.
+**Story**: Recent red-zone touchdown production and conversion, along
+with the matchup and environment reading, both rank below the median
+among this week's players.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 2 stars* — "His recent red-zone touchdown
@@ -55,9 +55,9 @@ claim is made.
 
 **Title**: Nothing Here Is Fighting the Price
 
-**Story**: Recent red-zone touchdown production and conversion, and the
-matchup and environment reading, both rank above the median of this
-week's comparison group. There isn't much tension to chase this week —
+**Story**: Recent red-zone touchdown production and conversion, along
+with the matchup and environment reading, both rank above the median
+among this week's players. There isn't much tension to chase this week —
 the on-field picture and the price are telling the same story, not
 competing ones.
 
@@ -94,14 +94,13 @@ count trend field is populated in this export to back a more specific
 
 **Title**: The Profile Is Ahead of the Price
 
-**Story**: Recent red-zone touchdown production ranks above the median
-of this week's comparison group, and the week-over-week change in role
-does too, though that role trend is still an early read. The matchup, and how solid the numbers
-behind this read are, both sit right around the comparison group's
-usual range. The football evidence here sits ahead of where the price
-sits this week — not a claim about whether the price itself is right,
-just about which side of the ledger is making the stronger case right
-now.
+**Story**: Recent red-zone touchdown production, along with the
+week-over-week change in role, both rank above the median among this
+week's players, though the role reading is still an early one. The
+matchup is right around the usual range for that group. The football
+evidence here sits ahead of where the price sits this week — not a
+claim about whether the price itself is right, just about which side of
+the ledger is making the stronger case right now.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 4 stars* — "Recent red-zone touchdown
@@ -140,12 +139,11 @@ it states the relative-ranking fact (`evidence_vs_price` =
 
 **Title**: A Real Signal, Still Early
 
-**Story**: Recent red-zone touchdown production ranks above the median
-of this week's comparison group, and the week-over-week change in role
-does too, though both readings here are thinner and earlier than most
-of the comparison group's. The matchup reading is right around the
-group's usual range. This is a real above-median reading within this
-week's comparison group, on an early sample.
+**Story**: Recent red-zone touchdown production, along with the
+week-over-week change in role, both rank above the median among this
+week's players, though both readings here rest on less recent data than
+most players have this week. The matchup is right around the usual
+range for that group. This is a real signal, just an early one.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 3 stars* — "Recent red-zone touchdown
@@ -175,8 +173,8 @@ never a specific count.
 **Title**: Not Enough Here to Read
 
 **Story**: The evidence behind this one is too thin to trust a
-comparison at all this week — the usage data that would normally
-support a read on his role is effectively missing, not just modest.
+comparison at all this week. There isn't enough recent usage data to
+read this one.
 
 **Why reasons**:
 1. *Pillar: market_price, 2 stars* — "The price implies a bit under one
