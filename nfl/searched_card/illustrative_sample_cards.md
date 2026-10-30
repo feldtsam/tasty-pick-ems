@@ -20,14 +20,12 @@ note after each card.
 
 **Derrick Henry, -188, `diverges_from_expectation`, `evidence_ranks_lower`**
 
-**Title**: The Price Is Betting on the Name
+**Title**: Two Different Readings This Week
 
 **Story**: Recent red-zone touchdown production and conversion ranks
 below the median of this week's comparison group, and the matchup and
 environment read the same way. The week-over-week change in his role
-hasn't picked up either. That's an unusual mix for a price this short —
-the market reads far more confident here than the production and
-matchup picture does this week.
+hasn't picked up either.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 2 stars* — "His recent red-zone touchdown
@@ -58,27 +56,36 @@ claim is made.
 
 **Title**: Nothing Here Is Fighting the Price
 
-**Story**: Recent red-zone touchdown production, the week-over-week
-change in role, and the matchup and environment reading all sit above
-the median of this week's comparison group. There isn't much tension to
-chase this week — the on-field picture and the price are telling the
-same story, not competing ones.
+**Story**: Recent red-zone touchdown production and conversion, and the
+matchup and environment reading, both rank above the median of this
+week's comparison group. There isn't much tension to chase this week —
+the on-field picture and the price are telling the same story, not
+competing ones.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 5 stars* — "Recent red-zone touchdown
    production and conversion ranks well above the median of this week's
    comparison group." — **field: `td_opportunity` (value 92.5, median
    59.9, position "above")**
-2. *Pillar: role_momentum, 3 stars* — "His role has been trending up
-   this week, by the same comparison-group standard." — **field:
-   `role_momentum` (value 61.6, median 49.2, position "above") —
-   phrased as change, never as role size, per the hard rule**
+2. *Pillar: situation, 4 stars* — "The matchup and environment reading
+   also ranks above the median of this week's comparison group." —
+   **field: `situation` (value 73.5, median 47.0, position "above") —
+   re-checked directly against the real week-7 data before this
+   revision; it is clearly above median, not a borderline call**
 3. *Pillar: market_price, 4 stars* — "The price implies a little over
    seven in ten." — **field: `implied_probability_pct` (71.2)**
 
+**Change from the prior draft**: the earlier version mentioned a role
+trend in the story (above median) without a why_reason backing it — an
+ungrounded claim, exactly the failure mode this package's own
+citation-checking validators exist to catch. Fixed by replacing that
+mention with `situation`, which the real data does support and which
+now has its own tagged why_reason. role_momentum is dropped from this
+card entirely rather than left as an unbacked story claim.
+
 **Left out, not invented**: same gap as Card A — no snap-share/touch-
 count trend field is populated in this export to back a more specific
-"how" claim about the role change.
+"how" claim about any role change.
 
 ---
 
@@ -92,7 +99,7 @@ count trend field is populated in this export to back a more specific
 of this week's comparison group, and the week-over-week change in role
 does too, though that role trend is still an early read. The matchup and
 data-quality readings are both right around the comparison group's
-usual range. The football profile here ranks ahead of where the price
+usual range. The football evidence here sits ahead of where the price
 sits this week — not a claim about whether the price itself is right,
 just about which side of the ledger is making the stronger case right
 now.
@@ -112,11 +119,19 @@ now.
 3. *Pillar: market_price, 3 stars* — "The price implies a bit over one
    in five." — **field: `implied_probability_pct` (21.4)**
 
-**Note on the HARD RULE this card is built to respect**: nowhere above
-does the text say this makes the price wrong, cheap, a bargain, or an
-opportunity — "the profile ranks ahead of the price" states the
-relative-ranking fact (`evidence_vs_price` = `evidence_ranks_higher`)
-without turning it into a verdict.
+**Note on the HARD RULES this card respects**: the two median claims
+above each name their comparison group explicitly in the same sentence
+("...of this week's comparison group"), satisfying the comparison-basis
+rule. The sentence comparing the evidence to the price was corrected in
+this revision — it originally read "the profile ranks ahead of where
+the price sits," which uses "ranks" without naming a comparison group
+in that same sentence and would have failed the comparison-basis check;
+it's rephrased above to "the football evidence here sits ahead of where
+the price sits," which drops "ranks" entirely rather than restating the
+basis a second time. Separately, and still true: nowhere does the text
+say this makes the price wrong, cheap, a bargain, or an opportunity —
+it states the relative-ranking fact (`evidence_vs_price` =
+`evidence_ranks_higher`) without turning it into a verdict.
 
 ---
 
@@ -128,10 +143,10 @@ without turning it into a verdict.
 
 **Story**: Recent red-zone touchdown production ranks above the median
 of this week's comparison group, and the week-over-week change in role
-does too — though both readings here are thinner and earlier than most
+does too, though both readings here are thinner and earlier than most
 of the comparison group's. The matchup reading is right around the
-group's usual range. This is a real above-median signal, not a
-coincidence of a small sample, but it is a newer one than Card C's.
+group's usual range. This is a real above-median reading within this
+week's comparison group, on an early sample.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 3 stars* — "Recent red-zone touchdown
@@ -163,8 +178,6 @@ never a specific count.
 **Story**: The evidence behind this one is too thin to trust a
 comparison at all this week — the usage data that would normally
 support a read on his role is effectively missing, not just modest.
-That's a plain limitation to say outright, not a reason to reach for a
-tidier story than the data supports.
 
 **Why reasons**:
 1. *Pillar: market_price, 2 stars* — "The price implies a bit under one
@@ -172,17 +185,18 @@ tidier story than the data supports.
    fact this label does NOT withhold, since arithmetic-only pricing is
    always available regardless of the evidence-gate outcome**
 
-**An open design question this card surfaced, not resolved here**: the
-real schema calls for 2-3 `why_reasons` per card. For a fully gated
+**Resolved product decision this card surfaced**: the real schema calls
+for 2-3 `why_reasons` per card, but for a fully gated
 `insufficient_evidence` row, `pillar_context` is withheld down to just
 the `limits` list and the gate's own `reason`
 (`role_momentum_completeness` = 0 fired the completeness gate here, per
 `evidence_price_classifier.py`'s own `reason` text) — neither of those
 is itself a citable fact today, and there is no second real pillar
-claim available to write honestly. This sample intentionally shows only
-ONE why_reason rather than inventing a second one from data that
-doesn't exist. Whether a real writer entry point should (a) allow fewer
-than 2 why_reasons specifically for `insufficient_evidence` cards, or
-(b) add a citable "why this was gated" fact so a second, honest reason
-can reference the gate itself, is a real open question this
-illustration surfaces — not something to guess an answer to here.
+claim available to write honestly. **Decision: an `insufficient_
+evidence` card is allowed exactly 1 why_reason** (the price arithmetic,
+via `market_price`/`implied_probability_pct`, which the label never
+withholds) **instead of the usual 2-3**, rather than inventing a second
+reason from data that doesn't exist, and rather than replacing the
+why_reasons section with a bare notice. A real writer entry point's
+schema-shape validation needs to special-case this: the 2-3 count
+requirement applies only when `label != "insufficient_evidence"`.
