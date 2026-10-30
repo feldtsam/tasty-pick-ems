@@ -191,7 +191,7 @@ the `limits` list and the gate's own `reason`
 (`role_momentum_completeness` = 0 fired the completeness gate here, per
 `evidence_price_classifier.py`'s own `reason` text) — neither of those
 is itself a citable fact today, and there is no second real pillar
-claim available to write honestly. **Decision: an `insufficient_
+claim available to write honestly. **Proposal: an `insufficient_
 evidence` card is allowed exactly 1 why_reason** (the price arithmetic,
 via `market_price`/`implied_probability_pct`, which the label never
 withholds) **instead of the usual 2-3**, rather than inventing a second
