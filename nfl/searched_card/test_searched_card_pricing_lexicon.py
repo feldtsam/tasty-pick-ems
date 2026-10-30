@@ -482,3 +482,61 @@ def test_at_his_position_does_not_count_as_an_approved_basis_phrase():
 
     from searched_card_pricing_lexicon import APPROVED_COMPARISON_BASIS_PHRASES
     assert not any("position" in p for p in APPROVED_COMPARISON_BASIS_PHRASES)
+
+
+# ---------------------------------------------------------------------------
+# APPROVED CHANGE to _COMPARISON_WORD_RE -- plurals/inflections now match
+# ("medians"/"averages"/"ranked"/"ranking", not just the bare singular
+# forms). Read-only audit of the prior regex found that "His medians sit
+# below this week's players." and "Averages are down..." both PASSED
+# vacuously -- "median"/"average" never matched the plural forms at all,
+# so the check never even looked at those sentences. These two replace
+# that pair of now-stale cases with real exercises of the fixed regex.
+# ---------------------------------------------------------------------------
+
+def test_plural_medians_with_no_basis_anywhere_now_fails():
+    """Before this change, 'medians' never tripped the trigger regex at
+    all (no word boundary between 'median' and the plural 's'), so this
+    exact sentence shape passed vacuously. It must now genuinely fail --
+    'the others' is not an approved basis phrase."""
+    story = "His medians sit below the others."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert violations[0]["sentence"] == story
+
+
+def test_plural_medians_with_the_basis_in_the_same_sentence_passes():
+    story = "Among this week's players, his medians sit below the rest."
+    assert validate_comparison_basis_cited(story) == []
+
+
+# ---------------------------------------------------------------------------
+# KNOWN LIMITATION, documented and expected to PASS (not a bug to fix
+# here) -- validate_comparison_basis_cited is a lexical, substring-based
+# check, not a semantic one (see this module's own comments on
+# _ALLOWED_FRAMING_RE and on the comparison-basis check itself for the
+# same "narrower allowlist is the safer failure direction" philosophy).
+# It cannot tell a QUOTED basis phrase (reported speech, not an actual
+# stated comparison) or a NEGATED one ("is not the point") from a real,
+# asserted basis -- a plain substring match finds the approved phrase
+# either way and the check passes. These two tests pin down that known
+# gap precisely, so a future reader finds it documented and tested, not
+# rediscovered by surprise.
+# ---------------------------------------------------------------------------
+
+def test_known_limitation_quoted_basis_phrase_still_counts():
+    """The approved phrase appears only inside quoted, reported speech
+    ("He said '...'"), not as an actual basis for the production claim
+    that follows -- the lexical check cannot tell the difference and
+    passes anyway. Documented limitation, not fixed here."""
+    story = "He said 'among this week's players' and his production ranks below the median."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_known_limitation_explicitly_negated_basis_phrase_still_counts():
+    """The first sentence explicitly denies the phrase is relevant ("is
+    not the point"), but the phrase is still physically present before
+    the trigger sentence, so the lexical check counts it as satisfying
+    the rule anyway. Documented limitation, not fixed here."""
+    story = "Among this week's players is not the point. His production is below the median."
+    assert validate_comparison_basis_cited(story) == []

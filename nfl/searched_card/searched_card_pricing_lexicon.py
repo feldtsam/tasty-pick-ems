@@ -275,7 +275,7 @@ APPROVED_COMPARISON_BASIS_PHRASES = (
     "this week's running backs, receivers and tight ends",
 )
 
-_COMPARISON_WORD_RE = re.compile(r"\b(?:median|ranks?|average)\b", re.IGNORECASE)
+_COMPARISON_WORD_RE = re.compile(r"\b(?:medians?|ranks?|ranked|ranking|averages?)\b", re.IGNORECASE)
 _COMPARISON_BASIS_MARKER_RE = re.compile(
     "|".join(re.escape(p) for p in APPROVED_COMPARISON_BASIS_PHRASES),
     re.IGNORECASE,
