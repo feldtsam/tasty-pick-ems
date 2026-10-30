@@ -365,17 +365,21 @@ def test_median_word_without_comparison_group_also_flagged():
     assert len(violations) == 1
 
 
-def test_only_the_offending_sentence_is_named_not_the_whole_story():
-    """A story with ONE clean, basis-stated sentence and ONE bare one --
-    only the bare one should be flagged, proving this is scoped per
-    sentence, not per story."""
+def test_basis_established_at_first_trigger_means_a_later_trigger_sentence_is_not_separately_checked():
+    """UPDATED for the approved rule change: the check now only cares
+    about the FIRST sentence that trips a trigger word. Once the basis
+    is established there, a LATER sentence that also says "ranks" is no
+    longer separately re-checked -- the reader already knows the basis.
+    (This replaces this test's own prior behavior, when the check was
+    per-sentence: that version expected the second sentence to be
+    flagged on its own; the approved rule deliberately no longer works
+    that way.)"""
     story = (
         "His recent production ranks below the median of this week's comparison group. "
         "His role also ranks near the bottom of the group this week."
     )
     violations = validate_comparison_basis_cited(story)
-    assert len(violations) == 1
-    assert "His role also ranks near the bottom" in violations[0]["sentence"]
+    assert violations == []
 
 
 def test_story_with_neither_median_nor_ranks_is_clean():
@@ -407,3 +411,74 @@ def test_aggregate_catches_a_missing_comparison_basis():
     }
     issues = validate_searched_card_pricing_claims(output)
     assert any(i["check"] == "comparison_basis" for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# APPROVED CHANGE to validate_comparison_basis_cited -- the 3 accept / 3
+# reject examples from the written proposal, now exercised for real. The
+# reject example that depended on "typical" (never added as a trigger
+# word) is replaced with a second, distinct "average" case, per the
+# approved scope. Plus: "at his position" must NOT count as an approved
+# basis phrase, since the real comparison population is pooled across
+# positions, not position-matched (confirmed read-only against the real
+# week-7 data -- see illustrative_sample_cards.md's Part 1 investigation).
+# ---------------------------------------------------------------------------
+
+def test_accept_1_basis_and_trigger_in_the_same_sentence():
+    story = "Among this week's running backs, receivers and tight ends, his production ranks below the median."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_accept_2_basis_in_an_earlier_sentence_than_the_trigger():
+    story = "Among this week's players, production has cooled. His role ranks well below the median this week."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_accept_3_basis_in_an_earlier_sentence_before_an_average_trigger():
+    story = "This week's pool skews toward committee-type usage. His recent output is a touch below average, and the matchup is unremarkable."
+    assert validate_comparison_basis_cited(story) == []
+
+
+def test_reject_1_basis_only_appears_after_the_first_trigger_sentence():
+    """The exact case the tightened 'no later than' rule exists to catch
+    -- this would have wrongly PASSED under a looser 'anywhere in the
+    story' version of the rule."""
+    story = "His production ranks well below the median this week. Among this week's players, that's a real signal."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert "ranks well below the median" in violations[0]["sentence"]
+
+
+def test_reject_2_average_trigger_with_no_basis_anywhere():
+    """Replaces the prior proposal's 'typical' example -- 'typical' was
+    deliberately not added as a trigger word, so this uses a second,
+    distinct 'average' case instead."""
+    story = "His recent production has been a bit below average, with nothing in the matchup to offset it."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert "below average" in violations[0]["sentence"]
+
+
+def test_reject_3_both_triggers_fire_in_a_sentence_before_the_basis_phrase_appears():
+    """Two real sentences (period-separated, not just a comma clause) --
+    both trigger words fire in the first one, and the approved phrase
+    doesn't appear until the second, too late under the 'no later than
+    the first trigger sentence' rule."""
+    story = "Recent production ranks above average. The trend has been consistent for a few weeks now within this week's pool."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert "ranks above average" in violations[0]["sentence"]
+
+
+def test_at_his_position_does_not_count_as_an_approved_basis_phrase():
+    """The real comparison population is pooled across RB/WR/TE, not
+    position-matched (confirmed read-only against real week-7 data) --
+    'at his position' asserts a FALSE comparison basis, not just an
+    unapproved synonym, and must still be flagged."""
+    story = "His production ranks below the median among other players at his position."
+    violations = validate_comparison_basis_cited(story)
+    assert len(violations) == 1
+    assert "at his position" in violations[0]["sentence"]
+
+    from searched_card_pricing_lexicon import APPROVED_COMPARISON_BASIS_PHRASES
+    assert not any("position" in p for p in APPROVED_COMPARISON_BASIS_PHRASES)

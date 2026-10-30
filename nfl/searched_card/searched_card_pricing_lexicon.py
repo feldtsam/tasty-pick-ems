@@ -222,29 +222,64 @@ def find_value_verdict_violations(text) -> list:
 
 
 # ---------------------------------------------------------------------------
-# STAGE 1h, Task 3 -- the comparison-basis citation check. Per the approved
-# hard rule: "diverges"/pillar-standing claims describe football evidence
-# relative to an EXPLICITLY STATED comparison basis. "His production ranks
-# below the median" with no stated basis is not a real citation -- it reads
-# as "below average," full stop, inviting exactly the unsupported-verdict
-# reading this task exists to prevent. "...ranks below the median OF THIS
-# WEEK'S COMPARISON GROUP" is the real, complete claim.
+# STAGE 1h, Task 3 (ORIGINAL) / STAGE [this revision] (APPROVED CHANGE) --
+# the comparison-basis citation check. Per the approved hard rule:
+# "diverges"/pillar-standing claims describe football evidence relative to
+# an EXPLICITLY STATED comparison basis. "His production ranks below the
+# median" with no stated basis is not a real citation -- it reads as
+# "below average," full stop, inviting exactly the unsupported-verdict
+# reading this task exists to prevent.
 #
-# KEPT DELIBERATELY SIMPLE, per the task's own instruction: any sentence in
-# `story` containing "median" or "ranks" must also contain the literal
-# phrase "comparison group" somewhere in that SAME sentence, or it's flagged
-# for review. This is a blunt, lexical check, not a semantic one -- a
-# sentence using "ranks" in some unrelated sense (e.g. "he ranks among the
-# most dependable options") would also get flagged, with no real comparison
-# claim to fix. That's an accepted, deliberate false-positive, same
-# "narrower allowlist is the safer failure direction" philosophy
-# _ALLOWED_FRAMING_RE's own comment already uses above -- a legitimate
-# sentence getting flagged for human review is recoverable; a real
-# unsupported comparison slipping through because the check tried to be
-# clever about intent is not.
+# APPROVED CHANGE (this revision), per the real comparison population this
+# package's own classifier/pillar_context actually use (priced,
+# completeness-gate-passing rows, pooled across RB/WR/TE -- confirmed
+# read-only against the real week-7 data; see illustrative_sample_cards.md
+# for the investigation): the ORIGINAL rule required the single literal
+# phrase "comparison group" in the SAME sentence as "median"/"ranks," every
+# time. Two problems with that: (1) it forced repeating "comparison group"
+# in every sentence, which reads worse than stating the basis once and
+# referring to it naturally afterward; (2) "comparison group" was the only
+# recognized phrase, so an equally-accurate, QB-free phrasing like "among
+# this week's running backs, receivers and tight ends" failed for no real
+# reason. This revision keeps the check lexical and deliberately simple
+# (same philosophy as before -- a false positive is recoverable, a missed
+# unsupported comparison is not), but:
+#   (a) recognizes a short, named list of approved basis phrases
+#       (APPROVED_COMPARISON_BASIS_PHRASES) instead of one hardcoded string
+#       -- "at his position"/"other players at his position" is
+#       DELIBERATELY NOT on this list: the real comparison population is
+#       pooled across positions, not position-matched, so that phrasing
+#       would be a false comparison-basis claim, not just an unapproved
+#       synonym.
+#   (b) requires the basis to appear in the same sentence as, OR IN ANY
+#       SENTENCE BEFORE, the FIRST sentence that trips a trigger word --
+#       not in every such sentence. Once the basis is established before
+#       or at that first sentence, later sentences using "ranks"/"median"/
+#       "average" again are not separately re-checked -- the reader
+#       already knows what's being compared against.
+#   (c) adds "average" to the trigger-word list (a pillar described as
+#       "below average" implies the identical unsupported-comparison
+#       problem as "below the median"). "typical" was considered and
+#       deliberately NOT added -- no approved product decision covers it,
+#       and adding trigger words speculatively is the wrong direction to
+#       err in for a check whose whole job is flagging UNDER-specified
+#       claims, not over-flagging adjacent words nobody asked to cover.
+# A story with NO trigger word anywhere keeps the exact old behavior:
+# clean, no violations, no cost to check.
 # ---------------------------------------------------------------------------
-_COMPARISON_WORD_RE = re.compile(r"\b(?:median|ranks?)\b", re.IGNORECASE)
-_COMPARISON_BASIS_MARKER_RE = re.compile(r"comparison group", re.IGNORECASE)
+APPROVED_COMPARISON_BASIS_PHRASES = (
+    "comparison group",
+    "this week's players",
+    "this week's pool",
+    "this week's full player pool",
+    "this week's running backs, receivers and tight ends",
+)
+
+_COMPARISON_WORD_RE = re.compile(r"\b(?:median|ranks?|average)\b", re.IGNORECASE)
+_COMPARISON_BASIS_MARKER_RE = re.compile(
+    "|".join(re.escape(p) for p in APPROVED_COMPARISON_BASIS_PHRASES),
+    re.IGNORECASE,
+)
 
 
 def _split_into_sentences(text: str) -> list:
@@ -258,25 +293,44 @@ def _split_into_sentences(text: str) -> list:
 
 def validate_comparison_basis_cited(story) -> list:
     """
-    Scoped to `story` specifically, per the task's own wording. Returns a
-    list of violation dicts (empty = clean): one per sentence that
-    mentions "median"/"ranks" without also naming "comparison group" in
-    that same sentence. [] for a non-string or empty story.
+    Scoped to `story` specifically, per the task's own wording. Finds the
+    FIRST sentence containing a trigger word ("median"/"ranks"/"average");
+    if none exists, returns [] (no change from the original check's
+    behavior for a story with no comparison language at all). If one
+    exists, returns [] only if an approved basis phrase (see
+    APPROVED_COMPARISON_BASIS_PHRASES) appears in that sentence or any
+    sentence before it -- otherwise returns a single violation naming that
+    first trigger sentence. Sentences AFTER the first trigger sentence are
+    never separately checked, by design (see module comment above, point b).
     """
     if not isinstance(story, str) or not story:
         return []
-    violations = []
-    for sentence in _split_into_sentences(story):
-        if _COMPARISON_WORD_RE.search(sentence) and not _COMPARISON_BASIS_MARKER_RE.search(sentence):
-            violations.append({
-                "sentence": sentence,
-                "issue": (
-                    "this sentence cites 'median'/'ranks' without also naming the comparison group in the "
-                    "same sentence -- a comparison claim must state its basis (e.g. '...of this week's "
-                    "comparison group'), not just assert 'below/above median' on its own"
-                ),
-            })
-    return violations
+    sentences = _split_into_sentences(story)
+
+    first_trigger_index = None
+    for i, sentence in enumerate(sentences):
+        if _COMPARISON_WORD_RE.search(sentence):
+            first_trigger_index = i
+            break
+
+    if first_trigger_index is None:
+        return []
+
+    basis_established = any(
+        _COMPARISON_BASIS_MARKER_RE.search(sentences[j]) for j in range(first_trigger_index + 1)
+    )
+    if basis_established:
+        return []
+
+    return [{
+        "sentence": sentences[first_trigger_index],
+        "issue": (
+            "this is the first sentence citing 'median'/'ranks'/'average', and no approved comparison-basis "
+            "phrase (see APPROVED_COMPARISON_BASIS_PHRASES) appears in this sentence or any sentence before "
+            "it -- a comparison claim must state its basis once before or at the first such mention, not "
+            "just assert 'below/above median'/'average' on its own"
+        ),
+    }]
 
 
 def validate_searched_card_pricing_claims(output: dict) -> list:

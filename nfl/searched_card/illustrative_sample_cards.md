@@ -28,12 +28,12 @@ among this week's running backs, receivers and tight ends.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 2 stars* — "His recent red-zone touchdown
-   production and conversion ranks below the median of this week's
-   comparison group." — **field: `td_opportunity` (value 47.4, median
-   59.9, position "below")**
+   production and conversion ranks below the median among this week's
+   running backs, receivers and tight ends." — **field: `td_opportunity`
+   (value 47.4, median 59.9, position "below")**
 2. *Pillar: situation, 2 stars* — "The matchup and environment reading
-   also ranks below the median of this week's comparison group." —
-   **field: `situation` (value 31.9, median 47.0, position "below")**
+   also ranks below the median in that same group." — **field:
+   `situation` (value 31.9, median 47.0, position "below")**
 3. *Pillar: market_price, 3 stars* — "The price implies a touch under
    two-thirds likelihood to score anytime." — **field:
    `implied_probability_pct` (65.3), framed arithmetically per the hard
@@ -58,18 +58,17 @@ claim is made.
 **Story**: Recent red-zone touchdown production and conversion, along
 with the matchup and environment reading, both rank above the median
 among this week's running backs, receivers and tight ends. There isn't
-much tension to chase this week —
-the on-field picture and the price are telling the same story, not
-competing ones.
+much tension to chase this week — the on-field picture and the price
+are telling the same story, not competing ones.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 5 stars* — "Recent red-zone touchdown
-   production and conversion ranks well above the median of this week's
-   comparison group." — **field: `td_opportunity` (value 92.5, median
-   59.9, position "above")**
+   production and conversion ranks well above the median among this
+   week's running backs, receivers and tight ends." — **field:
+   `td_opportunity` (value 92.5, median 59.9, position "above")**
 2. *Pillar: situation, 4 stars* — "The matchup and environment reading
-   also ranks above the median of this week's comparison group." —
-   **field: `situation` (value 73.5, median 47.0, position "above") —
+   also ranks above the median in that same group." — **field:
+   `situation` (value 73.5, median 47.0, position "above") —
    re-checked directly against the real week-7 data before this
    revision; it is clearly above median, not a borderline call**
 3. *Pillar: market_price, 4 stars* — "The price implies a little over
@@ -106,9 +105,9 @@ the ledger is making the stronger case right now.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 4 stars* — "Recent red-zone touchdown
-   production and conversion ranks above the median of this week's
-   comparison group." — **field: `td_opportunity` (value 82.9, median
-   59.9, position "above")**
+   production and conversion ranks above the median among this week's
+   running backs, receivers and tight ends." — **field: `td_opportunity`
+   (value 82.9, median 59.9, position "above")**
 2. *Pillar: role_momentum, 3 stars* — "The week-over-week change in his
    role also ranks above the median, though it's still an early trend."
    — **field: `role_momentum` (value 62.1, median 49.2, position
@@ -156,9 +155,10 @@ signal, just an early one.
 
 **Why reasons**:
 1. *Pillar: td_opportunity, 3 stars* — "Recent red-zone touchdown
-   production and conversion ranks above the median of this week's
-   comparison group, on a thinner read than most." — **field:
-   `td_opportunity` (value 66.6, median 59.9, position "above");
+   production and conversion ranks above the median among this week's
+   running backs, receivers and tight ends, on a thinner read than
+   most." — **field: `td_opportunity` (value 66.6, median 59.9,
+   position "above");
    "thinner read" reflects `td_opportunity_completeness` = 60**
 2. *Pillar: role_momentum, 3 stars* — "The change in his role also
    ranks above the median, on an even earlier read." — **field:
@@ -181,9 +181,7 @@ never a specific count.
 
 **Title**: Not Enough Here to Read
 
-**Story**: The evidence behind this one is too thin to trust a
-comparison at all this week. There isn't enough recent usage data to
-read this one.
+**Story**: There isn't enough recent usage data to read this one.
 
 **Why reasons**:
 1. *Pillar: market_price, 2 stars* — "The price implies a bit under one
