@@ -91,6 +91,7 @@ import requests
 
 from curate_home_shelves import (
     CONFIG as CURATE_HOME_SHELVES_CONFIG,
+    ODDS_SHELVES,
     _SLUG_TO_SHELF,
     build_prior_state_with_walkback,
     compute_stale_approved_targets,
@@ -1404,9 +1405,25 @@ def curate_and_write_drafts_endpoint():
     # Thin/empty coverage (the normal state until Wed–Thu of a game week)
     # is not a failure: every player gets NaN market columns, score_
     # universal_tpe renormalizes on the 3 remaining pillars, and the ATTD
-    # shelves simply have fewer eligible players. A read failure is
-    # logged and treated the same as empty coverage — curation still
-    # runs, on 3 pillars.
+    # shelves simply have fewer eligible players.
+    #
+    # A read FAILURE is no longer treated the same as empty coverage:
+    # that conflation is what let an intermittent route-side statement
+    # timeout silently empty the three ATTD shelves on a week with
+    # 23,000+ real poll rows. It now hard-fails (503) when an ATTD shelf
+    # is in scope, and degrades to 3 pillars only when it genuinely does
+    # not matter — a trend-only call. See attd_in_scope below.
+
+    # Whether THIS call's shelf scope actually depends on live odds. The
+    # ATTD bands do: _attd_eligible_overall gates on a non-null
+    # consensus_price_american, so with no odds every band is empty by
+    # construction. The trend shelves do not -- they score on the other 3
+    # pillars and have always been expected to curate before any poll
+    # lands. shelves_to_process is already unslugged to internal
+    # Title-Case above, matching ODDS_SHELVES; None means "every shelf,"
+    # which includes the bands.
+    attd_in_scope = shelves_to_process is None or any(s in ODDS_SHELVES for s in shelves_to_process)
+
     mv_secret = os.environ.get("NFL_PIPELINE_WEBHOOK_SECRET")
     try:
         if not mv_secret:
@@ -1416,7 +1433,33 @@ def curate_and_write_drafts_endpoint():
         _stage("price_read", _t)
     except Exception as e:
         print(f"[curate-and-write-drafts] season={season} week={week} market_value_read_failed "
-              f"error={e!r} — proceeding on 3 pillars", flush=True)
+              f"error={e!r} attd_in_scope={attd_in_scope}", flush=True)
+        if attd_in_scope:
+            # Refuse rather than curate the bands against no odds. A 200
+            # with rows_curated=0 here is the exact failure mode this
+            # closes: it is indistinguishable from an honest "no odds
+            # yet" week, and it silently emptied the three ATTD shelves
+            # for 2026 week 9 on a week holding 23,000+ real poll rows.
+            # 503: the underlying read is intermittently timing out, so
+            # a retry is the correct response, not a re-run with
+            # different inputs.
+            return jsonify({
+                "status": "market_value_read_failed",
+                "error": "live odds are required to curate the ATTD shelves and the "
+                         "nfl_price_history read failed — refusing to write ATTD rows "
+                         "against an empty market snapshot",
+                "detail": str(e),
+                "season": season,
+                "week": week,
+                "shelves_to_process": shelves_to_process_raw,
+                "retryable": True,
+                "rows_curated": 0,
+            }), 503
+        # Trend-only scope: unchanged behavior. These shelves genuinely
+        # do not need odds, so degrading to 3 pillars is correct here and
+        # failing the call would be a regression.
+        print(f"[curate-and-write-drafts] season={season} week={week} "
+              f"proceeding on 3 pillars (no ATTD shelf in scope)", flush=True)
         mv_snapshot = pd.DataFrame(columns=["player_id", "season", "week"] + CURATION_MARKET_VALUE_COLUMNS)
         stage_seconds.setdefault("price_read", 0.0)
 
