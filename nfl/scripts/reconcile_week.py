@@ -300,13 +300,31 @@ def write_player_season_evidence_rows(rows: list, secret: str, write_url: str = 
 DEFAULT_NFL_PLAYER_REDZONE_WEEKLY_READ_URL = "https://tastypickems.com/api/public/nfl-player-redzone-weekly-read"
 
 
-def read_player_redzone_weekly_rows(season: int, secret: str, read_url: str = None) -> dict:
+class RedzoneWeeklyReadError(RuntimeError):
     """
-    One signed POST (body {"season": season}), returns {"ok": bool, "error":
-    str|None, "status_code": int|None, "rows": [...]} for EVERY real
+    A real nfl_player_redzone_weekly read failure — a non-2xx response, a
+    network error, an unparseable body, or a season that could not be
+    paged to completion — as distinct from a genuine "this season has no
+    reconciled weeks yet."
+
+    Both outcomes used to be the same empty DataFrame, so a failed or
+    truncated read silently became "no stories this week" for Role Changes
+    and Defensive Trends. Mirrors market_value.PriceHistoryReadError; see
+    role_defensive_weekly_snapshot for the confirmed 2026 week 8 case.
+    """
+
+
+def read_player_redzone_weekly_rows(
+    season: int, secret: str, read_url: str = None, max_pages: int = 60,
+) -> dict:
+    """
+    Signed POSTs (body {"season": season}, plus a keyset cursor from the
+    second page on), returning {"ok": bool, "error": str|None,
+    "status_code": int|None, "rows": [...]} for EVERY real
     nfl_player_redzone_weekly row for the WHOLE season — same real sign+POST+
     capture-response reuse of forward_to_lovable every other read route in
-    this codebase already uses.
+    this codebase already uses. One page when the season fits in one; see
+    the pagination note below for why it can no longer be one call.
 
     Whole-SEASON, not a single week — mirrors read_price_history's own
     (season, week) scoping only in SPIRIT, not in shape: build_role_changes_
@@ -319,6 +337,36 @@ def read_player_redzone_weekly_rows(season: int, secret: str, read_url: str = No
     A real "zero rows" response (this season has no reconciled weeks yet) is
     a genuine, valid outcome (rows=[]), not an error — same "no rows is
     valid" convention every other read route in this codebase already uses.
+
+    PAGINATED, and that is not an optimization — it is the fix for a real
+    silent truncation. This used to be ONE unpaginated POST, and the route
+    was an unordered season-scoped select, so Supabase's default
+    db-max-rows cap (1,000) cut the response off with no error and no way
+    to reach the rest. Measured live 2026-11-06 on season 2026: exactly
+    1,000 rows back, weeks 1-7 filling 999 of them and week 8 contributing
+    one. Because an unordered scan of an upsert-append table comes back
+    oldest-first, the slice lost was always the NEWEST week — the one the
+    caller is targeting — so build_role_changes_stories() for week 8 saw a
+    single player and honestly produced zero stories. It read as missing
+    data rather than as a truncated read.
+
+    Pages on the route's (week DESC, id DESC) keyset cursor until a page
+    comes back EMPTY, then returns every row from every page combined —
+    the same shape and contract callers already got, just complete.
+
+    Deliberately empty-page termination rather than "a page shorter than
+    the known cap": nothing here should have to know what the server's
+    row cap is. Assuming it (1,000 today) is what makes this fragile —
+    if the cap were ever lower, a short first page would read as the end
+    of the season and silently truncate again, which is the very bug
+    this function is being fixed for. The cost is one extra request per
+    call; the benefit is that correctness no longer depends on a number
+    this side cannot see.
+
+    A failure on ANY page fails the whole call (ok=False, with the rows
+    gathered so far discarded): a partial season silently returned as if
+    complete is the exact class of bug this closes, so half a season must
+    never look like a short one.
     """
     import sys
     from pathlib import Path
@@ -328,22 +376,49 @@ def read_player_redzone_weekly_rows(season: int, secret: str, read_url: str = No
     url = read_url or resolve_url_env(
         "LOVABLE_NFL_PLAYER_REDZONE_WEEKLY_READ_URL", DEFAULT_NFL_PLAYER_REDZONE_WEEKLY_READ_URL,
     )
-    result = forward_to_lovable({"season": season}, secret, url)
-    if not result["success"]:
-        return {"ok": False, "error": result["error"], "status_code": result["status_code"], "rows": []}
-    try:
-        body = json.loads(result["response_body"])
-    except (json.JSONDecodeError, TypeError):
-        return {
-            "ok": False, "error": f"Non-JSON response body: {result['response_body']!r}",
-            "status_code": result["status_code"], "rows": [],
-        }
-    if not body.get("ok"):
-        return {
-            "ok": False, "error": body.get("error", "Unknown error"),
-            "status_code": result["status_code"], "rows": [],
-        }
-    return {"ok": True, "error": None, "status_code": result["status_code"], "rows": body.get("player_redzone_weekly", [])}
+
+    def fail(error, status_code):
+        return {"ok": False, "error": error, "status_code": status_code, "rows": []}
+
+    all_rows = []
+    cursor = None
+    last_status = None
+    for _ in range(max_pages):
+        payload = {"season": season}
+        if cursor is not None:
+            payload["before_week"], payload["before_id"] = cursor
+        result = forward_to_lovable(payload, secret, url)
+        last_status = result["status_code"]
+        if not result["success"]:
+            return fail(result["error"], result["status_code"])
+        try:
+            body = json.loads(result["response_body"])
+        except (json.JSONDecodeError, TypeError):
+            return fail(f"Non-JSON response body: {result['response_body']!r}", result["status_code"])
+        if not body.get("ok"):
+            return fail(body.get("error", "Unknown error"), result["status_code"])
+        page = body.get("player_redzone_weekly") or []
+        if not page:
+            # An empty page is the only end-of-season signal, whatever
+            # the server's own row cap happens to be.
+            return {"ok": True, "error": None, "status_code": result["status_code"], "rows": all_rows}
+        all_rows.extend(page)
+        last = page[-1]
+        next_cursor = (last.get("week"), last.get("id"))
+        if next_cursor[0] is None or next_cursor[1] is None or next_cursor == cursor:
+            # No usable cursor (or it failed to advance) — refuse to loop
+            # or to pass off what we have as the whole season.
+            return fail(
+                f"cannot page past row with week={next_cursor[0]!r} id={next_cursor[1]!r} "
+                f"after {len(all_rows)} rows",
+                result["status_code"],
+            )
+        cursor = next_cursor
+
+    return fail(
+        f"exceeded max_pages={max_pages} after {len(all_rows)} rows — refusing to return a partial season",
+        last_status,
+    )
 
 
 def role_defensive_weekly_snapshot(season: int, secret: str, read_url: str = None) -> pd.DataFrame:
@@ -379,8 +454,24 @@ def role_defensive_weekly_snapshot(season: int, secret: str, read_url: str = Non
     — both builders' own pool-filtering already degrades correctly to "no
     stories" against an empty/short frame, the same honest-degradation
     shape every other read-then-reduce wrapper in this codebase already has.
+
+    A real READ FAILURE, by contrast, raises RedzoneWeeklyReadError rather
+    than returning that same empty frame. This used to take result["rows"]
+    without ever checking result["ok"], so a non-2xx response, a network
+    error or an unparseable body all produced an empty frame that was
+    indistinguishable from "this season has nothing reconciled yet" — and
+    both builders then honestly reported zero stories for a week whose
+    data was actually sitting in the table. Same silent-swallow shape, and
+    the same fix, as market_value_snapshot_for_curation's own
+    PriceHistoryReadError and market_intelligence_snapshot_for_generation's
+    read_ok diagnostics.
     """
     result = read_player_redzone_weekly_rows(season, secret, read_url)
+    if not result["ok"]:
+        raise RedzoneWeeklyReadError(
+            f"nfl_player_redzone_weekly read failed for season={season}: "
+            f"status_code={result['status_code']} error={result['error']}"
+        )
     rows = result["rows"]
     if not rows:
         return pd.DataFrame(columns=NFL_PLAYER_REDZONE_WEEKLY_TYPED_COLUMNS)
