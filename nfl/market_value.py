@@ -774,6 +774,33 @@ CURATION_MARKET_VALUE_COLUMNS = [
 _MV_MERGE_KEY = ["player_id", "season", "week"]
 
 
+class PriceHistoryReadError(RuntimeError):
+    """
+    A real nfl_price_history read failure — a non-2xx response, a network
+    error, or an unparseable body — as distinct from a genuine "no polls
+    yet for this week."
+
+    Exists because those two outcomes were indistinguishable to callers:
+    read_price_history returns rows=[] for both, so a failed read silently
+    read as an empty week. market_intelligence_snapshot_for_generation
+    already closed that hole for itself (see its docstring — the same bug,
+    confirmed live on 2026 week 1 against 17,876 real rows) by returning
+    read_ok/read_error diagnostics; market_value_snapshot_for_curation was
+    the twin that never got the fix. It raises this instead of returning
+    diagnostics, because its caller has no story-level place to surface
+    them: an empty snapshot there zeroes the ATTD eligibility gate
+    (curate_home_shelves._attd_eligible_overall needs a non-null
+    consensus_price_american) and the whole shelf set comes back empty
+    with an HTTP 200.
+
+    Confirmed live on 2026-11-06: the read route began returning Postgres
+    57014 ("canceling statement due to statement timeout") intermittently
+    for (2026, 9) — 2 failures in 6 consecutive reads — which is what
+    silently produced price_history_rows=0 / rows_curated=0 on a week
+    holding 23,000+ real rows.
+    """
+
+
 def market_value_snapshot_for_curation(season: int, week: int, secret: str, read_url: str = None) -> pd.DataFrame:
     """
     Live market-value snapshot for /api/curate-and-write-drafts (Phase B)
@@ -794,10 +821,26 @@ def market_value_snapshot_for_curation(season: int, week: int, secret: str, read
     score_universal_tpe's present-columns-only renormalization scores
     them on the 3 remaining pillars. Not a failure -- just fewer ATTD
     picks that early.
+
+    A real READ FAILURE, by contrast, now raises PriceHistoryReadError
+    rather than returning that same empty frame -- the two outcomes used
+    to be indistinguishable here, which is the whole defect that let a
+    route-side statement timeout read as "no odds this week." Scoring,
+    thresholds and the returned shape are unchanged on the success path.
     """
     from scoring import CONFIG, score_market_value as scoring_score_market_value
 
     result = read_price_history(season, week, secret, read_url)
+    if not result["ok"]:
+        # A real read failure — NOT a genuine "zero polls this week."
+        # Raising is the point: returning the same empty frame for both
+        # is what let a 57014 statement timeout masquerade as an
+        # odds-less week and silently empty the ATTD shelves. See
+        # PriceHistoryReadError.
+        raise PriceHistoryReadError(
+            f"nfl_price_history read failed for season={season} week={week}: "
+            f"status_code={result['status_code']} error={result['error']}"
+        )
     latest = latest_price_history_full_per_player(result["rows"])
     if len(latest) == 0:
         return pd.DataFrame(columns=_MV_MERGE_KEY + CURATION_MARKET_VALUE_COLUMNS)
