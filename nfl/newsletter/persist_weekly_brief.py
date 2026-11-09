@@ -165,9 +165,35 @@ def shape_newsletter_rows(editor_output: dict, stories_by_id: dict, season: int,
     story_rows: list[dict] = []
     skipped: list[dict] = []
 
-    for section in editor_output.get("sections", []):
+    for section_index, section in enumerate(editor_output.get("sections", []) or []):
+        # Same 2026-11-09 type guard as weekly_brief_shape and
+        # render_markdown. Reachable here specifically because the raw
+        # pre-post-processing agent output is now saved to disk and can
+        # be fed back through --editor-output-json, which bypasses
+        # finalize_weekly_brief -- so this is the one place the guard
+        # closes a hole that save opened, rather than one the model
+        # created. Recorded as a skip, never written, never a crash.
+        if not isinstance(section, dict):
+            skipped.append({
+                "reason": f"sections[{section_index}] is {type(section).__name__}, not an object",
+                "section_type": None, "value": repr(section)[:200],
+            })
+            continue
         section_type = section.get("section_type")
-        for sort_order, story in enumerate(section.get("stories", [])):
+        raw_stories = section.get("stories", []) or []
+        if not isinstance(raw_stories, list):
+            skipped.append({
+                "reason": f"{section_type}.stories is {type(raw_stories).__name__}, not a list",
+                "section_type": section_type,
+            })
+            continue
+        for sort_order, story in enumerate(raw_stories):
+            if not isinstance(story, dict):
+                skipped.append({
+                    "reason": f"{section_type}.stories[{sort_order}] is {type(story).__name__}, not an object",
+                    "section_type": section_type, "value": repr(story)[:200],
+                })
+                continue
             cited_ids = story.get("intelligence_story_ids", []) or []
             resolved = [stories_by_id[sid] for sid in cited_ids if sid in stories_by_id]
             missing = [sid for sid in cited_ids if sid not in stories_by_id]

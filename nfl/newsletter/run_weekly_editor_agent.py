@@ -31,6 +31,37 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixture_v2.json"
 # newsletter issue with narrated prose for up to six stories).
 MAX_TOKENS = 8192
 
+# The Editor Agent drafts a whole newsletter in ONE forced-tool call, so
+# card_writer_common's shared 60s read timeout -- right for the per-card
+# writers -- does not fit it. Measured 2026-11-09 against a real 12-story
+# pool: 60.46 seconds for an HTTP 200. The shared ceiling was losing that
+# call by less than half a second, as a ReadTimeout, after the tokens had
+# already been generated and billed. 300s is the same budget the Make.com
+# scenarios already give this project's own endpoints.
+EDITOR_AGENT_TIMEOUT_SECONDS = 300
+
+
+class WeeklyBriefContractFailed(ValueError):
+    """
+    Raised when no tool_use block passes the structural contract, after
+    the one capped retry. Carries the best-effort finalized issue and the
+    per-attempt reports so a caller can SAVE and show what the model
+    actually produced.
+
+    Subclasses ValueError deliberately: this replaces a bare
+    `raise ValueError(...)`, so any existing `except ValueError` keeps
+    working unchanged. It exists because that bare raise discarded
+    everything -- run_weekly_brief.main caught only
+    EvidenceValidationFailed, so a structural failure killed the run
+    with no draft written, after the call had been billed.
+    """
+
+    def __init__(self, message: str, issue: dict | None, attempts: list[dict]):
+        super().__init__(message)
+        self.issue = issue
+        self.attempts = attempts
+
+
 WEEKLY_BRIEF_TOOL_SCHEMA = {
     "name": "record_weekly_brief_issue",
     "description": "Records one drafted Weekly Brief newsletter issue, exactly per the Weekly Editor Agent prompt's own Output Format section.",
@@ -181,7 +212,8 @@ def build_candidate_pool_input(fixtures: list, issue_week: str | None = None) ->
     return json.dumps(build_candidate_pool(fixtures, issue_week), indent=2)
 
 
-def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None = None) -> dict:
+def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None = None,
+                            on_raw_blocks=None) -> dict:
     """
     One real call, then STRUCTURAL CONTRACT ENFORCEMENT before anything
     sees the result -- see weekly_brief_shape.py's module docstring for
@@ -219,13 +251,29 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
     live_picks = pool["live_picks"]
 
     attempt_reports: list[dict] = []
+    last_finalized: dict | None = None
     for attempt in range(2):  # the first call + exactly one capped retry
         blocks = call_claude_with_tool(
             api_key, system_prompt, user_prompt, WEEKLY_BRIEF_TOOL_SCHEMA,
             max_tokens=MAX_TOKENS, return_all_tool_use_blocks=True,
+            timeout=EDITOR_AGENT_TIMEOUT_SECONDS,
         )
+        # RAW SAVE, before a single line of post-processing. The call
+        # above is the only billed step in this function; everything
+        # after it is deterministic local work that can and did raise
+        # (2026-11-09: a string in `sections` -> AttributeError deep in
+        # complete_derivable_fields). write_outputs lives at the END of
+        # run_weekly_brief.main, so such a raise discarded a draft that
+        # had already been paid for. This hook makes that impossible:
+        # the bytes are on disk before anything can reject them.
+        if on_raw_blocks is not None:
+            try:
+                on_raw_blocks(blocks, attempt + 1)
+            except Exception as e:  # never let saving break the run
+                print(f"[weekly_editor] WARNING: raw-output save failed: {e!r}", flush=True)
         for block_index, block in enumerate(blocks):
             issue, report = finalize_weekly_brief(block, candidates, live_picks)
+            last_finalized = issue
             attempt_reports.append({"attempt": attempt + 1, "block_index": block_index, **report})
             if report["passed"]:
                 if block_index > 0:
@@ -264,9 +312,10 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
             flush=True,
         )
 
-    raise ValueError(
+    raise WeeklyBriefContractFailed(
         "Weekly Editor Agent output failed the structural contract after one capped retry; refusing to return "
-        "a brief that would persist with missing provenance. Attempts: " + json.dumps(attempt_reports, default=str)
+        "a brief that would persist with missing provenance. Attempts: " + json.dumps(attempt_reports, default=str),
+        last_finalized, attempt_reports,
     )
 
 
