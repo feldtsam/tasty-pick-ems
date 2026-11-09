@@ -68,7 +68,8 @@ calls = {"n": 0}
 def install(responses):
     calls["n"] = 0
 
-    def fake(api_key, system_prompt, user_prompt, tool_schema, max_tokens=None, return_all_tool_use_blocks=False):
+    def fake(api_key, system_prompt, user_prompt, tool_schema, max_tokens=None,
+             return_all_tool_use_blocks=False, **kwargs):  # **kwargs: see test_weekly_brief_shape
         out = responses[calls["n"]]
         calls["n"] += 1
         return out

@@ -203,7 +203,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     drafted = {"n": 0}
 
-    def fake_agent(stories, api_key, issue_week=None):
+    def fake_agent(stories, api_key, issue_week=None, **kwargs):  # **kwargs: on_raw_blocks and anything later
         drafted["n"] += 1
         drafted["issue_week"] = issue_week
         drafted["count"] = len(stories)
@@ -262,7 +262,7 @@ with tempfile.TemporaryDirectory() as tmp:
                   "hard_fails": [{"where": "big_one.stories[0]", "check": "claim_traceability",
                                   "claim_text": "58% of carries", "detail": "not in the source"}]}
 
-        def blocked_agent(stories, api_key, issue_week=None):
+        def blocked_agent(stories, api_key, issue_week=None, **kwargs):  # **kwargs: on_raw_blocks
             out = json.loads(json.dumps(issue))
             out["_evidence_validation"] = report
             raise EvidenceValidationFailed("blocked", out, report)

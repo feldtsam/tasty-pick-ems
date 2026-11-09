@@ -236,7 +236,10 @@ if __name__ == "__main__":
         calls["n"] = 0
         calls["kwargs"] = []
 
-        def fake(api_key, system_prompt, user_prompt, tool_schema, max_tokens=None, return_all_tool_use_blocks=False):
+        def fake(api_key, system_prompt, user_prompt, tool_schema, max_tokens=None,
+                 return_all_tool_use_blocks=False, **kwargs):  # **kwargs: tolerate new
+            # call_claude_with_tool kwargs (e.g. timeout) without this stub
+            # having to track the real signature.
             calls["kwargs"].append({"max_tokens": max_tokens, "return_all_tool_use_blocks": return_all_tool_use_blocks, "tool": tool_schema["name"]})
             out = responses[calls["n"]]
             calls["n"] += 1

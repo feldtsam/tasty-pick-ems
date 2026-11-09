@@ -928,7 +928,7 @@ def system_blocks(static: str, dynamic: str = "") -> list:
 
 def call_claude_with_tool(
     api_key: str, system_prompt, user_prompt: str, tool_schema: dict, max_tokens: int = MAX_TOKENS,
-    return_all_tool_use_blocks: bool = False,
+    return_all_tool_use_blocks: bool = False, timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> dict:
     """
     One real Claude API call, forced tool-use against the given
@@ -939,6 +939,18 @@ def call_claude_with_tool(
     a real bug found and fixed 2026-08-04). Raises ValueError if the model
     response somehow has no tool_use block for the requested tool —
     shouldn't happen with tool_choice forced, but not assumed.
+
+    timeout (default REQUEST_TIMEOUT_SECONDS = 60, so every existing
+    caller is unchanged): the HTTP read timeout for this one call. 60s
+    fits the per-card writers this module was built for, but one caller
+    does not fit it at all -- the Weekly Editor Agent drafts an entire
+    newsletter in a single forced-tool call. Measured 2026-11-09 against
+    a real 12-story pool: 60.46 seconds for an HTTP 200. The shared
+    ceiling was losing that call by less than half a second, as a
+    ReadTimeout, after the tokens had already been generated and billed.
+    Raising the constant for everyone would have been the wrong trade --
+    a per-card writer hanging for five minutes is a real failure, not
+    patience -- so the ceiling is now the caller's choice.
 
     return_all_tool_use_blocks (default False, every existing caller
     unaffected): with tool_choice forced, the API is still free to emit
@@ -1012,7 +1024,7 @@ def call_claude_with_tool(
                 "tools": [tool_schema],
                 "tool_choice": {"type": "tool", "name": tool_schema["name"]},
             },
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except Exception as e:
         elapsed = round(time.monotonic() - call_start, 2)

@@ -66,6 +66,7 @@ from prep_interrogation_eps import (  # noqa: E402  -- one source of truth for t
 from run_weekly_editor_agent import (  # noqa: E402
     MAX_TOKENS,
     PROMPT_PATH,
+    WeeklyBriefContractFailed,
     build_candidate_pool,
     run_weekly_editor_agent,
 )
@@ -289,7 +290,15 @@ def render_markdown(issue: dict, meta: dict, evidence: dict | None) -> str:
     lines.append("---")
     lines.append("")
 
-    sections = {s.get("section_type"): s for s in issue.get("sections", [])}
+    # Same 2026-11-09 type guard as weekly_brief_shape's three loops, and
+    # it matters MOST here: this renders the draft for a BLOCKED run, so
+    # a malformed entry crashing the renderer is exactly what stops a
+    # human ever reading what the model produced. Found by the offline
+    # end-to-end run, after the unit tests on finalize_weekly_brief
+    # already passed -- testing the pieces was not enough.
+    raw_sections = issue.get("sections", []) or []
+    malformed = [s for s in raw_sections if not isinstance(s, dict)]
+    sections = {s.get("section_type"): s for s in raw_sections if isinstance(s, dict)}
     for section_type in SECTION_PRIORITY:
         section = sections.get(section_type)
         if not section:
@@ -323,6 +332,13 @@ def render_markdown(issue: dict, meta: dict, evidence: dict | None) -> str:
     # The Editor sometimes emits this field with escaped newlines inside
     # the JSON string; unescape them so the reviewer reads paragraphs
     # rather than one wall of text with literal \n in it.
+    if malformed:
+        lines.append("**Malformed sections the model emitted (skipped above, shown verbatim):**")
+        lines.append("")
+        for i, s in enumerate(malformed):
+            lines.append(f"- entry {i}: `{type(s).__name__}` -> {s!r}")
+        lines.append("")
+
     notes = (issue.get("notes_for_human_reviewer") or "").replace("\\n", "\n").strip()
     lines.append("**Editor's notes for the reviewer:**")
     lines.append("")
@@ -575,32 +591,89 @@ def main(argv=None) -> int:
     # 5. DRAFT
     evidence = None
     blocked = False
+    contract_failure = None
     if args.editor_output_json:
         loaded = json.loads(Path(args.editor_output_json).read_text())
         issue = loaded.get("issue", loaded)
         evidence = issue.get("_evidence_validation")
         print(f"[brief] using the saved draft in {args.editor_output_json}; the Editor Agent was not called", flush=True)
     else:
+        # RAW SAVE HOOK. Fires inside run_weekly_editor_agent the moment
+        # the API responds, before any post-processing touches the bytes.
+        # The Editor Agent call is the only billed step; everything after
+        # it is local, deterministic, and has raised in practice (a
+        # string in `sections`, 2026-11-09). write_outputs runs at the
+        # very end of this function, so such a raise used to discard a
+        # draft that had already been paid for.
+        #
+        # Shape is deliberately {"issue": <first block>, ...}: that is
+        # exactly what --editor-output-json reads
+        # (loaded.get("issue", loaded)), so a recovered raw file can be
+        # fed straight back in. NOTE for a human doing that: a raw block
+        # has NOT been through finalize_weekly_brief, so re-persisting
+        # one bypasses the structural contract -- read it, fix what the
+        # model got wrong, then re-feed it.
+        raw_paths: list[Path] = []
+
+        def _save_raw(blocks, attempt_number):
+            raw_dir = outputs_dir
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            suffix = "" if attempt_number == 1 else f".attempt{attempt_number}"
+            raw_path = raw_dir / f"{stem}.raw{suffix}.json"
+            raw_path.write_text(json.dumps({
+                "issue": (blocks[0] if blocks else None),
+                "raw_blocks": blocks,
+                "meta": {**meta, "attempt": attempt_number, "post_processed": False},
+            }, indent=2, default=str))
+            raw_paths.append(raw_path)
+            print(f"[brief] saved RAW agent output (pre-post-processing) to {raw_path}", flush=True)
+
         try:
             issue = run_weekly_editor_agent(
                 stories, api_key,
                 issue_week=issue_week_label(args.season, args.week),
+                on_raw_blocks=_save_raw,
             )
             evidence = issue.get("_evidence_validation")
         except EvidenceValidationFailed as failure:
             issue = failure.issue
             evidence = failure.report
             blocked = True
+        except WeeklyBriefContractFailed as failure:
+            # Was a bare ValueError that nothing caught: the run died
+            # here with no draft on disk. Now it degrades the same way an
+            # Evidence Validator hard fail already did -- write
+            # everything, say what went wrong, exit non-zero.
+            issue = failure.issue or {}
+            evidence = None
+            blocked = True
+            contract_failure = failure
+            print(f"[brief] STRUCTURAL CONTRACT FAILED: {len(failure.attempts)} attempt(s) recorded", flush=True)
+            for att in failure.attempts:
+                for err in att.get("hard_errors") or []:
+                    print(f"[brief]   hard_error (attempt {att.get('attempt')}): {err}", flush=True)
+                for err in att.get("shape_errors") or []:
+                    print(f"[brief]   shape_error (attempt {att.get('attempt')}): {err}", flush=True)
 
-    record = {"meta": meta, "issue": issue, "evidence_validation": evidence, "blocked": blocked}
+    record = {
+        "meta": meta, "issue": issue, "evidence_validation": evidence, "blocked": blocked,
+        "contract_failure": ({"message": str(contract_failure), "attempts": contract_failure.attempts}
+                             if contract_failure else None),
+    }
     markdown = render_markdown(issue, meta, evidence)
     json_path, md_path = write_outputs(stem, record, markdown, outputs_dir)
     print(f"[brief] wrote {md_path}", flush=True)
     print(f"[brief] wrote {json_path}", flush=True)
 
     if blocked:
+        reason = (
+            f"the STRUCTURAL CONTRACT ({sum(len(a.get('hard_errors') or []) for a in contract_failure.attempts)} "
+            f"hard error(s) across {len(contract_failure.attempts)} attempt(s))"
+            if contract_failure
+            else f"the Evidence Validator: {(evidence or {}).get('summary')}"
+        )
         print(
-            f"\nBLOCKED by the Evidence Validator: {evidence.get('summary')}\n"
+            f"\nBLOCKED by {reason}\n"
             f"  The draft was still written, so you can read what it tried to say: {md_path}\n"
             f"  Nothing was persisted. No retry and no rewrite was attempted, by design.",
             file=sys.stderr,

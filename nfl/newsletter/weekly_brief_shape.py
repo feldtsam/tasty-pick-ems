@@ -112,12 +112,24 @@ def validate_weekly_brief_shape(issue: dict) -> list[str]:
     errors: list[str] = []
     if not isinstance(issue.get("sections"), list):
         return ["sections must be a list"]
-    for section in issue["sections"]:
+    for section_index, section in enumerate(issue["sections"]):
+        # Third of the three section loops needing the same 2026-11-09
+        # guard; finalize_weekly_brief runs all three unconditionally.
+        if not isinstance(section, dict):
+            errors.append(f"sections[{section_index}] must be an object, not {type(section).__name__}")
+            continue
         st = section.get("section_type")
         if st not in SECTION_PRIORITY:
             errors.append(f"unknown section_type {st!r}")
-        for i, story in enumerate(section.get("stories", []) or []):
+        raw_stories = section.get("stories", []) or []
+        if not isinstance(raw_stories, list):
+            errors.append(f"{st}.stories must be a list, not {type(raw_stories).__name__}")
+            continue
+        for i, story in enumerate(raw_stories):
             where = f"{st}.stories[{i}]"
+            if not isinstance(story, dict):
+                errors.append(f"{where} must be an object, not {type(story).__name__}")
+                continue
             for field in REQUIRED_STORY_FIELDS:
                 if field not in story:
                     errors.append(f"{where} missing required field {field!r}")
@@ -175,10 +187,40 @@ def complete_derivable_fields(issue: dict, candidates: list[dict], live_picks: l
     repairs: list[dict] = []
     hard_errors: list[str] = []
 
-    for section in issue.get("sections", []):
+    for section_index, section in enumerate(issue.get("sections", []) or []):
+        # TYPE GUARD, not a precaution -- a real 2026-11-09 failure. The
+        # model returned a `sections` entry as a bare STRING instead of
+        # the object the tool schema declares, and this loop went
+        # straight to section.get(), raising AttributeError: 'str' object
+        # has no attribute 'get'. That crashed the whole run AFTER the
+        # Editor Agent call had been billed, and because write_outputs
+        # runs later in run_weekly_brief.main, the paid draft was
+        # discarded with it. Forced tool use does not guarantee nested
+        # schema conformance -- the exact premise this module exists on
+        # (see its own docstring) -- so a malformed entry has to become a
+        # hard_error through the machinery already here, never an
+        # exception. Same guard on each story for the same reason.
+        if not isinstance(section, dict):
+            hard_errors.append(
+                f"sections[{section_index}] is {type(section).__name__}, not an object with a section_type "
+                f"-- the tool schema declares an object; value={section!r:.200}"
+            )
+            continue
         st = section.get("section_type")
-        for i, story in enumerate(section.get("stories", []) or []):
+        raw_stories = section.get("stories", []) or []
+        if not isinstance(raw_stories, list):
+            hard_errors.append(
+                f"{st}.stories is {type(raw_stories).__name__}, not a list -- the tool schema declares an array"
+            )
+            continue
+        for i, story in enumerate(raw_stories):
             where = f"{st}.stories[{i}]"
+            if not isinstance(story, dict):
+                hard_errors.append(
+                    f"{where} is {type(story).__name__}, not an object -- the tool schema declares an object; "
+                    f"value={story!r:.200}"
+                )
+                continue
 
             if "intelligence_story_ids" not in story or not isinstance(story.get("intelligence_story_ids"), list):
                 if st in NO_SOURCE_SECTIONS:
@@ -237,18 +279,42 @@ def enforce_one_treatment(issue: dict) -> tuple[dict, list[dict]]:
     repairs. Never mutates input.
     """
     issue = copy.deepcopy(issue)
-    sections = issue.get("sections", [])
+    sections = issue.get("sections", []) or []
     order = {name: rank for rank, name in enumerate(SECTION_PRIORITY)}
-    ranked = sorted(range(len(sections)), key=lambda idx: order.get(sections[idx].get("section_type"), len(order)))
+
+    def _rank(idx):
+        # Non-dict sections sort last and are skipped below. Same guard,
+        # same 2026-11-09 failure, as complete_derivable_fields: without
+        # it this lambda itself raised AttributeError on a string entry,
+        # which is why guarding only that function was not enough --
+        # finalize_weekly_brief runs all three passes unconditionally.
+        section = sections[idx]
+        if not isinstance(section, dict):
+            return len(order)
+        return order.get(section.get("section_type"), len(order))
+
+    ranked = sorted(range(len(sections)), key=_rank)
 
     treated_in: dict[str, str] = {}
     repairs: list[dict] = []
 
     for idx in ranked:
         section = sections[idx]
+        if not isinstance(section, dict):
+            # Left in place, not dropped: complete_derivable_fields has
+            # already recorded it as a hard_error, so the issue cannot
+            # pass, and a human reading the saved draft should see
+            # exactly what the model emitted.
+            continue
         st = section.get("section_type")
         kept_stories = []
-        for i, story in enumerate(section.get("stories", []) or []):
+        raw_stories = section.get("stories", []) or []
+        if not isinstance(raw_stories, list):
+            continue
+        for i, story in enumerate(raw_stories):
+            if not isinstance(story, dict):
+                kept_stories.append(story)
+                continue
             ids = list(story.get("intelligence_story_ids", []) or [])
             duplicates = [sid for sid in ids if sid in treated_in]
             if not duplicates:
