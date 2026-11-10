@@ -276,9 +276,11 @@ def main():
     ))
     r.append(check(
         "the rest of the original list is kept",
+        # "weeks of data" dropped later the same day -- see
+        # test_weekly_brief_language_review.py for why.
         {"peer group", "comparison group", "comparison class", "benchmark", "methodology",
          "role score", "role-change signal", "maxed out", "snapshot", "timestamp",
-         "weeks of data", "usage numbers for", "dimension", "EPS"}
+         "usage numbers for", "dimension", "EPS"}
         <= set(READER_LANGUAGE_BANNED_PHRASES),
     ))
     r.append(check(

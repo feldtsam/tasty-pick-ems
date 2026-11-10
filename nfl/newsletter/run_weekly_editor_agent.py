@@ -40,6 +40,10 @@ MAX_TOKENS = 8192
 # scenarios already give this project's own endpoints.
 EDITOR_AGENT_TIMEOUT_SECONDS = 300
 
+# The first call plus exactly one capped retry. Named so the
+# final-attempt rule below reads as what it is.
+MAX_ATTEMPTS = 2
+
 
 class WeeklyBriefContractFailed(ValueError):
     """
@@ -348,7 +352,7 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
     attempt_reports: list[dict] = []
     last_finalized: dict | None = None
     retry_feedback: str | None = None
-    for attempt in range(2):  # the first call + exactly one capped retry
+    for attempt in range(MAX_ATTEMPTS):  # the first call + exactly one capped retry
         # ATTEMPT 1 IS BYTE-IDENTICAL to what it has always been.
         # ATTEMPT 2 carries the first attempt's verbatim rejection list
         # appended to the SAME user turn (same system prompt, same pool,
@@ -384,11 +388,36 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
             issue, report = finalize_weekly_brief(block, candidates, live_picks)
             last_finalized = issue
             attempt_reports.append({"attempt": attempt + 1, "block_index": block_index, **report})
-            if report["passed"]:
+            # LANGUAGE-ONLY FAILURE, FINAL ATTEMPT ONLY. A brief whose
+            # only remaining problems are banned reader-facing phrases is
+            # not broken -- it is finished prose needing a word changed,
+            # and three consecutive real runs died exactly there while
+            # every structural and factual check was already clean. On
+            # the LAST attempt such a brief proceeds to the Evidence
+            # Validator carrying its hits as review items. On attempt 1
+            # it still fails, so the retry gets its chance to fix them.
+            # Any non-language hard error, or any shape error, blocks
+            # exactly as before.
+            is_final_attempt = attempt == MAX_ATTEMPTS - 1
+            language_only = bool(report.get("language_only_failure")) and is_final_attempt
+            if report["passed"] or language_only:
                 if block_index > 0:
                     print(f"[weekly_editor] recovered a passing block at index={block_index} of {len(blocks)} in the same response", flush=True)
+                language_review = report.get("language_hits") or []
+                if language_only:
+                    print(
+                        f"[weekly_editor] accepted on the final attempt with "
+                        f"{len(language_review)} LANGUAGE REVIEW item(s) and no other contract error "
+                        f"-- proceeding to the Evidence Validator",
+                        flush=True,
+                    )
+                    for h in language_review:
+                        print(f"[weekly_editor]   language_review: {h['where']}.{h['field']} :: {h['phrase']!r} ({h['count']}x)", flush=True)
+                issue["_language_review"] = language_review
                 issue["_validation"] = {
-                    "passed": True,
+                    "passed": report["passed"],
+                    "accepted_with_language_review": bool(language_only),
+                    "language_review": language_review,
                     "retry_fired": attempt == 1,
                     "attempts": attempt_reports,
                     "repairs": report["repairs"],

@@ -341,6 +341,18 @@ def render_markdown(issue: dict, meta: dict, evidence: dict | None) -> str:
     # The Editor sometimes emits this field with escaped newlines inside
     # the JSON string; unescape them so the reviewer reads paragraphs
     # rather than one wall of text with literal \n in it.
+    review = (issue or {}).get("_language_review") or []
+    if review:
+        lines.append("### Language review")
+        lines.append("")
+        lines.append("These are banned reader-facing phrases that survived the final attempt. The draft "
+                     "was NOT blocked for them -- every structural check passed -- but each one needs a "
+                     "word changed before this goes to a reader.")
+        lines.append("")
+        for h in review:
+            lines.append(f"- `{h['where']}.{h['field']}` — {h['phrase']!r} ({h['count']}x)")
+        lines.append("")
+
     if malformed:
         lines.append("**Malformed sections the model emitted (skipped above, shown verbatim):**")
         lines.append("")
@@ -671,8 +683,10 @@ def main(argv=None) -> int:
                 for err in cap_errors(att.get("shape_errors") or []):
                     print(f"[brief]   shape_error (attempt {att.get('attempt')}): {err}", flush=True)
 
+    language_review = (issue or {}).get("_language_review") or []
     record = {
         "meta": meta, "issue": issue, "evidence_validation": evidence, "blocked": blocked,
+        "language_review": language_review,
         "contract_failure": ({"message": str(contract_failure), "attempts": contract_failure.attempts}
                              if contract_failure else None),
     }
@@ -695,6 +709,23 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # FINAL STATUS. A run carrying language-review items is deliberately
+    # NOT reported as a clean pass: every structural and factual check
+    # passed, but a human still has words to change before a reader sees
+    # it. Distinguishing the two is the whole point of letting a
+    # language-only failure through instead of blocking it.
+    if language_review:
+        print(
+            f"\nPASSED WITH LANGUAGE REVIEW: {len(language_review)} banned reader-facing "
+            f"phrase(s) survived the final attempt.\n"
+            f"  The structural contract and the Evidence Validator both passed; this is not a block.\n"
+            f"  Each item needs a word changed before a reader sees it -- see the "
+            f"\"Language review\" section of {md_path}",
+            flush=True,
+        )
+    else:
+        print("[brief] clean pass: no language review items.", flush=True)
 
     # 6. PERSIST (never approves, never publishes)
     if not args.persist:

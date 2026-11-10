@@ -472,6 +472,17 @@ def enforce_one_treatment(issue: dict) -> tuple[dict, list[dict]]:
 # Added in their place are the things that genuinely are internal: the
 # role-momentum dimension names, and narrating what the pipeline did or
 # did not hand the writer.
+#
+# "weeks of data" removed 2026-11-10 as well, after it blocked a second
+# run. Three of the four observed blockers (snapshot, weeks of data,
+# "i'm not given") were the agent doing exactly what the voice
+# calibration asks -- being honest that a sample is thin -- and reaching
+# for the nearest words. Banning every way of saying it without
+# sanctioning one is whack-a-mole; the prompt now names approved
+# phrasings instead ("only one other game to compare against", "his
+# track record is thin"), which the agent had already written unprompted.
+# "snapshot" and "timestamp" stay: those describe the pipeline's own
+# plumbing, not the football.
 READER_LANGUAGE_BANNED_PHRASES = (
     "peer group",
     "comparison group",
@@ -486,7 +497,6 @@ READER_LANGUAGE_BANNED_PHRASES = (
     "maxed out",
     "snapshot",
     "timestamp",
-    "weeks of data",
     "usage numbers for",
     "i'm not given",
     "i wasn't given",
@@ -511,7 +521,18 @@ _READER_LANGUAGE_PATTERNS = tuple(
 )
 
 
-def check_reader_language(issue: dict) -> list[str]:
+READER_LANGUAGE_KIND = "reader_language"
+
+_READER_LANGUAGE_TAIL = (
+    "reader-facing text must not mention scores, ratings, dimensions, benchmarks, peer "
+    "groups, role momentum, \"the data\", readings, timestamps, samples, or what you were or "
+    "weren't given. Say what he'd need to see happen on the field, and in which game, "
+    "instead; if a player's history really is thin, say that in football terms (\"only one "
+    "other game to compare against\", \"his track record is thin\")."
+)
+
+
+def reader_language_hits(issue: dict) -> list[dict]:
     """
     Banned reader-language phrases in READER-FACING text only -- each
     story's `headline` and `body`, plus every cross_references[].text.
@@ -519,22 +540,45 @@ def check_reader_language(issue: dict) -> list[str]:
     for the Thursday approval step, never shown to a reader, and the
     agent is explicitly asked to explain its scoring reasoning there.
 
-    Returns a list of hard_error strings. They join the structural
-    contract's own hard_errors, which is what makes them reach the model:
-    run_weekly_editor_agent's retry feedback is built from the contract
-    report, so a violation here is quoted back verbatim on attempt 2.
-    Putting this in the Evidence Validator instead would have been too
-    late -- that runs after the contract passes and never retries.
+    Returns STRUCTURED hits, each {"kind": READER_LANGUAGE_KIND, "where",
+    "field", "phrase", "count", "message"}. The kind tag is what lets the
+    runner tell a language violation apart from a provenance or shape
+    failure, which matters because they are treated differently: on the
+    FINAL attempt a brief whose only remaining problems are language hits
+    is allowed through to the Evidence Validator, carrying the hits as
+    review items, rather than being blocked outright. Three consecutive
+    real runs died on one phrase at a time while everything structural
+    was already correct -- blocking a finished, factually clean draft over
+    a word choice a human can fix in ten seconds is the wrong trade.
 
-    One error per (story, phrase) pair, de-duplicated, so a phrase used
-    three times in one body is reported once with its count.
+    Still reported as hard_errors on attempt 1, so the retry quotes them
+    back verbatim and gets a chance to fix them first.
+
+    One hit per (story, field, phrase), de-duplicated, so a phrase used
+    three times in one body is one hit carrying its count.
     """
-    errors: list[str] = []
+    hits: list[dict] = []
     sections, _repair, envelope_error = coerce_sections(issue)
     if envelope_error is not None:
         # Reported once by complete_derivable_fields. Scanning a
         # malformed envelope here would duplicate that error per element.
         return []
+
+    def _scan(where: str, field: str, text, message_fn) -> None:
+        if not isinstance(text, str) or not text:
+            return
+        for phrase, pattern in _READER_LANGUAGE_PATTERNS:
+            found = pattern.findall(text)
+            if found:
+                hits.append({
+                    "kind": READER_LANGUAGE_KIND,
+                    "where": where,
+                    "field": field,
+                    "phrase": phrase,
+                    "count": len(found),
+                    "message": message_fn(phrase, len(found)),
+                })
+
     for section in sections:
         if not isinstance(section, dict):
             continue
@@ -546,36 +590,33 @@ def check_reader_language(issue: dict) -> list[str]:
                     continue
                 where = f"{st}.stories[{i}]"
                 for field in ("headline", "body"):
-                    text = story.get(field)
-                    if not isinstance(text, str) or not text:
-                        continue
-                    for phrase, pattern in _READER_LANGUAGE_PATTERNS:
-                        hits = pattern.findall(text)
-                        if hits:
-                            errors.append(
-                                f"{where}.{field} uses the banned reader-facing phrase "
-                                f"{phrase!r} ({len(hits)}x) — reader-facing text must not mention "
-                                f"scores, ratings, dimensions, benchmarks, peer groups, role "
-                                f"momentum, \"the data\", readings, timestamps, samples, or what "
-                                f"you were or weren't given. Say what he'd need to see happen on "
-                                f"the field, and in which game, instead."
-                            )
+                    _scan(
+                        where, field, story.get(field),
+                        lambda phrase, n, w=where, f=field: (
+                            f"{w}.{f} uses the banned reader-facing phrase "
+                            f"{phrase!r} ({n}x) — {_READER_LANGUAGE_TAIL}"
+                        ),
+                    )
         xrefs = section.get("cross_references", []) or []
         if isinstance(xrefs, list):
             for i, xref in enumerate(xrefs):
                 if not isinstance(xref, dict):
                     continue
-                text = xref.get("text")
-                if not isinstance(text, str) or not text:
-                    continue
-                for phrase, pattern in _READER_LANGUAGE_PATTERNS:
-                    hits = pattern.findall(text)
-                    if hits:
-                        errors.append(
-                            f"{st}.cross_references[{i}].text uses the banned reader-facing "
-                            f"phrase {phrase!r} ({len(hits)}x) — same rule as story bodies."
-                        )
-    return errors
+                _scan(
+                    f"{st}.cross_references[{i}]", "text", (xref or {}).get("text"),
+                    lambda phrase, n, w=f"{st}.cross_references[{i}]": (
+                        f"{w}.text uses the banned reader-facing phrase "
+                        f"{phrase!r} ({n}x) — same rule as story bodies."
+                    ),
+                )
+    return hits
+
+
+def check_reader_language(issue: dict) -> list[str]:
+    """The messages from reader_language_hits(), for callers that only
+    need error strings. Kept so every existing caller and test is
+    unchanged by the move to structured hits."""
+    return [h["message"] for h in reader_language_hits(issue)]
 
 
 def finalize_weekly_brief(issue: dict, candidates: list[dict], live_picks: list | None = None) -> tuple[dict, dict]:
@@ -591,13 +632,21 @@ def finalize_weekly_brief(issue: dict, candidates: list[dict], live_picks: list 
     enforced, treatment_repairs = enforce_one_treatment(completed)
     shape_errors = validate_weekly_brief_shape(enforced)
     # Reader-language violations are hard_errors so the retry quotes them
-    # back -- see check_reader_language for why this sits in the contract
+    # back -- see reader_language_hits for why this sits in the contract
     # rather than in the Evidence Validator.
-    hard_errors = hard_errors + check_reader_language(enforced)
+    structural_errors = list(hard_errors)
+    language_hits = reader_language_hits(enforced)
+    hard_errors = structural_errors + [h["message"] for h in language_hits]
     report = {
         "passed": not hard_errors and not shape_errors,
         "hard_errors": hard_errors,
         "shape_errors": shape_errors,
         "repairs": repairs + treatment_repairs,
+        # Structured language hits, plus the one question the runner needs
+        # to answer on the final attempt: is language the ONLY thing
+        # wrong? If so the brief is publishable-with-edits, not broken,
+        # and blocking it outright wastes a factually clean draft.
+        "language_hits": language_hits,
+        "language_only_failure": bool(language_hits) and not structural_errors and not shape_errors,
     }
     return enforced, report

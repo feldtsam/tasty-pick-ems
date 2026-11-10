@@ -223,9 +223,13 @@ def main():
     # is reader vocabulary), role-momentum / role momentum / external
     # opportunity / "i'm not given" / "i wasn't given" added. See
     # test_weekly_brief_malformed_envelope.py for the full list coverage.
+    # 18 since "weeks of data" was removed -- three of the four observed
+    # blockers were the agent being honest that a sample is thin, which
+    # the voice calibration asks for; the prompt now names approved
+    # phrasings instead of banning every way of saying it.
     r.append(check(
-        "the banned-phrase list is exactly the 19 phrases specified, not widened",
-        len(READER_LANGUAGE_BANNED_PHRASES) == 19
+        "the banned-phrase list is exactly the 18 phrases specified, not widened",
+        len(READER_LANGUAGE_BANNED_PHRASES) == 18
         and "evidence" not in READER_LANGUAGE_BANNED_PHRASES
         and "measure" not in READER_LANGUAGE_BANNED_PHRASES
         and "signal" not in READER_LANGUAGE_BANNED_PHRASES
@@ -266,10 +270,10 @@ def main():
         r.append(check(
             f"on the REAL saved Week 9 draft it catches {len(saved_errs)} violations across "
             f"{len(caught)} distinct phrases",
-            len(saved_errs) >= 10
+            len(saved_errs) >= 9
             and {"peer group", "comparison group", "comparison class", "benchmark",
                  "methodology", "snapshot", "usage numbers for", "role-change signal",
-                 "maxed out", "weeks of data"} <= caught,
+                 "maxed out"} <= caught,
         ))
         r.append(check(
             "and it reaches the model: those violations land in the contract's hard_errors, "
