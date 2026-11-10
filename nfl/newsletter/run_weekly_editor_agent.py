@@ -207,6 +207,50 @@ def build_candidate_pool(fixtures: list, issue_week: str | None = None) -> dict:
     }
 
 
+RETRY_INSTRUCTION = (
+    "Your previous attempt was rejected for the reasons above. Return the complete brief again "
+    "with every error fixed. Do not shorten or drop sections to fix it."
+)
+
+
+def build_retry_feedback(reports: list[dict]) -> str | None:
+    """
+    The follow-up text appended to the SECOND attempt's user turn: the
+    first attempt's rejection list VERBATIM, then RETRY_INSTRUCTION.
+
+    Errors are passed through exactly as finalize_weekly_brief produced
+    them -- not summarised, not reworded, not truncated, and not reduced
+    to the first one. The 2026-11-09 run rejected attempt 1 with one
+    hard_error and four shape_errors; all five belong in front of the
+    model, because fixing only the first would still fail.
+
+    Every block from the attempt is included (the API can emit more than
+    one tool_use block for a forced tool), de-duplicated in order so a
+    repeated error across blocks is stated once. Returns None when there
+    is nothing to report, so a caller can tell "no feedback" from
+    "empty feedback".
+    """
+    hard: list[str] = []
+    shape: list[str] = []
+    for report in reports:
+        for err in report.get("hard_errors") or []:
+            if err not in hard:
+                hard.append(err)
+        for err in report.get("shape_errors") or []:
+            if err not in shape:
+                shape.append(err)
+    if not hard and not shape:
+        return None
+
+    lines = ["The brief you just returned was REJECTED by the structural contract. Errors:", ""]
+    for err in hard:
+        lines.append(f"- hard_error: {err}")
+    for err in shape:
+        lines.append(f"- shape_error: {err}")
+    lines += ["", RETRY_INSTRUCTION]
+    return "\n".join(lines)
+
+
 def build_candidate_pool_input(fixtures: list, issue_week: str | None = None) -> str:
     """Serialized form of build_candidate_pool() -- the user prompt."""
     return json.dumps(build_candidate_pool(fixtures, issue_week), indent=2)
@@ -252,9 +296,23 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
 
     attempt_reports: list[dict] = []
     last_finalized: dict | None = None
+    retry_feedback: str | None = None
     for attempt in range(2):  # the first call + exactly one capped retry
+        # ATTEMPT 1 IS BYTE-IDENTICAL to what it has always been.
+        # ATTEMPT 2 carries the first attempt's verbatim rejection list
+        # appended to the SAME user turn (same system prompt, same pool,
+        # then the feedback). Before this, both attempts received
+        # identical input and attempt 2 learned nothing -- confirmed
+        # 2026-11-09, when the two attempts failed in two DIFFERENT ways
+        # (attempt 1 omitted all four provenance fields on the Big One;
+        # attempt 2 cited an empty intelligence_story_ids on What
+        # Changed). That is two independent draws from one prompt, not a
+        # correction, which is exactly what a retry with no feedback
+        # produces. The system prompt is untouched so it stays the cached
+        # prefix; only the user turn grows.
+        this_user_prompt = user_prompt if retry_feedback is None else f"{user_prompt}\n\n{retry_feedback}"
         blocks = call_claude_with_tool(
-            api_key, system_prompt, user_prompt, WEEKLY_BRIEF_TOOL_SCHEMA,
+            api_key, system_prompt, this_user_prompt, WEEKLY_BRIEF_TOOL_SCHEMA,
             max_tokens=MAX_TOKENS, return_all_tool_use_blocks=True,
             timeout=EDITOR_AGENT_TIMEOUT_SECONDS,
         )
@@ -310,6 +368,12 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
             f"[weekly_editor] attempt {attempt + 1}: no block passed the structural contract -- "
             f"hard_errors={attempt_reports[-1]['hard_errors']} shape_errors={attempt_reports[-1]['shape_errors']}",
             flush=True,
+        )
+        # Build the feedback the NEXT attempt will carry, from every
+        # block this attempt produced. Only set when a retry is still to
+        # come, so a passing run never builds one (it returns above).
+        retry_feedback = build_retry_feedback(
+            [r for r in attempt_reports if r["attempt"] == attempt + 1]
         )
 
     raise WeeklyBriefContractFailed(
