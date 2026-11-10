@@ -536,6 +536,35 @@ def _normalize_team(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]", "", str(text).lower()).strip()
 
 
+# Abbreviation spellings the DATABASE uses that are not the TEAM_ALIASES
+# key, normalized on the way in so each team keeps exactly one entry
+# above.
+#
+# Added 2026-11-10. nfl_intelligence_stories stores the Rams as "LA", not
+# "LAR" -- confirmed against 2026 weeks 6-9, where "LA" was the only
+# abbreviation in the whole table that no TEAM_ALIASES key matched (three
+# Week 9 role_changes rows: Blake Corum, Puka Nacua, Tyler Higbee). The
+# effect was a false positive on correct prose: _referenced_team_abbrevs
+# dropped the team entirely, so a story about Nacua that said "the Rams"
+# or "Los Angeles" had nothing to ground against and flagged as possibly
+# fabricated. Note the DB uses "LAC" for the Chargers, so only the Rams
+# needs the alias.
+_ABBREV_ALIASES: dict[str, str] = {
+    "LA": "LAR",
+}
+
+
+def _canonical_abbrev(value) -> str | None:
+    """A stored team abbreviation mapped to its TEAM_ALIASES key, or None
+    when the value is not a team abbreviation at all. Both the DB
+    spelling ("LA") and the canonical one ("LAR") resolve to "LAR"."""
+    if not value or not isinstance(value, str):
+        return None
+    abbr = re.sub(r"[^A-Z0-9]", "", value.upper())
+    abbr = _ABBREV_ALIASES.get(abbr, abbr)
+    return abbr if abbr in TEAM_ALIASES else None
+
+
 def _teams_in_time_window(time_window) -> set[str]:
     """
     Abbreviations for every team named in a story's own time_window --
@@ -573,8 +602,9 @@ def _referenced_team_abbrevs(stories: list[dict]) -> set[str]:
         if isinstance(entity, str):
             entity = {"player_name": entity}
         for value in (story.get("team"), entity.get("team")):
-            if value and str(value).upper() in TEAM_ALIASES:
-                abbrevs.add(str(value).upper())
+            canonical = _canonical_abbrev(value)
+            if canonical:
+                abbrevs.add(canonical)
         abbrevs |= _teams_in_time_window(story.get("time_window"))
     return abbrevs
 
