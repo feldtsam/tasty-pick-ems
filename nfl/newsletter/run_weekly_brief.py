@@ -71,7 +71,7 @@ from run_weekly_editor_agent import (  # noqa: E402
     run_weekly_editor_agent,
 )
 from weekly_brief_evidence import EvidenceValidationFailed  # noqa: E402
-from weekly_brief_shape import SECTION_PRIORITY  # noqa: E402
+from weekly_brief_shape import ERROR_DISPLAY_LIMIT, SECTION_PRIORITY, cap_errors  # noqa: E402
 
 OUTPUTS_DIR = HERE / "outputs"
 
@@ -178,6 +178,15 @@ def to_story_object(row: dict) -> dict:
         "story": row.get("story"),
         "time_window": row.get("time_window"),
         "sample_size": row.get("sample_size"),
+        # team as a PLAIN STRING, separate from the flattened `entity`
+        # display label: entity_label() collapses the jsonb to a name,
+        # which left the model with no machine-readable team at all.
+        # See build_candidate_pool for the three real failures this and
+        # the next three fields caused.
+        "team": ent.get("team"),
+        "related_players": row.get("related_players"),
+        "what_changed": row.get("what_changed"),
+        "evidence_classification": row.get("evidence_classification"),
         "interrogation": row.get("interrogation"),
         "eps": row.get("eps"),
     }
@@ -332,11 +341,28 @@ def render_markdown(issue: dict, meta: dict, evidence: dict | None) -> str:
     # The Editor sometimes emits this field with escaped newlines inside
     # the JSON string; unescape them so the reviewer reads paragraphs
     # rather than one wall of text with literal \n in it.
+    review = (issue or {}).get("_language_review") or []
+    if review:
+        lines.append("### Language review")
+        lines.append("")
+        lines.append("These are banned reader-facing phrases that survived the final attempt. The draft "
+                     "was NOT blocked for them -- every structural check passed -- but each one needs a "
+                     "word changed before this goes to a reader.")
+        lines.append("")
+        for h in review:
+            lines.append(f"- `{h['where']}.{h['field']}` — {h['phrase']!r} ({h['count']}x)")
+        lines.append("")
+
     if malformed:
         lines.append("**Malformed sections the model emitted (skipped above, shown verbatim):**")
         lines.append("")
-        for i, s in enumerate(malformed):
-            lines.append(f"- entry {i}: `{type(s).__name__}` -> {s!r}")
+        # Capped: an earlier run emitted a 15,210-character string here
+        # and this block rendered one bullet per character -- a 416 KB
+        # draft nobody could read.
+        for i, bad in enumerate(malformed[:ERROR_DISPLAY_LIMIT]):
+            lines.append(f"- entry {i}: `{type(bad).__name__}` -> {bad!r:.200}")
+        if len(malformed) > ERROR_DISPLAY_LIMIT:
+            lines.append(f"- ...and {len(malformed) - ERROR_DISPLAY_LIMIT} more")
         lines.append("")
 
     notes = (issue.get("notes_for_human_reviewer") or "").replace("\\n", "\n").strip()
@@ -650,13 +676,17 @@ def main(argv=None) -> int:
             contract_failure = failure
             print(f"[brief] STRUCTURAL CONTRACT FAILED: {len(failure.attempts)} attempt(s) recorded", flush=True)
             for att in failure.attempts:
-                for err in att.get("hard_errors") or []:
+                # Capped for the console only; the record .json below
+                # keeps every error from every attempt.
+                for err in cap_errors(att.get("hard_errors") or []):
                     print(f"[brief]   hard_error (attempt {att.get('attempt')}): {err}", flush=True)
-                for err in att.get("shape_errors") or []:
+                for err in cap_errors(att.get("shape_errors") or []):
                     print(f"[brief]   shape_error (attempt {att.get('attempt')}): {err}", flush=True)
 
+    language_review = (issue or {}).get("_language_review") or []
     record = {
         "meta": meta, "issue": issue, "evidence_validation": evidence, "blocked": blocked,
+        "language_review": language_review,
         "contract_failure": ({"message": str(contract_failure), "attempts": contract_failure.attempts}
                              if contract_failure else None),
     }
@@ -679,6 +709,23 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # FINAL STATUS. A run carrying language-review items is deliberately
+    # NOT reported as a clean pass: every structural and factual check
+    # passed, but a human still has words to change before a reader sees
+    # it. Distinguishing the two is the whole point of letting a
+    # language-only failure through instead of blocking it.
+    if language_review:
+        print(
+            f"\nPASSED WITH LANGUAGE REVIEW: {len(language_review)} banned reader-facing "
+            f"phrase(s) survived the final attempt.\n"
+            f"  The structural contract and the Evidence Validator both passed; this is not a block.\n"
+            f"  Each item needs a word changed before a reader sees it -- see the "
+            f"\"Language review\" section of {md_path}",
+            flush=True,
+        )
+    else:
+        print("[brief] clean pass: no language review items.", flush=True)
 
     # 6. PERSIST (never approves, never publishes)
     if not args.persist:

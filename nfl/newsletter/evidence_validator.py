@@ -110,7 +110,15 @@ import re
 # claim for a price the same way NFL's own card-writer validator treats
 # odds as EXACT_TOLERANCE, not rounded -- a stated +310 for a real +300
 # is a real, meaningful misstatement, not reasonable rounding.
-_ODDS_PATTERN = re.compile(r"[+-]\d{2,4}\b")
+# (?<![\w-]) added 2026-11-10 after a real false positive: the prose "a
+# near-90% snap share" matched "-90" here, the hyphen of a hyphenated
+# adjective read as a minus sign. That made a correct, hedged percentage
+# an ODDS price -- which is checked at EXACT tolerance with no rounding
+# -- so it hard-failed as invented, and because the odds pass consumes
+# its span first, _PERCENT_PATTERN never saw "90%" and the hedged
+# -rounding path could not rescue it either. A sign preceded by a word
+# character or a hyphen is part of a word or a date, not a price.
+_ODDS_PATTERN = re.compile(r"(?<![\w-])[+-]\d{2,4}\b")
 
 # Percentages ("29.4%", "51%").
 _PERCENT_PATTERN = re.compile(r"\b\d+(?:\.\d+)?%")
@@ -126,11 +134,53 @@ _PERCENT_PATTERN = re.compile(r"\b\d+(?:\.\d+)?%")
 _PLAIN_NUMBER_PATTERN = re.compile(r"(?<![+\-.\d%])\b\d{1,3}(?:\.\d+)?\b(?!%)")
 _SMALL_NUMBER_FLOOR = 6.0
 
+# Bare fractions ("0.882", "0.683") -- pool side only, see _add_text.
+_FRACTION_PATTERN = re.compile(r"(?<![\d.])0\.\d+")
+
 # A rounding tolerance for plain/percent numbers only -- odds stay exact.
 # Matches this project's own established ROUNDING_TOLERANCE convention
 # (card_writer_common.py) for percentile/score-shaped values: "58%" is a
 # fair, grounded restatement of a real 57.7, not a fabrication.
 _ROUNDING_TOLERANCE = 0.6
+
+# APPROXIMATION TOLERANCE, used ONLY when the prose itself hedges the
+# number ("nearly 90%", "about 29 points"). A writer who says "nearly
+# 90%" of a real 88.2% is being accurate, not inventing -- but 0.6 is far
+# too tight to accept it, and widening _ROUNDING_TOLERANCE for every
+# claim would quietly let unhedged precise-sounding numbers drift. So the
+# wider tolerance is unlocked by the hedge word and nothing else, and the
+# result is reported as grounding "rounded" rather than "direct" so a
+# reviewer can see which claims leaned on it.
+_APPROX_TOLERANCE = 3.0
+# "near" included, and a HYPHEN accepted as the separator, because prose
+# writes the hedge as a compound adjective: "a near-90% snap share" is
+# every bit as hedged as "nearly 90%". Longest-first so "nearly" is not
+# shadowed by "near".
+_APPROX_WORDS = ("nearly", "near", "about", "roughly", "around", "almost")
+_APPROX_PREFIX = re.compile(
+    r"\b(?:%s)[\s-]+(?:to[\s-]+|of[\s-]+)?$" % "|".join(_APPROX_WORDS), re.IGNORECASE
+)
+
+
+def _is_approximate(text: str, matched_text: str) -> bool:
+    """True when any occurrence of `matched_text` in `text` is directly
+    preceded by one of _APPROX_WORDS (optionally through a single "to"
+    or "of"). Checked per-occurrence rather than anywhere-in-text so a
+    hedge on one number never licenses a different, unhedged one."""
+    for m in re.finditer(re.escape(matched_text), text):
+        if _APPROX_PREFIX.search(text[:m.start()]):
+            return True
+    return False
+
+
+def _nearest(value: float, pool) -> float | None:
+    """Closest real value in the pool, or None for an empty pool."""
+    best = None
+    for p in pool:
+        d = abs(value - p)
+        if best is None or d < best[0]:
+            best = (d, p)
+    return None if best is None else best[1]
 
 
 def _extract_numbers(text: str) -> list[tuple[str, float, bool]]:
@@ -230,9 +280,22 @@ def _story_number_entries(story: dict) -> set[tuple[float, str]]:
     entries: set[tuple[float, str]] = set()
 
     def _add_text(text) -> None:
-        if text:
-            for matched, value, _exact in _extract_numbers(str(text)):
-                entries.add((value, _unit_of(matched)))
+        if not text:
+            return
+        text = str(text)
+        for matched, value, _exact in _extract_numbers(text):
+            entries.add((value, _unit_of(matched)))
+        # FRACTION -> PERCENT, pool side only. Usage rates are stored as
+        # fractions (a 0.882 snap share) and written as percentages
+        # ("nearly 90%"), so without this a percent claim can never
+        # match the fraction it came from. _extract_numbers cannot be
+        # used here: _SMALL_NUMBER_FLOOR (6.0) drops every fraction
+        # before it is ever seen, which is correct for CLAIM extraction
+        # and wrong for the pool. Deliberately one-directional -- a
+        # percent value is not also added as a fraction, which would let
+        # "0.9" ground against a real 90%.
+        for m in _FRACTION_PATTERN.finditer(text):
+            entries.add((round(float(m.group()) * 100.0, 4), "percent"))
 
     for key in ("trend_strength", "completeness", "confidence", "sample_size"):
         v = story.get(key)
@@ -246,12 +309,32 @@ def _story_number_entries(story: dict) -> set[tuple[float, str]]:
     for rp in story.get("related_players") or []:
         _add_text(rp.get("note"))
 
+    # what_changed is a real per-change evidence list on the story row
+    # (label + observation), carrying numbers like "Based on 7 real
+    # game(s) this season" -- added 2026-11-10 alongside it being passed
+    # into the candidate pool at all.
+    for wc in story.get("what_changed") or []:
+        if isinstance(wc, dict):
+            _add_text(wc.get("observation"))
+            _add_text(wc.get("label"))
+        else:
+            _add_text(wc)
+
     interrogation = story.get("interrogation") or {}
     change = interrogation.get("change") or {}
     _add_text(change.get("magnitude"))
     _add_text(change.get("what_changed"))
     context = interrogation.get("context") or {}
     _add_text(context.get("prior_baseline"))
+    # judgment was the one interrogation half NOT being read, and it is
+    # where the per-week usage numbers actually live. Confirmed on the
+    # 2026-11-10 run: the Big One's "nearly 90% of Detroit's snaps" hard
+    # -failed as invented, while judgment.what_we_know said
+    # "snap_share ~0.882 ... over 5 weeks" -- a real, honestly-cited
+    # number the pool simply could not see.
+    judgment = interrogation.get("judgment") or {}
+    for text in (judgment.get("what_we_know"), judgment.get("what_we_dont_know")):
+        _add_text(text)
     confirmation = interrogation.get("confirmation") or {}
     for text in (confirmation.get("market_reaction"), confirmation.get("supporting_signals"), confirmation.get("contradicting_signals")):
         _add_text(text)
@@ -259,6 +342,9 @@ def _story_number_entries(story: dict) -> set[tuple[float, str]]:
     for alt in challenge.get("alternate_explanations", []):
         _add_text(alt.get("result"))
         _add_text(alt.get("evidence"))
+        _add_text(alt.get("test"))
+        _add_text(alt.get("explanation"))
+
     return entries
 
 
@@ -344,7 +430,7 @@ def _grounds(value: float, exact_required: bool, pool: set[float]) -> bool:
 # being flagged as "names"). Genuinely a heuristic, not real NER --
 # every finding from this pattern is surfaced as needs_review, never a
 # hard fail (see module docstring).
-_NAME_CANDIDATE_PATTERN = re.compile(r"(?<!^)(?<!\. )(?<!\.\s)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})")
+_NAME_CANDIDATE_PATTERN = re.compile(r"(?<!^)(?<!\. )(?<!\.\s)((?:[A-Z][a-z]+)+(?:\s+(?:[A-Z][a-z]+)+){0,3})")
 
 # Common capitalized words that are never a real player/team name --
 # filtered out before a candidate is treated as a real name-shaped claim.
@@ -354,7 +440,165 @@ _NAME_FALSE_POSITIVES = {
     "January", "February", "March", "April", "May", "June", "July",
     "August", "September", "October", "November", "December",
     "Week", "Sunday's", "TPE", "NFL",
+    # Added 2026-11-10. The 2026-11-10 run produced 26 needs_review name
+    # flags, and all but five were noise of exactly this kind: ordinary
+    # capitalised words opening a sentence or a clause. "So", "But",
+    # "What", "Here", "It" each flagged as a possibly-fabricated player.
+    "So", "But", "What", "Here", "It", "Its", "And", "Or", "Nobody", "Some",
+    "Whether", "Receivers", "Chase", "Beyond", "There", "Now", "For", "If",
+    "When", "While", "Both", "Neither", "Either", "Every", "Each", "Still",
+    "Telling", "Bring", "Depth", "Opportunity", "Different", "One", "Field",
+    "Target", "Caught", "Priced", "Is", "Was", "Had", "Has", "Not", "No",
+    "Yes", "Per", "Via", "With", "Without", "After", "Before", "Season",
+    "Watchlist", "Market", "Desk", "Report", "Draft", "Review", "Notes",
 }
+
+# Ordinary words that are never a name even mid-phrase -- used to reject
+# a multi-word candidate whose every word is one of these ("Caught Up",
+# "Different Question"). Kept separate from _NAME_FALSE_POSITIVES, which
+# only screens the FIRST word.
+_NAME_STOPWORDS = {
+    w.lower() for w in (
+        "the", "a", "an", "is", "was", "are", "were", "be", "been", "being",
+        "like", "than", "then", "up", "down", "out", "in", "on", "at", "to",
+        "of", "for", "with", "and", "or", "but", "so", "if", "it", "its",
+        "this", "that", "what", "which", "who", "here", "there", "now",
+        "real", "different", "question", "player", "taking", "field", "one",
+        "priced", "bring", "didn", "hasn", "doesn", "caught", "depth",
+        "chart", "number", "spike", "target", "targets", "opportunity",
+        "touchdowns", "season", "week", "weeks", "game", "games", "snap",
+        "share", "role", "price", "market", "gap", "data", "note", "notes",
+    )
+}
+
+
+# ---------------------------------------------------------------------------
+# Team names
+# ---------------------------------------------------------------------------
+
+# Every NFL team's abbreviation (nflverse spelling, as stored in
+# entity.team) mapped to the forms prose actually uses: city, nickname,
+# and full name, plus the short forms writers really write.
+#
+# Added 2026-11-10. The name pool held only abbreviations ("DET"), while
+# the draft wrote cities and nicknames ("Detroit", "the Lions"), so every
+# correct team mention flagged as possibly fabricated -- 7 of the 10
+# needs-review flags on the first real Evidence Validator run.
+#
+# A SHARED CITY IS SHARED ON PURPOSE: "New York" belongs to both NYG and
+# NYJ, "Los Angeles" to both LAR and LAC, because that is the truth of
+# the city. The nicknames and full names stay team-specific, which is
+# what stops "Jets" grounding in a Giants story -- see _team_grounds.
+TEAM_ALIASES: dict[str, frozenset[str]] = {
+    "ARI": frozenset({"arizona", "cardinals", "arizona cardinals"}),
+    "ATL": frozenset({"atlanta", "falcons", "atlanta falcons"}),
+    "BAL": frozenset({"baltimore", "ravens", "baltimore ravens"}),
+    "BUF": frozenset({"buffalo", "bills", "buffalo bills"}),
+    "CAR": frozenset({"carolina", "panthers", "carolina panthers"}),
+    "CHI": frozenset({"chicago", "bears", "chicago bears"}),
+    "CIN": frozenset({"cincinnati", "bengals", "cincinnati bengals"}),
+    "CLE": frozenset({"cleveland", "browns", "cleveland browns"}),
+    "DAL": frozenset({"dallas", "cowboys", "dallas cowboys"}),
+    "DEN": frozenset({"denver", "broncos", "denver broncos"}),
+    "DET": frozenset({"detroit", "lions", "detroit lions"}),
+    "GB": frozenset({"green bay", "packers", "green bay packers"}),
+    "HOU": frozenset({"houston", "texans", "houston texans"}),
+    "IND": frozenset({"indianapolis", "indy", "colts", "indianapolis colts"}),
+    "JAX": frozenset({"jacksonville", "jags", "jaguars", "jacksonville jaguars"}),
+    "KC": frozenset({"kansas city", "chiefs", "kansas city chiefs"}),
+    "LAC": frozenset({"los angeles", "la", "chargers", "los angeles chargers"}),
+    "LAR": frozenset({"los angeles", "la", "rams", "los angeles rams"}),
+    "LV": frozenset({"las vegas", "vegas", "raiders", "las vegas raiders"}),
+    "MIA": frozenset({"miami", "dolphins", "miami dolphins"}),
+    "MIN": frozenset({"minnesota", "vikings", "minnesota vikings"}),
+    "NE": frozenset({"new england", "patriots", "pats", "new england patriots"}),
+    "NO": frozenset({"new orleans", "saints", "new orleans saints"}),
+    "NYG": frozenset({"new york", "giants", "new york giants"}),
+    "NYJ": frozenset({"new york", "jets", "new york jets"}),
+    "PHI": frozenset({"philadelphia", "philly", "eagles", "philadelphia eagles"}),
+    "PIT": frozenset({"pittsburgh", "steelers", "pittsburgh steelers"}),
+    "SEA": frozenset({"seattle", "seahawks", "seattle seahawks"}),
+    "SF": frozenset({"san francisco", "niners", "49ers", "san francisco 49ers"}),
+    "TB": frozenset({"tampa bay", "tampa", "buccaneers", "bucs", "tampa bay buccaneers"}),
+    "TEN": frozenset({"tennessee", "titans", "tennessee titans"}),
+    "WAS": frozenset({"washington", "commanders", "washington commanders"}),
+}
+
+# Longest-first so "new york giants" is matched before "new york" when
+# scanning a time_window.
+_TEAM_ALIAS_BY_LENGTH: list[tuple[str, str]] = sorted(
+    ((alias, abbr) for abbr, aliases in TEAM_ALIASES.items() for alias in aliases),
+    key=lambda pair: -len(pair[0]),
+)
+
+
+def _normalize_team(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", str(text).lower()).strip()
+
+
+def _teams_in_time_window(time_window) -> set[str]:
+    """
+    Abbreviations for every team named in a story's own time_window --
+    BOTH sides of the matchup, so the opponent grounds too. A Market
+    Intelligence window reads "Live snapshot, Detroit Lions @ Miami
+    Dolphins, kickoff Nov 8, 1:00 PM ET"; a role-change window ("Season
+    2026, through Week 8") names no team at all and yields nothing.
+
+    Matches FULL names only, longest-first: a bare city in a time_window
+    would be ambiguous between two same-city teams, and the window
+    always spells teams out in full.
+    """
+    if not isinstance(time_window, str) or not time_window:
+        return set()
+    text = _normalize_team(time_window)
+    found: set[str] = set()
+    for alias, abbr in _TEAM_ALIAS_BY_LENGTH:
+        if " " in alias and alias in text and alias in TEAM_ALIASES[abbr]:
+            # Full-name aliases are the multi-word ones that include the
+            # nickname; a bare two-word city ("new york") is skipped
+            # because it cannot disambiguate.
+            if alias not in {"new york", "los angeles", "green bay", "kansas city",
+                             "las vegas", "new england", "new orleans", "san francisco",
+                             "tampa bay"}:
+                found.add(abbr)
+    return found
+
+
+def _referenced_team_abbrevs(stories: list[dict]) -> set[str]:
+    """Every team the referenced stories legitimately put in play: each
+    story's own `team`, plus both sides of its time_window matchup."""
+    abbrevs: set[str] = set()
+    for story in stories:
+        entity = story.get("entity") or {}
+        if isinstance(entity, str):
+            entity = {"player_name": entity}
+        for value in (story.get("team"), entity.get("team")):
+            if value and str(value).upper() in TEAM_ALIASES:
+                abbrevs.add(str(value).upper())
+        abbrevs |= _teams_in_time_window(story.get("time_window"))
+    return abbrevs
+
+
+def _team_grounds(candidate: str, referenced: set[str]) -> bool | None:
+    """
+    Three-way answer for a name-shaped candidate:
+      True  -- it names a team the referenced stories put in play
+      False -- it names a REAL NFL team that they do not
+      None  -- not a team name at all; defer to the player-name pool
+
+    The False case is what stops cross-matching: "Jets" resolves to NYJ
+    and nothing else, so it cannot ground in a Giants story even though
+    the two share a city, and "Dallas" cannot ground in a Detroit story
+    even though the generic substring rule might otherwise let a
+    three-letter overlap through.
+    """
+    cand = _normalize_team(candidate)
+    if not cand:
+        return None
+    owners = {abbr for abbr, aliases in TEAM_ALIASES.items() if cand in aliases}
+    if not owners:
+        return None
+    return bool(owners & referenced)
 
 
 def _real_name_pool(stories: list[dict]) -> set[str]:
@@ -364,6 +608,13 @@ def _real_name_pool(stories: list[dict]) -> set[str]:
     pool: set[str] = set()
     for story in stories:
         entity = story.get("entity") or {}
+        if isinstance(entity, str):
+            # Callers are expected to pass validator_stories_by_id()'s
+            # reshaped form, which always makes entity a dict. Tolerated
+            # rather than crashed on: an AttributeError here has already
+            # cost this project two separate outages (2026-11-09,
+            # 2026-11-10) in code that assumed a shape.
+            entity = {"player_name": entity}
         if entity.get("player_name"):
             pool.add(str(entity["player_name"]))
         if entity.get("team"):
@@ -379,19 +630,86 @@ def _name_grounds(candidate: str, pool: set[str]) -> bool:
     real pool name, OR is a real substring/superstring of one (catches a
     last-name-only mention like "Kupp" against a pool entry "Cooper
     Kupp", and a team-name fragment like "Patriots" against "New England
-    Patriots")."""
+    Patriots").
+
+    PER-WORD FALLBACK, added 2026-11-10 for headline fragments. A Title
+    Case headline gets sliced into runs that mix ordinary words with a
+    real name -- "Touchdowns With It Chase" out of "Ja'Marr Chase's
+    Target Spike Didn't Bring the Touchdowns With It". The run as a whole
+    matches nothing, so a correctly-used real name flagged as possibly
+    fabricated. A multi-word candidate therefore also grounds when EVERY
+    one of its non-stopword words grounds individually.
+
+    Deliberately every, not any: "Tyreek Chase" in a story whose pool
+    holds "Ja'Marr Chase" still flags, because "Tyreek" grounds against
+    nothing. Only genuinely-all-known runs pass.
+    """
     for real in pool:
         if candidate == real or candidate in real or real in candidate:
             return True
+    words = [w for w in candidate.split() if w.lower().strip(".,'’") not in _NAME_STOPWORDS]
+    if len(candidate.split()) > 1 and words:
+        for word in words:
+            if not any(word == real or word in real or real in word for real in pool):
+                return False
+        return True
     return False
 
 
 def _extract_name_candidates(text: str) -> list[str]:
+    """
+    Name-shaped phrases worth checking against the real name pool.
+
+    REWRITTEN 2026-11-10 after a real run produced 26 needs_review name
+    flags of which 21 were pure noise. Four distinct causes, each
+    addressed here:
+
+      1. Sentence openers. The pattern's lookbehinds only covered start
+         -of-string and ". ", so a word opening a line or following "?",
+         "!", ":" or a quote flagged. Sentence starts are now stripped
+         before matching.
+      2. Headline fragments. A Title Case headline ("Amon-Ra St. Brown
+         Is Priced Like a Different Player Than the One Taking the
+         Field") is one long run of capitals, which the pattern sliced
+         into "Is Priced Like", "Different Player Than", "One Taking",
+         "Field Amon". Runs where every word is an ordinary word are now
+         rejected.
+      3. Splitting inside a name. "DeVonta" matched as "De", leaving
+         "Vonta Smith" as a separate candidate -- two bogus flags from
+         one real, correctly-used name. A match abutting more letters on
+         either side is now skipped.
+      4. Stopword-only phrases ("Caught Up", "Different Question").
+
+    A genuinely unknown name still flags: nothing here looks at the real
+    name pool, so an unfamiliar capitalised personal name reaches the
+    grounding check exactly as before.
+    """
     seen: list[str] = []
-    for m in _NAME_CANDIDATE_PATTERN.finditer(text):
+    # 1. Blank out the first capitalised word of every sentence/line so
+    #    it cannot start a candidate. Replaced with spaces (not removed)
+    #    so offsets stay aligned for the abutting-letter checks below.
+    masked = list(text)
+    for m in re.finditer(r"(?:^|[.!?:;]\s+|\n\s*|[\"“”']\s*)([A-Z][a-z]+)", text):
+        start, end = m.span(1)
+        for i in range(start, end):
+            masked[i] = " "
+    masked_text = "".join(masked)
+
+    for m in _NAME_CANDIDATE_PATTERN.finditer(masked_text):
         candidate = m.group(1)
-        first_word = candidate.split()[0]
-        if first_word in _NAME_FALSE_POSITIVES:
+        start, end = m.span(1)
+        # 3. Reject a match that is part of a longer word on either side
+        #    -- the DeVonta case ("Vonta" preceded by "e", "De" followed
+        #    by "V").
+        if start > 0 and (text[start - 1].isalpha() or text[start - 1] in "-'’"):
+            continue
+        if end < len(text) and text[end].isalpha():
+            continue
+        words = candidate.split()
+        if words[0] in _NAME_FALSE_POSITIVES:
+            continue
+        # 2 + 4. Every word an ordinary word -> not a name.
+        if all(w.lower().strip(".,'’") in _NAME_STOPWORDS for w in words):
             continue
         if candidate not in seen:
             seen.append(candidate)
@@ -450,6 +768,41 @@ def check_claim_traceability(text: str, stories: list[dict]) -> list[dict]:
                 ),
             })
             continue
+        # HEDGED ROUNDING. Only when the prose hedges the number itself,
+        # and only against a real value within _APPROX_TOLERANCE. Odds
+        # prices are excluded (exact_required) -- "nearly +300" for a
+        # real +310 is a different price, not a rounding.
+        if not exact_required and _is_approximate(text, matched_text):
+            # UNIT-MATCHED pool only. The wider hedge tolerance is 5x the
+            # normal one, which is loose enough to collide with an
+            # unrelated number of a different kind: "about 17.9 times" (a
+            # count) grounded against a real 19% on Calibration Fixture 7
+            # before this restriction, quietly weakening the guarantee
+            # that a quotient is not a derivation path. Same insistence
+            # on a shared unit that _derive() already applies to its
+            # operands.
+            claim_unit = _unit_of(matched_text)
+            unit_pool = {
+                v for story in stories
+                for v, u in _story_number_entries(story)
+                if u == claim_unit
+            }
+            near = _nearest(value, unit_pool)
+            if near is not None and abs(value - near) <= _APPROX_TOLERANCE:
+                results.append({
+                    "check": "claim_traceability",
+                    "claim_type": "numeric",
+                    "claim_text": matched_text,
+                    "status": "pass",
+                    "grounding": "rounded",
+                    "rounded_from": _as_number(near),
+                    "detail": (
+                        f"{matched_text!r} is hedged in the prose and is within "
+                        f"{_APPROX_TOLERANCE} of a real value ({_as_number(near)}) in the referenced "
+                        f"story objects — accepted as a rounding, not a direct match."
+                    ),
+                })
+                continue
         results.append({
             "check": "claim_traceability",
             "claim_type": "numeric",
@@ -463,7 +816,33 @@ def check_claim_traceability(text: str, stories: list[dict]) -> list[dict]:
             ),
         })
 
+    referenced_teams = _referenced_team_abbrevs(stories)
     for candidate in _extract_name_candidates(text):
+        # TEAMS FIRST, and decisively. A candidate that names one of the
+        # 32 teams is answered by the team map alone -- grounded when the
+        # referenced stories put that team in play (its own team, or
+        # either side of its time_window matchup), flagged when they
+        # don't. It deliberately does NOT fall through to the player-name
+        # pool's substring rule, which would let a same-city rival
+        # ("New York Jets" against a Giants story) ground on the shared
+        # city.
+        team_verdict = _team_grounds(candidate, referenced_teams)
+        if team_verdict is not None:
+            results.append({
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": candidate,
+                "status": "pass" if team_verdict else "needs_review",
+                "detail": (
+                    f"{candidate!r} is a team the referenced story objects put in play "
+                    f"(by team field or time_window matchup)."
+                    if team_verdict else
+                    f"{candidate!r} is a real NFL team, but none of the referenced story objects "
+                    f"name it -- not their team and not either side of their time_window matchup. "
+                    f"Human check needed."
+                ),
+            })
+            continue
         grounded = _name_grounds(candidate, name_pool)
         results.append({
             "check": "claim_traceability",

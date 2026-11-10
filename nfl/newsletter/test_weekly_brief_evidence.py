@@ -93,8 +93,12 @@ if __name__ == "__main__":
         # Unit: the two mirrored contracts
         # ============================================================
         sbi = validator_stories_by_id(CANDIDATES)
-        r.append(check("validator_stories_by_id reshapes entity str -> {player_name} for the name pool",
-                       sbi["SYNTHETIC-FIXTURE-1"]["entity"] == {"player_name": "RB Dorsey Keane"}
+        # team joined in 2026-11-10: _real_name_pool reads entity.team as
+        # well as entity.player_name, and without it every team mention in
+        # the prose flagged as a possibly-fabricated name. The fixtures
+        # carry no team, so it reshapes to None here.
+        r.append(check("validator_stories_by_id reshapes entity str -> {player_name, team} for the name pool",
+                       sbi["SYNTHETIC-FIXTURE-1"]["entity"] == {"player_name": "RB Dorsey Keane", "team": None}
                        and sbi["SYNTHETIC-FIXTURE-1"]["interrogation"] is CANDIDATES[0]["interrogation"]))
         enriched = enrich_gates_for_validation(clean_issue(), CANDIDATES)
         big = [s for x in enriched["sections"] if x["section_type"] == "big_one" for s in x["stories"]][0]

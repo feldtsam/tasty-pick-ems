@@ -95,7 +95,13 @@ def validator_stories_by_id(candidates: list[dict]) -> dict[str, dict]:
         reshaped = dict(c)
         entity = c.get("entity")
         if isinstance(entity, str):
-            reshaped["entity"] = {"player_name": entity}
+            # Carry `team` into the reshaped entity too: _real_name_pool
+            # reads entity.team as well as entity.player_name, and with
+            # team absent every team mention in the prose flagged as a
+            # possibly-fabricated name ("Detroit", "Miami" in the
+            # 2026-11-10 run). The candidate now carries team as a plain
+            # string -- see build_candidate_pool.
+            reshaped["entity"] = {"player_name": entity, "team": c.get("team")}
         out[c["intelligence_story_id"]] = reshaped
     return out
 

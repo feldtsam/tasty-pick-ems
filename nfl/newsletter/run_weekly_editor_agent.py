@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from card_writer_common import call_claude_with_tool, system_blocks  # noqa: E402
 from weekly_brief_evidence import EvidenceValidationFailed, run_evidence_validation  # noqa: E402
-from weekly_brief_shape import SECTION_PRIORITY, finalize_weekly_brief  # noqa: E402
+from weekly_brief_shape import SECTION_PRIORITY, cap_errors, finalize_weekly_brief  # noqa: E402
 
 PROMPT_PATH = Path(__file__).resolve().parent / "weekly_editor_agent_prompt_v2.md"
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixture_v2.json"
@@ -39,6 +39,10 @@ MAX_TOKENS = 8192
 # already been generated and billed. 300s is the same budget the Make.com
 # scenarios already give this project's own endpoints.
 EDITOR_AGENT_TIMEOUT_SECONDS = 300
+
+# The first call plus exactly one capped retry. Named so the
+# final-attempt rule below reads as what it is.
+MAX_ATTEMPTS = 2
 
 
 class WeeklyBriefContractFailed(ValueError):
@@ -191,6 +195,39 @@ def build_candidate_pool(fixtures: list, issue_week: str | None = None) -> dict:
             "story": f["story"],
             "time_window": f["time_window"],
             "sample_size": f["sample_size"],
+            # Added 2026-11-10. These four were being dropped, and their
+            # absence caused real, traced damage:
+            #
+            #   team -- the Week 9 draft put Makai Lemon (PHI) on "the
+            #     Lions" and four Titans "in Chicago". The model had no
+            #     team field at all; `entity` arrives flattened to a
+            #     display string, so team was only ever inferable from
+            #     prose, and it inferred wrong.
+            #   related_players / team -- the Evidence Validator's name
+            #     pool reads entity.player_name, entity.team and
+            #     related_players[].display_label. With two of those
+            #     three missing, the pool was effectively just the
+            #     subject's own name, so real names flagged as possibly
+            #     fabricated: "Rashid Shaheed" and "Detroit" were both
+            #     needs_review in the 2026-11-10 run.
+            #   what_changed -- the per-change evidence the prompt's own
+            #     Hard Rule 2 tells the model to copy facts from.
+            #   evidence_classification -- the validator's
+            #     check_evidence_confidence_alignment needs it and
+            #     reported it missing on every story. It is a plain
+            #     column on nfl_intelligence_stories (values seen:
+            #     'strong', 'limited'), returned by the read route and
+            #     already read by prep_interrogation_eps; the validator's
+            #     own guess that a get_published_nfl_intelligence_latest
+            #     join was missing was wrong -- it was simply not being
+            #     passed through here.
+            #
+            # .get() throughout: Calibration Fixture V2 predates all four
+            # and must keep working unchanged.
+            "team": f.get("team"),
+            "related_players": f.get("related_players"),
+            "what_changed": f.get("what_changed"),
+            "evidence_classification": f.get("evidence_classification"),
             "interrogation": f["interrogation"],
             "eps": f["eps"],
         })
@@ -205,6 +242,68 @@ def build_candidate_pool(fixtures: list, issue_week: str | None = None) -> dict:
             "No live TPE Picks were supplied to this run -- Tasty Connection should reflect that honestly (empty or near-empty), not invent picks to fill the section."
         ),
     }
+
+
+RETRY_INSTRUCTION = (
+    "Your previous attempt was rejected for the reasons above. Return the complete brief again "
+    "with every error fixed. Do not shorten or drop sections to fix it."
+)
+
+# Added 2026-11-10 after a real retry returned the whole brief as JSON
+# text inside the `sections` string rather than as structured fields.
+RETRY_ENVELOPE_INSTRUCTION = (
+    "Return the brief through the tool as structured fields, not as JSON text inside a string."
+)
+
+
+def build_retry_feedback(reports: list[dict]) -> str | None:
+    """
+    The follow-up text appended to the SECOND attempt's user turn: the
+    first attempt's rejection list VERBATIM, then RETRY_INSTRUCTION.
+
+    Errors are passed through exactly as finalize_weekly_brief produced
+    them -- not summarised, not reworded, not truncated, and not reduced
+    to the first one. The 2026-11-09 run rejected attempt 1 with one
+    hard_error and four shape_errors; all five belong in front of the
+    model, because fixing only the first would still fail.
+
+    Every block from the attempt is included (the API can emit more than
+    one tool_use block for a forced tool), de-duplicated in order so a
+    repeated error across blocks is stated once. Returns None when there
+    is nothing to report, so a caller can tell "no feedback" from
+    "empty feedback".
+    """
+    hard: list[str] = []
+    shape: list[str] = []
+    for report in reports:
+        for err in report.get("hard_errors") or []:
+            if err not in hard:
+                hard.append(err)
+        for err in report.get("shape_errors") or []:
+            if err not in shape:
+                shape.append(err)
+    if not hard and not shape:
+        return None
+
+    lines = ["The brief you just returned was REJECTED by the structural contract. Errors:", ""]
+    # Capped for TRANSMISSION only -- the stored report keeps every error.
+    # A real run produced 15,210 near-identical errors; sending all of
+    # them would have buried the instruction under its own evidence.
+    def _emit(kind, errs):
+        shown = cap_errors(errs)
+        for err in shown:
+            # The cap sentinel is a count, not an error -- rendering it
+            # as "- hard_error: ...and 75 more" would read as a 26th
+            # error with a nonsense message.
+            if err.startswith("...and ") and err.endswith(" more"):
+                lines.append(f"  ({err})")
+            else:
+                lines.append(f"- {kind}: {err}")
+
+    _emit("hard_error", hard)
+    _emit("shape_error", shape)
+    lines += ["", RETRY_INSTRUCTION, RETRY_ENVELOPE_INSTRUCTION]
+    return "\n".join(lines)
 
 
 def build_candidate_pool_input(fixtures: list, issue_week: str | None = None) -> str:
@@ -252,9 +351,23 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
 
     attempt_reports: list[dict] = []
     last_finalized: dict | None = None
-    for attempt in range(2):  # the first call + exactly one capped retry
+    retry_feedback: str | None = None
+    for attempt in range(MAX_ATTEMPTS):  # the first call + exactly one capped retry
+        # ATTEMPT 1 IS BYTE-IDENTICAL to what it has always been.
+        # ATTEMPT 2 carries the first attempt's verbatim rejection list
+        # appended to the SAME user turn (same system prompt, same pool,
+        # then the feedback). Before this, both attempts received
+        # identical input and attempt 2 learned nothing -- confirmed
+        # 2026-11-09, when the two attempts failed in two DIFFERENT ways
+        # (attempt 1 omitted all four provenance fields on the Big One;
+        # attempt 2 cited an empty intelligence_story_ids on What
+        # Changed). That is two independent draws from one prompt, not a
+        # correction, which is exactly what a retry with no feedback
+        # produces. The system prompt is untouched so it stays the cached
+        # prefix; only the user turn grows.
+        this_user_prompt = user_prompt if retry_feedback is None else f"{user_prompt}\n\n{retry_feedback}"
         blocks = call_claude_with_tool(
-            api_key, system_prompt, user_prompt, WEEKLY_BRIEF_TOOL_SCHEMA,
+            api_key, system_prompt, this_user_prompt, WEEKLY_BRIEF_TOOL_SCHEMA,
             max_tokens=MAX_TOKENS, return_all_tool_use_blocks=True,
             timeout=EDITOR_AGENT_TIMEOUT_SECONDS,
         )
@@ -275,11 +388,36 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
             issue, report = finalize_weekly_brief(block, candidates, live_picks)
             last_finalized = issue
             attempt_reports.append({"attempt": attempt + 1, "block_index": block_index, **report})
-            if report["passed"]:
+            # LANGUAGE-ONLY FAILURE, FINAL ATTEMPT ONLY. A brief whose
+            # only remaining problems are banned reader-facing phrases is
+            # not broken -- it is finished prose needing a word changed,
+            # and three consecutive real runs died exactly there while
+            # every structural and factual check was already clean. On
+            # the LAST attempt such a brief proceeds to the Evidence
+            # Validator carrying its hits as review items. On attempt 1
+            # it still fails, so the retry gets its chance to fix them.
+            # Any non-language hard error, or any shape error, blocks
+            # exactly as before.
+            is_final_attempt = attempt == MAX_ATTEMPTS - 1
+            language_only = bool(report.get("language_only_failure")) and is_final_attempt
+            if report["passed"] or language_only:
                 if block_index > 0:
                     print(f"[weekly_editor] recovered a passing block at index={block_index} of {len(blocks)} in the same response", flush=True)
+                language_review = report.get("language_hits") or []
+                if language_only:
+                    print(
+                        f"[weekly_editor] accepted on the final attempt with "
+                        f"{len(language_review)} LANGUAGE REVIEW item(s) and no other contract error "
+                        f"-- proceeding to the Evidence Validator",
+                        flush=True,
+                    )
+                    for h in language_review:
+                        print(f"[weekly_editor]   language_review: {h['where']}.{h['field']} :: {h['phrase']!r} ({h['count']}x)", flush=True)
+                issue["_language_review"] = language_review
                 issue["_validation"] = {
-                    "passed": True,
+                    "passed": report["passed"],
+                    "accepted_with_language_review": bool(language_only),
+                    "language_review": language_review,
                     "retry_fired": attempt == 1,
                     "attempts": attempt_reports,
                     "repairs": report["repairs"],
@@ -308,13 +446,29 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
                 return issue
         print(
             f"[weekly_editor] attempt {attempt + 1}: no block passed the structural contract -- "
-            f"hard_errors={attempt_reports[-1]['hard_errors']} shape_errors={attempt_reports[-1]['shape_errors']}",
+            f"hard_errors={cap_errors(attempt_reports[-1]['hard_errors'])} "
+            f"shape_errors={cap_errors(attempt_reports[-1]['shape_errors'])}",
             flush=True,
         )
+        # Build the feedback the NEXT attempt will carry, from every
+        # block this attempt produced. Only set when a retry is still to
+        # come, so a passing run never builds one (it returns above).
+        retry_feedback = build_retry_feedback(
+            [r for r in attempt_reports if r["attempt"] == attempt + 1]
+        )
 
+    # The MESSAGE is capped; the exception still carries every report
+    # untouched on .attempts, and run_weekly_brief writes those in full to
+    # the record .json. Before this, the message alone was 1.6 MB.
+    capped_for_message = [
+        {**rep,
+         "hard_errors": cap_errors(rep.get("hard_errors") or []),
+         "shape_errors": cap_errors(rep.get("shape_errors") or [])}
+        for rep in attempt_reports
+    ]
     raise WeeklyBriefContractFailed(
         "Weekly Editor Agent output failed the structural contract after one capped retry; refusing to return "
-        "a brief that would persist with missing provenance. Attempts: " + json.dumps(attempt_reports, default=str),
+        "a brief that would persist with missing provenance. Attempts: " + json.dumps(capped_for_message, default=str),
         last_finalized, attempt_reports,
     )
 
