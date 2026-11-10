@@ -218,12 +218,18 @@ def main():
     # ==============================================================
     # PART 3 -- reader language
     # ==============================================================
+    # 19 since the 2026-11-10 revision: tier / tiers / peer tier /
+    # peer-tier removed (the app's own Market card says "peer tier", so it
+    # is reader vocabulary), role-momentum / role momentum / external
+    # opportunity / "i'm not given" / "i wasn't given" added. See
+    # test_weekly_brief_malformed_envelope.py for the full list coverage.
     r.append(check(
-        "the banned-phrase list is exactly the 18 phrases specified, not widened",
-        len(READER_LANGUAGE_BANNED_PHRASES) == 18
+        "the banned-phrase list is exactly the 19 phrases specified, not widened",
+        len(READER_LANGUAGE_BANNED_PHRASES) == 19
         and "evidence" not in READER_LANGUAGE_BANNED_PHRASES
         and "measure" not in READER_LANGUAGE_BANNED_PHRASES
-        and "signal" not in READER_LANGUAGE_BANNED_PHRASES,
+        and "signal" not in READER_LANGUAGE_BANNED_PHRASES
+        and "tier" not in READER_LANGUAGE_BANNED_PHRASES,
     ))
     clean = {"sections": [{"section_type": "big_one", "cross_references": [], "stories": [
         {"headline": "A measure of evidence",
@@ -233,11 +239,13 @@ def main():
         check_reader_language(clean) == [],
     ))
     dirty = {"sections": [{"section_type": "big_one", "cross_references": [], "stories": [
-        {"headline": "h", "body": "His peer tier says one thing, the benchmark another; the role score is maxed out."}]}]}
+        {"headline": "h", "body": "The benchmark says one thing; the role score is maxed out, "
+                                  "and external opportunity drove it."}]}]}
     errs = check_reader_language(dirty)
     r.append(check(
-        "catches peer tier / benchmark / role score / maxed out / tier, each named with its story",
-        all(any(p in e for e in errs) for p in ("'peer tier'", "'benchmark'", "'role score'", "'maxed out'"))
+        "catches benchmark / role score / maxed out / external opportunity, each named with its story",
+        all(any(p in e for e in errs)
+            for p in ("'benchmark'", "'role score'", "'maxed out'", "'external opportunity'"))
         and all("big_one.stories[0].body" in e for e in errs),
     ))
     r.append(check(

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from card_writer_common import call_claude_with_tool, system_blocks  # noqa: E402
 from weekly_brief_evidence import EvidenceValidationFailed, run_evidence_validation  # noqa: E402
-from weekly_brief_shape import SECTION_PRIORITY, finalize_weekly_brief  # noqa: E402
+from weekly_brief_shape import SECTION_PRIORITY, cap_errors, finalize_weekly_brief  # noqa: E402
 
 PROMPT_PATH = Path(__file__).resolve().parent / "weekly_editor_agent_prompt_v2.md"
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixture_v2.json"
@@ -245,6 +245,12 @@ RETRY_INSTRUCTION = (
     "with every error fixed. Do not shorten or drop sections to fix it."
 )
 
+# Added 2026-11-10 after a real retry returned the whole brief as JSON
+# text inside the `sections` string rather than as structured fields.
+RETRY_ENVELOPE_INSTRUCTION = (
+    "Return the brief through the tool as structured fields, not as JSON text inside a string."
+)
+
 
 def build_retry_feedback(reports: list[dict]) -> str | None:
     """
@@ -276,11 +282,23 @@ def build_retry_feedback(reports: list[dict]) -> str | None:
         return None
 
     lines = ["The brief you just returned was REJECTED by the structural contract. Errors:", ""]
-    for err in hard:
-        lines.append(f"- hard_error: {err}")
-    for err in shape:
-        lines.append(f"- shape_error: {err}")
-    lines += ["", RETRY_INSTRUCTION]
+    # Capped for TRANSMISSION only -- the stored report keeps every error.
+    # A real run produced 15,210 near-identical errors; sending all of
+    # them would have buried the instruction under its own evidence.
+    def _emit(kind, errs):
+        shown = cap_errors(errs)
+        for err in shown:
+            # The cap sentinel is a count, not an error -- rendering it
+            # as "- hard_error: ...and 75 more" would read as a 26th
+            # error with a nonsense message.
+            if err.startswith("...and ") and err.endswith(" more"):
+                lines.append(f"  ({err})")
+            else:
+                lines.append(f"- {kind}: {err}")
+
+    _emit("hard_error", hard)
+    _emit("shape_error", shape)
+    lines += ["", RETRY_INSTRUCTION, RETRY_ENVELOPE_INSTRUCTION]
     return "\n".join(lines)
 
 
@@ -399,7 +417,8 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
                 return issue
         print(
             f"[weekly_editor] attempt {attempt + 1}: no block passed the structural contract -- "
-            f"hard_errors={attempt_reports[-1]['hard_errors']} shape_errors={attempt_reports[-1]['shape_errors']}",
+            f"hard_errors={cap_errors(attempt_reports[-1]['hard_errors'])} "
+            f"shape_errors={cap_errors(attempt_reports[-1]['shape_errors'])}",
             flush=True,
         )
         # Build the feedback the NEXT attempt will carry, from every
@@ -409,9 +428,18 @@ def run_weekly_editor_agent(fixtures: list, api_key: str, issue_week: str | None
             [r for r in attempt_reports if r["attempt"] == attempt + 1]
         )
 
+    # The MESSAGE is capped; the exception still carries every report
+    # untouched on .attempts, and run_weekly_brief writes those in full to
+    # the record .json. Before this, the message alone was 1.6 MB.
+    capped_for_message = [
+        {**rep,
+         "hard_errors": cap_errors(rep.get("hard_errors") or []),
+         "shape_errors": cap_errors(rep.get("shape_errors") or [])}
+        for rep in attempt_reports
+    ]
     raise WeeklyBriefContractFailed(
         "Weekly Editor Agent output failed the structural contract after one capped retry; refusing to return "
-        "a brief that would persist with missing provenance. Attempts: " + json.dumps(attempt_reports, default=str),
+        "a brief that would persist with missing provenance. Attempts: " + json.dumps(capped_for_message, default=str),
         last_finalized, attempt_reports,
     )
 

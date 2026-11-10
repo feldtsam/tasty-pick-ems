@@ -59,6 +59,7 @@ No prompt text is changed by any of this.
 from __future__ import annotations
 
 import copy
+import json
 import re
 
 # Schema section order == one-treatment priority. The runner's tool schema
@@ -80,6 +81,79 @@ REQUIRED_STORY_FIELDS = ("headline", "body", "intelligence_story_ids", "player_i
 # story_ids empty for that entry unless the opening is explicitly tied to
 # a specific story").
 NO_SOURCE_SECTIONS = ("from_the_desk",)
+
+
+# How many errors any DISPLAY or TRANSMISSION site shows before
+# collapsing the rest into a count. The stored report keeps every error --
+# only what a human reads or the model is sent is capped.
+#
+# From a real 2026-11-10 run: attempt 2 returned the whole brief as a JSON
+# STRING, `sections` was iterated character by character, and one
+# malformed-section error was produced PER CHARACTER -- 15,210 of them.
+# That gave a 416 KB markdown draft, a 1.6 MB console log, and would have
+# put all 15,210 into the next attempt's feedback. The per-character cause
+# is fixed below; this cap is the backstop so no future variant can do the
+# same thing again.
+ERROR_DISPLAY_LIMIT = 25
+
+
+def cap_errors(errors: list[str], limit: int = ERROR_DISPLAY_LIMIT) -> list[str]:
+    """First `limit` errors, then one line counting the rest. Never
+    mutates or discards the caller's list."""
+    errors = list(errors)
+    if len(errors) <= limit:
+        return errors
+    return errors[:limit] + [f"...and {len(errors) - limit} more"]
+
+
+def coerce_sections(issue: dict) -> tuple[list | None, dict | None, str | None]:
+    """
+    Resolve `issue["sections"]` to a real list, repairing the one
+    malformed shape that is deterministically recoverable.
+
+    Returns (sections, repair, error) with exactly one of sections/error
+    set:
+      - already a list            -> (list, None, None)
+      - a STRING that json.loads
+        into a list of sections   -> (parsed, repair, None)
+      - anything else             -> (None, None, one error string)
+
+    The string case is real, not hypothetical: on 2026-11-10 the model
+    serialised its own output and returned the whole brief as JSON text
+    inside `sections`. The content was perfectly good -- it was the
+    envelope that was wrong -- so parsing it back is a faithful repair of
+    the same kind as every other deterministic repair here, not a guess.
+    Anything that does not parse into a list of objects stays a single
+    error; this never tries to salvage partial text.
+    """
+    sections = issue.get("sections")
+    if isinstance(sections, list):
+        return sections, None, None
+
+    if isinstance(sections, str):
+        try:
+            parsed = json.loads(sections)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list) and parsed and all(isinstance(s, dict) for s in parsed):
+            return parsed, {
+                "where": "sections",
+                "field": "sections",
+                "action": "parsed_stringified_sections",
+                "detail": (
+                    f"sections arrived as a {len(sections)}-character JSON string instead of an "
+                    f"array; parsed back into {len(parsed)} section object(s)"
+                ),
+            }, None
+        return None, None, (
+            f"sections is a {len(sections)}-character string, not an array, and does not parse "
+            f"into a list of section objects — the brief must come back through the tool as "
+            f"structured fields, not as JSON text inside a string"
+        )
+
+    return None, None, (
+        f"sections must be a list, not {type(sections).__name__}"
+    )
 
 
 def zero_eps_scores() -> dict:
@@ -188,7 +262,19 @@ def complete_derivable_fields(issue: dict, candidates: list[dict], live_picks: l
     repairs: list[dict] = []
     hard_errors: list[str] = []
 
-    for section_index, section in enumerate(issue.get("sections", []) or []):
+    # Resolve the envelope BEFORE touching the contents: a stringified
+    # sections array is repaired in place here, so every pass downstream
+    # sees a real list. A shape this cannot resolve produces exactly ONE
+    # error and stops -- never one per element, and never one per
+    # character of a string (the 2026-11-10 15,210-error explosion).
+    sections, envelope_repair, envelope_error = coerce_sections(issue)
+    if envelope_repair is not None:
+        issue["sections"] = sections
+        repairs.append(envelope_repair)
+    if envelope_error is not None:
+        return issue, repairs, [envelope_error]
+
+    for section_index, section in enumerate(sections):
         # TYPE GUARD, not a precaution -- a real 2026-11-09 failure. The
         # model returned a `sections` entry as a bare STRING instead of
         # the object the tool schema declares, and this loop went
@@ -280,7 +366,12 @@ def enforce_one_treatment(issue: dict) -> tuple[dict, list[dict]]:
     repairs. Never mutates input.
     """
     issue = copy.deepcopy(issue)
-    sections = issue.get("sections", []) or []
+    sections, _repair, envelope_error = coerce_sections(issue)
+    if envelope_error is not None:
+        # complete_derivable_fields has already reported it as the single
+        # envelope error; nothing here can run, and nothing is changed.
+        return issue, []
+    issue["sections"] = sections
     order = {name: rank for rank, name in enumerate(SECTION_PRIORITY)}
 
     def _rank(idx):
@@ -369,33 +460,54 @@ def enforce_one_treatment(issue: dict) -> tuple[dict, list[dict]]:
 # "signal" on their own. All three are ordinary football-writing words
 # ("the evidence on both sides", "on that specific measure", "a
 # legitimate opportunity signal" is only a problem in combination).
+# REVISED 2026-11-10 after the first run under this rule. "tier",
+# "tiers", "peer tier" and "peer-tier" were removed: the app's own Market
+# card is labelled "Implied probability vs. peer tier", so that phrase is
+# established reader vocabulary, not system-state narration. Banning it
+# put the rule in direct conflict with the data -- a Market Intelligence
+# deviation story cannot say what the deviation is against without it.
+# Told to strip all 11 uses, the agent broke its own output format rather
+# than comply, which is what an unachievable instruction looks like.
+#
+# Added in their place are the things that genuinely are internal: the
+# role-momentum dimension names, and narrating what the pipeline did or
+# did not hand the writer.
 READER_LANGUAGE_BANNED_PHRASES = (
     "peer group",
     "comparison group",
     "comparison class",
-    "peer tier",
-    "peer-tier",
     "benchmark",
     "methodology",
     "role score",
     "role-change signal",
+    "role-momentum",
+    "role momentum",
+    "external opportunity",
     "maxed out",
     "snapshot",
     "timestamp",
     "weeks of data",
     "usage numbers for",
+    "i'm not given",
+    "i wasn't given",
     "dimension",
     "EPS",
-    "tier",
-    "tiers",
 )
 
 # Whole-word, case-insensitive. \b on both sides so "benchmarking" and
 # "tiers" inside "frontiers" do not match, and a hyphenated phrase like
 # "peer-tier" matches literally.
+def _reader_pattern(phrase: str) -> "re.Pattern":
+    """Whole-word, case-insensitive, apostrophe-agnostic. The draft writes
+    curly apostrophes as often as straight ones ("I'm not given" vs
+    "I’m not given"), so a literal escape of one form would silently
+    miss the other."""
+    escaped = re.escape(phrase).replace("'", "['\u2019]")
+    return re.compile(r"\b%s\b" % escaped, re.IGNORECASE)
+
+
 _READER_LANGUAGE_PATTERNS = tuple(
-    (phrase, re.compile(r"\b%s\b" % re.escape(phrase), re.IGNORECASE))
-    for phrase in READER_LANGUAGE_BANNED_PHRASES
+    (phrase, _reader_pattern(phrase)) for phrase in READER_LANGUAGE_BANNED_PHRASES
 )
 
 
@@ -418,7 +530,12 @@ def check_reader_language(issue: dict) -> list[str]:
     three times in one body is reported once with its count.
     """
     errors: list[str] = []
-    for section in issue.get("sections", []) or []:
+    sections, _repair, envelope_error = coerce_sections(issue)
+    if envelope_error is not None:
+        # Reported once by complete_derivable_fields. Scanning a
+        # malformed envelope here would duplicate that error per element.
+        return []
+    for section in sections:
         if not isinstance(section, dict):
             continue
         st = section.get("section_type")
@@ -438,10 +555,10 @@ def check_reader_language(issue: dict) -> list[str]:
                             errors.append(
                                 f"{where}.{field} uses the banned reader-facing phrase "
                                 f"{phrase!r} ({len(hits)}x) — reader-facing text must not mention "
-                                f"scores, ratings, dimensions, tiers, benchmarks, peer groups, "
-                                f"\"the data\", readings, timestamps, samples, or what information "
-                                f"was or wasn't supplied. Say what he'd need to see happen on the "
-                                f"field, and in which game, instead."
+                                f"scores, ratings, dimensions, benchmarks, peer groups, role "
+                                f"momentum, \"the data\", readings, timestamps, samples, or what "
+                                f"you were or weren't given. Say what he'd need to see happen on "
+                                f"the field, and in which game, instead."
                             )
         xrefs = section.get("cross_references", []) or []
         if isinstance(xrefs, list):

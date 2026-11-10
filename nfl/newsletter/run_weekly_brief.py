@@ -71,7 +71,7 @@ from run_weekly_editor_agent import (  # noqa: E402
     run_weekly_editor_agent,
 )
 from weekly_brief_evidence import EvidenceValidationFailed  # noqa: E402
-from weekly_brief_shape import SECTION_PRIORITY  # noqa: E402
+from weekly_brief_shape import ERROR_DISPLAY_LIMIT, SECTION_PRIORITY, cap_errors  # noqa: E402
 
 OUTPUTS_DIR = HERE / "outputs"
 
@@ -344,8 +344,13 @@ def render_markdown(issue: dict, meta: dict, evidence: dict | None) -> str:
     if malformed:
         lines.append("**Malformed sections the model emitted (skipped above, shown verbatim):**")
         lines.append("")
-        for i, s in enumerate(malformed):
-            lines.append(f"- entry {i}: `{type(s).__name__}` -> {s!r}")
+        # Capped: an earlier run emitted a 15,210-character string here
+        # and this block rendered one bullet per character -- a 416 KB
+        # draft nobody could read.
+        for i, bad in enumerate(malformed[:ERROR_DISPLAY_LIMIT]):
+            lines.append(f"- entry {i}: `{type(bad).__name__}` -> {bad!r:.200}")
+        if len(malformed) > ERROR_DISPLAY_LIMIT:
+            lines.append(f"- ...and {len(malformed) - ERROR_DISPLAY_LIMIT} more")
         lines.append("")
 
     notes = (issue.get("notes_for_human_reviewer") or "").replace("\\n", "\n").strip()
@@ -659,9 +664,11 @@ def main(argv=None) -> int:
             contract_failure = failure
             print(f"[brief] STRUCTURAL CONTRACT FAILED: {len(failure.attempts)} attempt(s) recorded", flush=True)
             for att in failure.attempts:
-                for err in att.get("hard_errors") or []:
+                # Capped for the console only; the record .json below
+                # keeps every error from every attempt.
+                for err in cap_errors(att.get("hard_errors") or []):
                     print(f"[brief]   hard_error (attempt {att.get('attempt')}): {err}", flush=True)
-                for err in att.get("shape_errors") or []:
+                for err in cap_errors(att.get("shape_errors") or []):
                     print(f"[brief]   shape_error (attempt {att.get('attempt')}): {err}", flush=True)
 
     record = {
