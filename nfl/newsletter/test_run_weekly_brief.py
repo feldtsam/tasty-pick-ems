@@ -96,9 +96,15 @@ r.append(check("a team-entity story flattens to the team and has no player_id",
                mapped["C"]["entity"] == "SEA" and mapped["C"]["player_id"] is None))
 r.append(check("interrogation and eps pass through untouched",
                mapped["A"]["interrogation"] is rows[0]["interrogation"] and mapped["A"]["eps"] is rows[0]["eps"]))
-r.append(check("the Story Object carries exactly the Editor's ten contract fields",
+# Fourteen since 2026-11-10: team / related_players / what_changed /
+# evidence_classification were added to the Editor's contract because the
+# model had no authoritative team field (it put a PHI receiver on "the
+# Lions") and the validator could not build a name pool or check
+# confidence alignment without them. See build_candidate_pool.
+r.append(check("the Story Object carries exactly the Editor's fourteen contract fields",
                set(mapped["A"]) == {"intelligence_story_id", "player_id", "intelligence_family", "entity",
-                                    "headline", "story", "time_window", "sample_size", "interrogation", "eps"}))
+                                    "headline", "story", "time_window", "sample_size", "interrogation", "eps",
+                                    "team", "related_players", "what_changed", "evidence_classification"}))
 
 eps_no_dims = row("H", week=7)
 eps_no_dims["eps"] = {"eps_version": "v1", "composite_score": 50.0, "gates": {}}

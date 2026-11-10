@@ -126,11 +126,49 @@ _PERCENT_PATTERN = re.compile(r"\b\d+(?:\.\d+)?%")
 _PLAIN_NUMBER_PATTERN = re.compile(r"(?<![+\-.\d%])\b\d{1,3}(?:\.\d+)?\b(?!%)")
 _SMALL_NUMBER_FLOOR = 6.0
 
+# Bare fractions ("0.882", "0.683") -- pool side only, see _add_text.
+_FRACTION_PATTERN = re.compile(r"(?<![\d.])0\.\d+")
+
 # A rounding tolerance for plain/percent numbers only -- odds stay exact.
 # Matches this project's own established ROUNDING_TOLERANCE convention
 # (card_writer_common.py) for percentile/score-shaped values: "58%" is a
 # fair, grounded restatement of a real 57.7, not a fabrication.
 _ROUNDING_TOLERANCE = 0.6
+
+# APPROXIMATION TOLERANCE, used ONLY when the prose itself hedges the
+# number ("nearly 90%", "about 29 points"). A writer who says "nearly
+# 90%" of a real 88.2% is being accurate, not inventing -- but 0.6 is far
+# too tight to accept it, and widening _ROUNDING_TOLERANCE for every
+# claim would quietly let unhedged precise-sounding numbers drift. So the
+# wider tolerance is unlocked by the hedge word and nothing else, and the
+# result is reported as grounding "rounded" rather than "direct" so a
+# reviewer can see which claims leaned on it.
+_APPROX_TOLERANCE = 3.0
+_APPROX_WORDS = ("nearly", "about", "roughly", "around", "almost")
+_APPROX_PREFIX = re.compile(
+    r"(?:%s)\s+(?:to\s+|of\s+)?$" % "|".join(_APPROX_WORDS), re.IGNORECASE
+)
+
+
+def _is_approximate(text: str, matched_text: str) -> bool:
+    """True when any occurrence of `matched_text` in `text` is directly
+    preceded by one of _APPROX_WORDS (optionally through a single "to"
+    or "of"). Checked per-occurrence rather than anywhere-in-text so a
+    hedge on one number never licenses a different, unhedged one."""
+    for m in re.finditer(re.escape(matched_text), text):
+        if _APPROX_PREFIX.search(text[:m.start()]):
+            return True
+    return False
+
+
+def _nearest(value: float, pool) -> float | None:
+    """Closest real value in the pool, or None for an empty pool."""
+    best = None
+    for p in pool:
+        d = abs(value - p)
+        if best is None or d < best[0]:
+            best = (d, p)
+    return None if best is None else best[1]
 
 
 def _extract_numbers(text: str) -> list[tuple[str, float, bool]]:
@@ -230,9 +268,22 @@ def _story_number_entries(story: dict) -> set[tuple[float, str]]:
     entries: set[tuple[float, str]] = set()
 
     def _add_text(text) -> None:
-        if text:
-            for matched, value, _exact in _extract_numbers(str(text)):
-                entries.add((value, _unit_of(matched)))
+        if not text:
+            return
+        text = str(text)
+        for matched, value, _exact in _extract_numbers(text):
+            entries.add((value, _unit_of(matched)))
+        # FRACTION -> PERCENT, pool side only. Usage rates are stored as
+        # fractions (a 0.882 snap share) and written as percentages
+        # ("nearly 90%"), so without this a percent claim can never
+        # match the fraction it came from. _extract_numbers cannot be
+        # used here: _SMALL_NUMBER_FLOOR (6.0) drops every fraction
+        # before it is ever seen, which is correct for CLAIM extraction
+        # and wrong for the pool. Deliberately one-directional -- a
+        # percent value is not also added as a fraction, which would let
+        # "0.9" ground against a real 90%.
+        for m in _FRACTION_PATTERN.finditer(text):
+            entries.add((round(float(m.group()) * 100.0, 4), "percent"))
 
     for key in ("trend_strength", "completeness", "confidence", "sample_size"):
         v = story.get(key)
@@ -246,12 +297,32 @@ def _story_number_entries(story: dict) -> set[tuple[float, str]]:
     for rp in story.get("related_players") or []:
         _add_text(rp.get("note"))
 
+    # what_changed is a real per-change evidence list on the story row
+    # (label + observation), carrying numbers like "Based on 7 real
+    # game(s) this season" -- added 2026-11-10 alongside it being passed
+    # into the candidate pool at all.
+    for wc in story.get("what_changed") or []:
+        if isinstance(wc, dict):
+            _add_text(wc.get("observation"))
+            _add_text(wc.get("label"))
+        else:
+            _add_text(wc)
+
     interrogation = story.get("interrogation") or {}
     change = interrogation.get("change") or {}
     _add_text(change.get("magnitude"))
     _add_text(change.get("what_changed"))
     context = interrogation.get("context") or {}
     _add_text(context.get("prior_baseline"))
+    # judgment was the one interrogation half NOT being read, and it is
+    # where the per-week usage numbers actually live. Confirmed on the
+    # 2026-11-10 run: the Big One's "nearly 90% of Detroit's snaps" hard
+    # -failed as invented, while judgment.what_we_know said
+    # "snap_share ~0.882 ... over 5 weeks" -- a real, honestly-cited
+    # number the pool simply could not see.
+    judgment = interrogation.get("judgment") or {}
+    for text in (judgment.get("what_we_know"), judgment.get("what_we_dont_know")):
+        _add_text(text)
     confirmation = interrogation.get("confirmation") or {}
     for text in (confirmation.get("market_reaction"), confirmation.get("supporting_signals"), confirmation.get("contradicting_signals")):
         _add_text(text)
@@ -259,6 +330,9 @@ def _story_number_entries(story: dict) -> set[tuple[float, str]]:
     for alt in challenge.get("alternate_explanations", []):
         _add_text(alt.get("result"))
         _add_text(alt.get("evidence"))
+        _add_text(alt.get("test"))
+        _add_text(alt.get("explanation"))
+
     return entries
 
 
@@ -344,7 +418,7 @@ def _grounds(value: float, exact_required: bool, pool: set[float]) -> bool:
 # being flagged as "names"). Genuinely a heuristic, not real NER --
 # every finding from this pattern is surfaced as needs_review, never a
 # hard fail (see module docstring).
-_NAME_CANDIDATE_PATTERN = re.compile(r"(?<!^)(?<!\. )(?<!\.\s)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})")
+_NAME_CANDIDATE_PATTERN = re.compile(r"(?<!^)(?<!\. )(?<!\.\s)((?:[A-Z][a-z]+)+(?:\s+(?:[A-Z][a-z]+)+){0,3})")
 
 # Common capitalized words that are never a real player/team name --
 # filtered out before a candidate is treated as a real name-shaped claim.
@@ -354,6 +428,35 @@ _NAME_FALSE_POSITIVES = {
     "January", "February", "March", "April", "May", "June", "July",
     "August", "September", "October", "November", "December",
     "Week", "Sunday's", "TPE", "NFL",
+    # Added 2026-11-10. The 2026-11-10 run produced 26 needs_review name
+    # flags, and all but five were noise of exactly this kind: ordinary
+    # capitalised words opening a sentence or a clause. "So", "But",
+    # "What", "Here", "It" each flagged as a possibly-fabricated player.
+    "So", "But", "What", "Here", "It", "Its", "And", "Or", "Nobody", "Some",
+    "Whether", "Receivers", "Chase", "Beyond", "There", "Now", "For", "If",
+    "When", "While", "Both", "Neither", "Either", "Every", "Each", "Still",
+    "Telling", "Bring", "Depth", "Opportunity", "Different", "One", "Field",
+    "Target", "Caught", "Priced", "Is", "Was", "Had", "Has", "Not", "No",
+    "Yes", "Per", "Via", "With", "Without", "After", "Before", "Season",
+    "Watchlist", "Market", "Desk", "Report", "Draft", "Review", "Notes",
+}
+
+# Ordinary words that are never a name even mid-phrase -- used to reject
+# a multi-word candidate whose every word is one of these ("Caught Up",
+# "Different Question"). Kept separate from _NAME_FALSE_POSITIVES, which
+# only screens the FIRST word.
+_NAME_STOPWORDS = {
+    w.lower() for w in (
+        "the", "a", "an", "is", "was", "are", "were", "be", "been", "being",
+        "like", "than", "then", "up", "down", "out", "in", "on", "at", "to",
+        "of", "for", "with", "and", "or", "but", "so", "if", "it", "its",
+        "this", "that", "what", "which", "who", "here", "there", "now",
+        "real", "different", "question", "player", "taking", "field", "one",
+        "priced", "bring", "didn", "hasn", "doesn", "caught", "depth",
+        "chart", "number", "spike", "target", "targets", "opportunity",
+        "touchdowns", "season", "week", "weeks", "game", "games", "snap",
+        "share", "role", "price", "market", "gap", "data", "note", "notes",
+    )
 }
 
 
@@ -364,6 +467,13 @@ def _real_name_pool(stories: list[dict]) -> set[str]:
     pool: set[str] = set()
     for story in stories:
         entity = story.get("entity") or {}
+        if isinstance(entity, str):
+            # Callers are expected to pass validator_stories_by_id()'s
+            # reshaped form, which always makes entity a dict. Tolerated
+            # rather than crashed on: an AttributeError here has already
+            # cost this project two separate outages (2026-11-09,
+            # 2026-11-10) in code that assumed a shape.
+            entity = {"player_name": entity}
         if entity.get("player_name"):
             pool.add(str(entity["player_name"]))
         if entity.get("team"):
@@ -379,19 +489,86 @@ def _name_grounds(candidate: str, pool: set[str]) -> bool:
     real pool name, OR is a real substring/superstring of one (catches a
     last-name-only mention like "Kupp" against a pool entry "Cooper
     Kupp", and a team-name fragment like "Patriots" against "New England
-    Patriots")."""
+    Patriots").
+
+    PER-WORD FALLBACK, added 2026-11-10 for headline fragments. A Title
+    Case headline gets sliced into runs that mix ordinary words with a
+    real name -- "Touchdowns With It Chase" out of "Ja'Marr Chase's
+    Target Spike Didn't Bring the Touchdowns With It". The run as a whole
+    matches nothing, so a correctly-used real name flagged as possibly
+    fabricated. A multi-word candidate therefore also grounds when EVERY
+    one of its non-stopword words grounds individually.
+
+    Deliberately every, not any: "Tyreek Chase" in a story whose pool
+    holds "Ja'Marr Chase" still flags, because "Tyreek" grounds against
+    nothing. Only genuinely-all-known runs pass.
+    """
     for real in pool:
         if candidate == real or candidate in real or real in candidate:
             return True
+    words = [w for w in candidate.split() if w.lower().strip(".,'’") not in _NAME_STOPWORDS]
+    if len(candidate.split()) > 1 and words:
+        for word in words:
+            if not any(word == real or word in real or real in word for real in pool):
+                return False
+        return True
     return False
 
 
 def _extract_name_candidates(text: str) -> list[str]:
+    """
+    Name-shaped phrases worth checking against the real name pool.
+
+    REWRITTEN 2026-11-10 after a real run produced 26 needs_review name
+    flags of which 21 were pure noise. Four distinct causes, each
+    addressed here:
+
+      1. Sentence openers. The pattern's lookbehinds only covered start
+         -of-string and ". ", so a word opening a line or following "?",
+         "!", ":" or a quote flagged. Sentence starts are now stripped
+         before matching.
+      2. Headline fragments. A Title Case headline ("Amon-Ra St. Brown
+         Is Priced Like a Different Player Than the One Taking the
+         Field") is one long run of capitals, which the pattern sliced
+         into "Is Priced Like", "Different Player Than", "One Taking",
+         "Field Amon". Runs where every word is an ordinary word are now
+         rejected.
+      3. Splitting inside a name. "DeVonta" matched as "De", leaving
+         "Vonta Smith" as a separate candidate -- two bogus flags from
+         one real, correctly-used name. A match abutting more letters on
+         either side is now skipped.
+      4. Stopword-only phrases ("Caught Up", "Different Question").
+
+    A genuinely unknown name still flags: nothing here looks at the real
+    name pool, so an unfamiliar capitalised personal name reaches the
+    grounding check exactly as before.
+    """
     seen: list[str] = []
-    for m in _NAME_CANDIDATE_PATTERN.finditer(text):
+    # 1. Blank out the first capitalised word of every sentence/line so
+    #    it cannot start a candidate. Replaced with spaces (not removed)
+    #    so offsets stay aligned for the abutting-letter checks below.
+    masked = list(text)
+    for m in re.finditer(r"(?:^|[.!?:;]\s+|\n\s*|[\"“”']\s*)([A-Z][a-z]+)", text):
+        start, end = m.span(1)
+        for i in range(start, end):
+            masked[i] = " "
+    masked_text = "".join(masked)
+
+    for m in _NAME_CANDIDATE_PATTERN.finditer(masked_text):
         candidate = m.group(1)
-        first_word = candidate.split()[0]
-        if first_word in _NAME_FALSE_POSITIVES:
+        start, end = m.span(1)
+        # 3. Reject a match that is part of a longer word on either side
+        #    -- the DeVonta case ("Vonta" preceded by "e", "De" followed
+        #    by "V").
+        if start > 0 and (text[start - 1].isalpha() or text[start - 1] in "-'’"):
+            continue
+        if end < len(text) and text[end].isalpha():
+            continue
+        words = candidate.split()
+        if words[0] in _NAME_FALSE_POSITIVES:
+            continue
+        # 2 + 4. Every word an ordinary word -> not a name.
+        if all(w.lower().strip(".,'’") in _NAME_STOPWORDS for w in words):
             continue
         if candidate not in seen:
             seen.append(candidate)
@@ -450,6 +627,41 @@ def check_claim_traceability(text: str, stories: list[dict]) -> list[dict]:
                 ),
             })
             continue
+        # HEDGED ROUNDING. Only when the prose hedges the number itself,
+        # and only against a real value within _APPROX_TOLERANCE. Odds
+        # prices are excluded (exact_required) -- "nearly +300" for a
+        # real +310 is a different price, not a rounding.
+        if not exact_required and _is_approximate(text, matched_text):
+            # UNIT-MATCHED pool only. The wider hedge tolerance is 5x the
+            # normal one, which is loose enough to collide with an
+            # unrelated number of a different kind: "about 17.9 times" (a
+            # count) grounded against a real 19% on Calibration Fixture 7
+            # before this restriction, quietly weakening the guarantee
+            # that a quotient is not a derivation path. Same insistence
+            # on a shared unit that _derive() already applies to its
+            # operands.
+            claim_unit = _unit_of(matched_text)
+            unit_pool = {
+                v for story in stories
+                for v, u in _story_number_entries(story)
+                if u == claim_unit
+            }
+            near = _nearest(value, unit_pool)
+            if near is not None and abs(value - near) <= _APPROX_TOLERANCE:
+                results.append({
+                    "check": "claim_traceability",
+                    "claim_type": "numeric",
+                    "claim_text": matched_text,
+                    "status": "pass",
+                    "grounding": "rounded",
+                    "rounded_from": _as_number(near),
+                    "detail": (
+                        f"{matched_text!r} is hedged in the prose and is within "
+                        f"{_APPROX_TOLERANCE} of a real value ({_as_number(near)}) in the referenced "
+                        f"story objects — accepted as a rounding, not a direct match."
+                    ),
+                })
+                continue
         results.append({
             "check": "claim_traceability",
             "claim_type": "numeric",

@@ -59,6 +59,7 @@ No prompt text is changed by any of this.
 from __future__ import annotations
 
 import copy
+import re
 
 # Schema section order == one-treatment priority. The runner's tool schema
 # enum reads this list, so the two can't drift.
@@ -352,6 +353,114 @@ def enforce_one_treatment(issue: dict) -> tuple[dict, list[dict]]:
     return issue, repairs
 
 
+# ---------------------------------------------------------------------------
+# Reader-language check
+# ---------------------------------------------------------------------------
+
+# The exact phrases banned from reader-facing text by the prompt's own
+# "Reader language" hard rule. This list is deliberately CLOSED -- it is
+# not a heuristic for "sounds too technical", it is the literal set that
+# rule names, so a hit is always a real rule violation and never a
+# judgment call. Every one of these appeared in the 2026-11-10 Week 9
+# draft after the rule was added to the prompt, which is why a prompt
+# instruction alone was not enough.
+#
+# Deliberately NOT included, and must never flag: "evidence", "measure",
+# "signal" on their own. All three are ordinary football-writing words
+# ("the evidence on both sides", "on that specific measure", "a
+# legitimate opportunity signal" is only a problem in combination).
+READER_LANGUAGE_BANNED_PHRASES = (
+    "peer group",
+    "comparison group",
+    "comparison class",
+    "peer tier",
+    "peer-tier",
+    "benchmark",
+    "methodology",
+    "role score",
+    "role-change signal",
+    "maxed out",
+    "snapshot",
+    "timestamp",
+    "weeks of data",
+    "usage numbers for",
+    "dimension",
+    "EPS",
+    "tier",
+    "tiers",
+)
+
+# Whole-word, case-insensitive. \b on both sides so "benchmarking" and
+# "tiers" inside "frontiers" do not match, and a hyphenated phrase like
+# "peer-tier" matches literally.
+_READER_LANGUAGE_PATTERNS = tuple(
+    (phrase, re.compile(r"\b%s\b" % re.escape(phrase), re.IGNORECASE))
+    for phrase in READER_LANGUAGE_BANNED_PHRASES
+)
+
+
+def check_reader_language(issue: dict) -> list[str]:
+    """
+    Banned reader-language phrases in READER-FACING text only -- each
+    story's `headline` and `body`, plus every cross_references[].text.
+    Deliberately NOT notes_for_human_reviewer: those notes are written
+    for the Thursday approval step, never shown to a reader, and the
+    agent is explicitly asked to explain its scoring reasoning there.
+
+    Returns a list of hard_error strings. They join the structural
+    contract's own hard_errors, which is what makes them reach the model:
+    run_weekly_editor_agent's retry feedback is built from the contract
+    report, so a violation here is quoted back verbatim on attempt 2.
+    Putting this in the Evidence Validator instead would have been too
+    late -- that runs after the contract passes and never retries.
+
+    One error per (story, phrase) pair, de-duplicated, so a phrase used
+    three times in one body is reported once with its count.
+    """
+    errors: list[str] = []
+    for section in issue.get("sections", []) or []:
+        if not isinstance(section, dict):
+            continue
+        st = section.get("section_type")
+        raw_stories = section.get("stories", []) or []
+        if isinstance(raw_stories, list):
+            for i, story in enumerate(raw_stories):
+                if not isinstance(story, dict):
+                    continue
+                where = f"{st}.stories[{i}]"
+                for field in ("headline", "body"):
+                    text = story.get(field)
+                    if not isinstance(text, str) or not text:
+                        continue
+                    for phrase, pattern in _READER_LANGUAGE_PATTERNS:
+                        hits = pattern.findall(text)
+                        if hits:
+                            errors.append(
+                                f"{where}.{field} uses the banned reader-facing phrase "
+                                f"{phrase!r} ({len(hits)}x) — reader-facing text must not mention "
+                                f"scores, ratings, dimensions, tiers, benchmarks, peer groups, "
+                                f"\"the data\", readings, timestamps, samples, or what information "
+                                f"was or wasn't supplied. Say what he'd need to see happen on the "
+                                f"field, and in which game, instead."
+                            )
+        xrefs = section.get("cross_references", []) or []
+        if isinstance(xrefs, list):
+            for i, xref in enumerate(xrefs):
+                if not isinstance(xref, dict):
+                    continue
+                text = xref.get("text")
+                if not isinstance(text, str) or not text:
+                    continue
+                for phrase, pattern in _READER_LANGUAGE_PATTERNS:
+                    hits = pattern.findall(text)
+                    if hits:
+                        errors.append(
+                            f"{st}.cross_references[{i}].text uses the banned reader-facing "
+                            f"phrase {phrase!r} ({len(hits)}x) — same rule as story bodies."
+                        )
+    return errors
+
+
 def finalize_weekly_brief(issue: dict, candidates: list[dict], live_picks: list | None = None) -> tuple[dict, dict]:
     """
     The one call the runner makes: complete derivable fields -> enforce
@@ -364,6 +473,10 @@ def finalize_weekly_brief(issue: dict, candidates: list[dict], live_picks: list 
     completed, repairs, hard_errors = complete_derivable_fields(issue, candidates, live_picks)
     enforced, treatment_repairs = enforce_one_treatment(completed)
     shape_errors = validate_weekly_brief_shape(enforced)
+    # Reader-language violations are hard_errors so the retry quotes them
+    # back -- see check_reader_language for why this sits in the contract
+    # rather than in the Evidence Validator.
+    hard_errors = hard_errors + check_reader_language(enforced)
     report = {
         "passed": not hard_errors and not shape_errors,
         "hard_errors": hard_errors,

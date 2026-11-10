@@ -191,6 +191,39 @@ def build_candidate_pool(fixtures: list, issue_week: str | None = None) -> dict:
             "story": f["story"],
             "time_window": f["time_window"],
             "sample_size": f["sample_size"],
+            # Added 2026-11-10. These four were being dropped, and their
+            # absence caused real, traced damage:
+            #
+            #   team -- the Week 9 draft put Makai Lemon (PHI) on "the
+            #     Lions" and four Titans "in Chicago". The model had no
+            #     team field at all; `entity` arrives flattened to a
+            #     display string, so team was only ever inferable from
+            #     prose, and it inferred wrong.
+            #   related_players / team -- the Evidence Validator's name
+            #     pool reads entity.player_name, entity.team and
+            #     related_players[].display_label. With two of those
+            #     three missing, the pool was effectively just the
+            #     subject's own name, so real names flagged as possibly
+            #     fabricated: "Rashid Shaheed" and "Detroit" were both
+            #     needs_review in the 2026-11-10 run.
+            #   what_changed -- the per-change evidence the prompt's own
+            #     Hard Rule 2 tells the model to copy facts from.
+            #   evidence_classification -- the validator's
+            #     check_evidence_confidence_alignment needs it and
+            #     reported it missing on every story. It is a plain
+            #     column on nfl_intelligence_stories (values seen:
+            #     'strong', 'limited'), returned by the read route and
+            #     already read by prep_interrogation_eps; the validator's
+            #     own guess that a get_published_nfl_intelligence_latest
+            #     join was missing was wrong -- it was simply not being
+            #     passed through here.
+            #
+            # .get() throughout: Calibration Fixture V2 predates all four
+            # and must keep working unchanged.
+            "team": f.get("team"),
+            "related_players": f.get("related_players"),
+            "what_changed": f.get("what_changed"),
+            "evidence_classification": f.get("evidence_classification"),
             "interrogation": f["interrogation"],
             "eps": f["eps"],
         })

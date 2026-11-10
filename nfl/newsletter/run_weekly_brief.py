@@ -178,6 +178,15 @@ def to_story_object(row: dict) -> dict:
         "story": row.get("story"),
         "time_window": row.get("time_window"),
         "sample_size": row.get("sample_size"),
+        # team as a PLAIN STRING, separate from the flattened `entity`
+        # display label: entity_label() collapses the jsonb to a name,
+        # which left the model with no machine-readable team at all.
+        # See build_candidate_pool for the three real failures this and
+        # the next three fields caused.
+        "team": ent.get("team"),
+        "related_players": row.get("related_players"),
+        "what_changed": row.get("what_changed"),
+        "evidence_classification": row.get("evidence_classification"),
         "interrogation": row.get("interrogation"),
         "eps": row.get("eps"),
     }
