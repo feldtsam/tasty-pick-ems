@@ -110,7 +110,15 @@ import re
 # claim for a price the same way NFL's own card-writer validator treats
 # odds as EXACT_TOLERANCE, not rounded -- a stated +310 for a real +300
 # is a real, meaningful misstatement, not reasonable rounding.
-_ODDS_PATTERN = re.compile(r"[+-]\d{2,4}\b")
+# (?<![\w-]) added 2026-11-10 after a real false positive: the prose "a
+# near-90% snap share" matched "-90" here, the hyphen of a hyphenated
+# adjective read as a minus sign. That made a correct, hedged percentage
+# an ODDS price -- which is checked at EXACT tolerance with no rounding
+# -- so it hard-failed as invented, and because the odds pass consumes
+# its span first, _PERCENT_PATTERN never saw "90%" and the hedged
+# -rounding path could not rescue it either. A sign preceded by a word
+# character or a hyphen is part of a word or a date, not a price.
+_ODDS_PATTERN = re.compile(r"(?<![\w-])[+-]\d{2,4}\b")
 
 # Percentages ("29.4%", "51%").
 _PERCENT_PATTERN = re.compile(r"\b\d+(?:\.\d+)?%")
@@ -144,9 +152,13 @@ _ROUNDING_TOLERANCE = 0.6
 # result is reported as grounding "rounded" rather than "direct" so a
 # reviewer can see which claims leaned on it.
 _APPROX_TOLERANCE = 3.0
-_APPROX_WORDS = ("nearly", "about", "roughly", "around", "almost")
+# "near" included, and a HYPHEN accepted as the separator, because prose
+# writes the hedge as a compound adjective: "a near-90% snap share" is
+# every bit as hedged as "nearly 90%". Longest-first so "nearly" is not
+# shadowed by "near".
+_APPROX_WORDS = ("nearly", "near", "about", "roughly", "around", "almost")
 _APPROX_PREFIX = re.compile(
-    r"(?:%s)\s+(?:to\s+|of\s+)?$" % "|".join(_APPROX_WORDS), re.IGNORECASE
+    r"\b(?:%s)[\s-]+(?:to[\s-]+|of[\s-]+)?$" % "|".join(_APPROX_WORDS), re.IGNORECASE
 )
 
 
@@ -460,6 +472,135 @@ _NAME_STOPWORDS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Team names
+# ---------------------------------------------------------------------------
+
+# Every NFL team's abbreviation (nflverse spelling, as stored in
+# entity.team) mapped to the forms prose actually uses: city, nickname,
+# and full name, plus the short forms writers really write.
+#
+# Added 2026-11-10. The name pool held only abbreviations ("DET"), while
+# the draft wrote cities and nicknames ("Detroit", "the Lions"), so every
+# correct team mention flagged as possibly fabricated -- 7 of the 10
+# needs-review flags on the first real Evidence Validator run.
+#
+# A SHARED CITY IS SHARED ON PURPOSE: "New York" belongs to both NYG and
+# NYJ, "Los Angeles" to both LAR and LAC, because that is the truth of
+# the city. The nicknames and full names stay team-specific, which is
+# what stops "Jets" grounding in a Giants story -- see _team_grounds.
+TEAM_ALIASES: dict[str, frozenset[str]] = {
+    "ARI": frozenset({"arizona", "cardinals", "arizona cardinals"}),
+    "ATL": frozenset({"atlanta", "falcons", "atlanta falcons"}),
+    "BAL": frozenset({"baltimore", "ravens", "baltimore ravens"}),
+    "BUF": frozenset({"buffalo", "bills", "buffalo bills"}),
+    "CAR": frozenset({"carolina", "panthers", "carolina panthers"}),
+    "CHI": frozenset({"chicago", "bears", "chicago bears"}),
+    "CIN": frozenset({"cincinnati", "bengals", "cincinnati bengals"}),
+    "CLE": frozenset({"cleveland", "browns", "cleveland browns"}),
+    "DAL": frozenset({"dallas", "cowboys", "dallas cowboys"}),
+    "DEN": frozenset({"denver", "broncos", "denver broncos"}),
+    "DET": frozenset({"detroit", "lions", "detroit lions"}),
+    "GB": frozenset({"green bay", "packers", "green bay packers"}),
+    "HOU": frozenset({"houston", "texans", "houston texans"}),
+    "IND": frozenset({"indianapolis", "indy", "colts", "indianapolis colts"}),
+    "JAX": frozenset({"jacksonville", "jags", "jaguars", "jacksonville jaguars"}),
+    "KC": frozenset({"kansas city", "chiefs", "kansas city chiefs"}),
+    "LAC": frozenset({"los angeles", "la", "chargers", "los angeles chargers"}),
+    "LAR": frozenset({"los angeles", "la", "rams", "los angeles rams"}),
+    "LV": frozenset({"las vegas", "vegas", "raiders", "las vegas raiders"}),
+    "MIA": frozenset({"miami", "dolphins", "miami dolphins"}),
+    "MIN": frozenset({"minnesota", "vikings", "minnesota vikings"}),
+    "NE": frozenset({"new england", "patriots", "pats", "new england patriots"}),
+    "NO": frozenset({"new orleans", "saints", "new orleans saints"}),
+    "NYG": frozenset({"new york", "giants", "new york giants"}),
+    "NYJ": frozenset({"new york", "jets", "new york jets"}),
+    "PHI": frozenset({"philadelphia", "philly", "eagles", "philadelphia eagles"}),
+    "PIT": frozenset({"pittsburgh", "steelers", "pittsburgh steelers"}),
+    "SEA": frozenset({"seattle", "seahawks", "seattle seahawks"}),
+    "SF": frozenset({"san francisco", "niners", "49ers", "san francisco 49ers"}),
+    "TB": frozenset({"tampa bay", "tampa", "buccaneers", "bucs", "tampa bay buccaneers"}),
+    "TEN": frozenset({"tennessee", "titans", "tennessee titans"}),
+    "WAS": frozenset({"washington", "commanders", "washington commanders"}),
+}
+
+# Longest-first so "new york giants" is matched before "new york" when
+# scanning a time_window.
+_TEAM_ALIAS_BY_LENGTH: list[tuple[str, str]] = sorted(
+    ((alias, abbr) for abbr, aliases in TEAM_ALIASES.items() for alias in aliases),
+    key=lambda pair: -len(pair[0]),
+)
+
+
+def _normalize_team(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", str(text).lower()).strip()
+
+
+def _teams_in_time_window(time_window) -> set[str]:
+    """
+    Abbreviations for every team named in a story's own time_window --
+    BOTH sides of the matchup, so the opponent grounds too. A Market
+    Intelligence window reads "Live snapshot, Detroit Lions @ Miami
+    Dolphins, kickoff Nov 8, 1:00 PM ET"; a role-change window ("Season
+    2026, through Week 8") names no team at all and yields nothing.
+
+    Matches FULL names only, longest-first: a bare city in a time_window
+    would be ambiguous between two same-city teams, and the window
+    always spells teams out in full.
+    """
+    if not isinstance(time_window, str) or not time_window:
+        return set()
+    text = _normalize_team(time_window)
+    found: set[str] = set()
+    for alias, abbr in _TEAM_ALIAS_BY_LENGTH:
+        if " " in alias and alias in text and alias in TEAM_ALIASES[abbr]:
+            # Full-name aliases are the multi-word ones that include the
+            # nickname; a bare two-word city ("new york") is skipped
+            # because it cannot disambiguate.
+            if alias not in {"new york", "los angeles", "green bay", "kansas city",
+                             "las vegas", "new england", "new orleans", "san francisco",
+                             "tampa bay"}:
+                found.add(abbr)
+    return found
+
+
+def _referenced_team_abbrevs(stories: list[dict]) -> set[str]:
+    """Every team the referenced stories legitimately put in play: each
+    story's own `team`, plus both sides of its time_window matchup."""
+    abbrevs: set[str] = set()
+    for story in stories:
+        entity = story.get("entity") or {}
+        if isinstance(entity, str):
+            entity = {"player_name": entity}
+        for value in (story.get("team"), entity.get("team")):
+            if value and str(value).upper() in TEAM_ALIASES:
+                abbrevs.add(str(value).upper())
+        abbrevs |= _teams_in_time_window(story.get("time_window"))
+    return abbrevs
+
+
+def _team_grounds(candidate: str, referenced: set[str]) -> bool | None:
+    """
+    Three-way answer for a name-shaped candidate:
+      True  -- it names a team the referenced stories put in play
+      False -- it names a REAL NFL team that they do not
+      None  -- not a team name at all; defer to the player-name pool
+
+    The False case is what stops cross-matching: "Jets" resolves to NYJ
+    and nothing else, so it cannot ground in a Giants story even though
+    the two share a city, and "Dallas" cannot ground in a Detroit story
+    even though the generic substring rule might otherwise let a
+    three-letter overlap through.
+    """
+    cand = _normalize_team(candidate)
+    if not cand:
+        return None
+    owners = {abbr for abbr, aliases in TEAM_ALIASES.items() if cand in aliases}
+    if not owners:
+        return None
+    return bool(owners & referenced)
+
+
 def _real_name_pool(stories: list[dict]) -> set[str]:
     """Every real player/team name reachable from the referenced story
     objects — entity's own name/team, plus every related_players[]
@@ -675,7 +816,33 @@ def check_claim_traceability(text: str, stories: list[dict]) -> list[dict]:
             ),
         })
 
+    referenced_teams = _referenced_team_abbrevs(stories)
     for candidate in _extract_name_candidates(text):
+        # TEAMS FIRST, and decisively. A candidate that names one of the
+        # 32 teams is answered by the team map alone -- grounded when the
+        # referenced stories put that team in play (its own team, or
+        # either side of its time_window matchup), flagged when they
+        # don't. It deliberately does NOT fall through to the player-name
+        # pool's substring rule, which would let a same-city rival
+        # ("New York Jets" against a Giants story) ground on the shared
+        # city.
+        team_verdict = _team_grounds(candidate, referenced_teams)
+        if team_verdict is not None:
+            results.append({
+                "check": "claim_traceability",
+                "claim_type": "entity",
+                "claim_text": candidate,
+                "status": "pass" if team_verdict else "needs_review",
+                "detail": (
+                    f"{candidate!r} is a team the referenced story objects put in play "
+                    f"(by team field or time_window matchup)."
+                    if team_verdict else
+                    f"{candidate!r} is a real NFL team, but none of the referenced story objects "
+                    f"name it -- not their team and not either side of their time_window matchup. "
+                    f"Human check needed."
+                ),
+            })
+            continue
         grounded = _name_grounds(candidate, name_pool)
         results.append({
             "check": "claim_traceability",
