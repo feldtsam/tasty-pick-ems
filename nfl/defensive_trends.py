@@ -82,13 +82,25 @@ genuinely different trends (confirmed: the two rarely move together).
 
 RELATED_PLAYERS — a new relatedness DIRECTION, investigated rather than
 copied from either prior family: defense -> offensive players, not
-player -> teammates. The real offensive players currently facing this
-exact defense at this exact position group this week (weekly's own
-posteam/defteam/position_group/season/week — no schedule lookup
-needed, since aggregate_redzone_allowed's rows only exist for games
-that were actually played), ranked by td_opportunity — the players
-genuinely positioned to exploit (or be limited by) the identified
-trend, not a generic team roster dump.
+player -> teammates. The real offensive players who FACED this exact
+defense at this exact position group in the story's own week (weekly's
+own posteam/defteam/position_group/season/week — no schedule lookup,
+since aggregate_redzone_allowed's rows only exist for games that were
+actually played), ranked by td_opportunity — the players who actually
+produced the identified trend, not a generic team roster dump.
+
+These are a RETROSPECTIVE list, and the note says so. They were once
+described as "currently facing" this defense and the note read "Faces
+this defense this week", which is wrong in both tenses: rows only
+exist for games already played, so this is by construction the
+opponent the defense has ALREADY met. In a Weekly Brief that draft is
+read a week later still (every family except Market Intelligence is
+keyed to issue_week - 1), so "this week" reached a published issue
+naming the previous week's opponent as the upcoming one -- 2026 Week
+10 told readers an Arizona back faced Seattle "this week" when Seattle
+were away to Las Vegas. If a genuine NEXT opponent is ever wanted here
+it needs a real schedule lookup, which this module deliberately does
+not do.
 """
 import numpy as np
 import pandas as pd
@@ -322,10 +334,11 @@ def _trend_delta(defense_weekly: pd.DataFrame, config: dict) -> pd.DataFrame:
 
 def _related_players(weekly: pd.DataFrame, season, week, defteam, position_group, direction: str, config: dict) -> list:
     """
-    The real offensive players actually facing this defense at this
-    position group this week, ranked by td_opportunity — who's
-    genuinely positioned to exploit (or be limited by) this trend, not
-    a generic roster dump.
+    The real offensive players who FACED this defense at this position
+    group in `week`, ranked by td_opportunity — who actually produced
+    the trend, not a generic roster dump. Past tense on purpose: the
+    pool below filters weekly to this same `week`, and those rows only
+    exist for games already played.
 
     Universal Card v2 shape: entity_type is always "player" (confirmed
     — always a real offensive player row from weekly). direction_
@@ -350,8 +363,11 @@ def _related_players(weekly: pd.DataFrame, season, week, defteam, position_group
             "display_label": r["player_name"],
             "entity_type": "player",
             "direction_indicator": indicator,
-            "note": f"Faces this defense this week · TD opportunity {r['td_opportunity']:.0f}/100" if pd.notna(r.get("td_opportunity"))
-            else "Faces this defense this week",
+            # Past tense, and the week named outright: see the
+            # RELATED_PLAYERS note in this module's docstring for the
+            # published-issue bug the old "this week" wording caused.
+            "note": f"Faced this defense in Week {week} · TD opportunity {r['td_opportunity']:.0f}/100" if pd.notna(r.get("td_opportunity"))
+            else f"Faced this defense in Week {week}",
         }
         for _, r in pool.iterrows()
     ]
@@ -474,7 +490,7 @@ def _signal_direction_for_row(direction: str) -> str:
     told from the BETTOR's opportunity, not the defense's own
     performance. A defense trending "growing-vulnerability" is bad for
     the defense but genuinely FAVORABLE for this story's own related_
-    players (the real offensive players facing this defense, per
+    players (the real offensive players who faced this defense, per
     _related_players) -- that's the real audience this field needs to
     serve, confirmed against Sam's own stated interpretation before
     hardcoding this mapping, not assumed silently.
