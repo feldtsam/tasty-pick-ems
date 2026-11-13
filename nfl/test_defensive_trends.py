@@ -263,10 +263,10 @@ if __name__ == "__main__":
             len(nyj_rb["related_players"]) > 0 and all(posteam_by_player.get(r["player_id"]) != "NYJ" for r in nyj_rb["related_players"]),
         ))
         results.append(check(
-            "every related_players entry is a real player entity with a real player_id/display_label, and the note cites the real faces-this-defense relationship",
+            "every related_players entry is a real player entity with a real player_id/display_label, and the note names the real week they FACED this defense (past tense -- these rows only exist for games already played)",
             all(
                 r["entity_type"] == "player" and r["player_id"] and r["display_label"]
-                and "Faces this defense this week" in r["note"]
+                and "Faced this defense in Week 15" in r["note"]
                 for r in nyj_rb["related_players"]
             ),
         ))

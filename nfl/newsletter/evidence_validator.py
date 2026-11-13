@@ -631,6 +631,96 @@ def _team_grounds(candidate: str, referenced: set[str]) -> bool | None:
     return bool(owners & referenced)
 
 
+# ---------------------------------------------------------------------------
+# Week tense
+# ---------------------------------------------------------------------------
+
+# Phrases that promise the reader something about the week AHEAD. Edit this
+# one tuple to tune the check -- nothing else reads the phrase list.
+#
+# Added 2026-11-13 after the published 2026 Week 10 issue. Every family except
+# market_intelligence is keyed to issue_week - 1 (see prep_interrogation_eps.
+# expected_week_for_family), so a Defensive Trends or Role Changes story in a
+# Week 10 brief describes Week 9. Two claims reached readers because nothing
+# checked that: "Tyler Allgeier faces them this week" (he had faced Seattle in
+# Week 9; Seattle's Week 10 game was at Las Vegas) and "with Wilson still out"
+# (an injury status as it stood in Week 9).
+FORWARD_LOOKING_PHRASES: tuple[str, ...] = (
+    "this week",
+    "this sunday",
+    "faces",
+    "facing",
+    "still out",
+    "next",
+)
+
+_WEEK_IN_TEXT = re.compile(r"\bweek\s+(\d{1,2})\b", re.IGNORECASE)
+
+
+def week_in_text(text) -> int | None:
+    """
+    The LAST week number named in a string, or None when it names none.
+
+    Last, not first: a time_window reads "Season 2026, last 3 games through
+    Week 9 vs. season-to-date", and the week the row is keyed to is the one it
+    runs *through*. Market Intelligence windows ("Live snapshot, ... kickoff
+    Nov 15, 1:00 PM ET") name no week at all and correctly return None, which
+    is what keeps upcoming-week stories out of this check.
+    """
+    if not isinstance(text, str):
+        return None
+    found = _WEEK_IN_TEXT.findall(text)
+    return int(found[-1]) if found else None
+
+
+def check_week_tense(text: str, stories: list[dict], issue_week_label) -> list[dict]:
+    """
+    needs_review for forward-looking prose written about a story whose source
+    week is EARLIER than the issue being drafted.
+
+    Never a hard fail. "this week" over a Week 9 story is usually wrong but it
+    is a judgement about wording, not an arithmetic claim the validator can
+    settle, and blocking a whole brief over a preposition is the wrong trade
+    (see the reader-language history in weekly_brief_shape.py). It surfaces for
+    a human instead.
+
+    Silent when the issue week cannot be read, or when no cited story names a
+    week -- an unknown week is not evidence of a stale one.
+    """
+    issue_week = week_in_text(issue_week_label)
+    if issue_week is None or not text:
+        return []
+
+    stale: list[tuple[str, int]] = []
+    for story in stories:
+        source_week = week_in_text(story.get("time_window"))
+        if source_week is not None and source_week < issue_week:
+            label = story.get("intelligence_family") or story.get("intelligence_story_id") or "story"
+            stale.append((str(label), source_week))
+    if not stale:
+        return []
+
+    lowered = text.lower()
+    hits = [p for p in FORWARD_LOOKING_PHRASES if p in lowered]
+    if not hits:
+        return []
+
+    sources = ", ".join(f"{label} (Week {wk})" for label, wk in stale)
+    return [{
+        "check": "week_tense",
+        "claim_type": "tense",
+        "claim_text": ", ".join(repr(h) for h in hits),
+        "status": "needs_review",
+        "detail": (
+            f"Forward-looking wording ({', '.join(repr(h) for h in hits)}) in a story sourced from "
+            f"an EARLIER week than this issue (Week {issue_week}): {sources}. Those families describe "
+            f"the week already played -- a related player faced that defense then, and an injury "
+            f"status is where it stood then. Check the wording says 'as of last week' or names the "
+            f"week, rather than promising the reader something about the week ahead. Human check needed."
+        ),
+    }]
+
+
 def _real_name_pool(stories: list[dict]) -> set[str]:
     """Every real player/team name reachable from the referenced story
     objects — entity's own name/team, plus every related_players[]

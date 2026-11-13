@@ -64,7 +64,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from evidence_validator import validate_editorial_contract, validate_newsletter_story  # noqa: E402
+from evidence_validator import (  # noqa: E402
+    check_week_tense,
+    validate_editorial_contract,
+    validate_newsletter_story,
+)
 
 # persist_weekly_brief.freeze_eps_scores is imported lazily inside
 # enrich_gates_for_validation(), not here: persist imports the runner at
@@ -154,13 +158,23 @@ def run_evidence_validation(issue: dict, candidates: list[dict]) -> dict:
         for i, story in enumerate(section.get("stories", []) or []):
             ids = story.get("intelligence_story_ids") or []
             result = validate_newsletter_story(story.get("headline", ""), story.get("body", ""), ids, stories_by_id)
+            # Week tense: a flag, never a block. Needs the issue week and the
+            # cited stories' own time_windows, neither of which
+            # validate_newsletter_story receives, so it is run here and folded
+            # into the same result dict the loop below already walks.
+            result["week_tense"] = check_week_tense(
+                f"{story.get('headline', '')} {story.get('body', '')}",
+                [stories_by_id[s_id] for s_id in ids if s_id in stories_by_id],
+                issue.get("issue_week"),
+            )
             where = f"{st}.stories[{i}]"
             per_story.append({"where": where, "intelligence_story_ids": ids, "result": result})
             for missing in result.get("missing_story_ids", []):
                 hard_fails.append({"where": where, "check": "missing_story_id", "claim_text": missing,
                                    "detail": "cited intelligence_story_id is not in this week's candidate pool"})
             for check_name in ("claim_traceability", "relationship_traceability",
-                               "evidence_confidence_alignment", "interrogation_traceability"):
+                               "evidence_confidence_alignment", "interrogation_traceability",
+                               "week_tense"):
                 for r in result.get(check_name, []):
                     if r.get("status") == "fail":
                         hard_fails.append({"where": where, "check": r.get("check", check_name),
